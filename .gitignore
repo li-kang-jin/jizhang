@@ -1,0 +1,60 @@
+# ---------- Java / Maven ----------
+target/
+*.class
+*.jar
+*.war
+!.mvn/wrapper/maven-wrapper.jar
+.mvn/timing.properties
+.mvn/wrapper/*.jar
+
+# ---------- IDE ----------
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+!.vscode/extensions.json
+*.swp
+.settings/
+.project
+.classpath
+
+# ---------- Node / 管理后台 ----------
+node_modules/
+dist/
+dist-ssr/
+*.local
+.pnpm-store/
+.eslintcache
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---------- Android ----------
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/captures/
+android/.cxx/
+*.apk
+*.aab
+*.keystore
+!debug.keystore
+
+# ---------- 运行 / 日志 ----------
+logs/
+*.log
+*.pid
+
+# ---------- 本地环境 ----------
+.env
+.env.local
+application-local.yml
+docker/data/
+*.hprof
+
+# ---------- OS ----------
+.DS_Store
+Thumbs.db
+desktop.ini

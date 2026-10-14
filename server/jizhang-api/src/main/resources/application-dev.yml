@@ -1,0 +1,37 @@
+spring:
+  datasource:
+    driver-class-name: org.postgresql.Driver
+    # stringtype=unspecified 让字符串可以直接写入 jsonb 字段
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:jizhang}?stringtype=unspecified
+    username: ${DB_USER:jizhang}
+    password: ${DB_PASSWORD:jizhang123}
+    hikari:
+      pool-name: JizhangHikariPool
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 3000ms
+
+  # 启动时自动执行建表脚本（脚本幂等，可重复执行）
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:db/schema.sql
+      continue-on-error: false
+      encoding: UTF-8
+
+mybatis-plus:
+  configuration:
+    # 开发期打印 SQL，生产请移除
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+
+logging:
+  level:
+    com.jizhang: debug
