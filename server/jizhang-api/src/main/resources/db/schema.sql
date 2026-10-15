@@ -50,8 +50,8 @@ CREATE TABLE IF NOT EXISTS t_book
     deleted    SMALLINT    NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_book_owner ON t_book (owner_id) WHERE deleted = 0;
-COMMENT ON TABLE t_book IS '账本表';
-COMMENT ON COLUMN t_book.type IS '0=个人 1=家庭 2=共享';
+COMMENT ON TABLE t_book IS '账本表（账本即团队：个人账本成员只有自己，家庭账本成员为全家）';
+COMMENT ON COLUMN t_book.type IS '0=个人（仅自己可见） 1=家庭/共享（成员互相可见） 2=共享';
 
 -- ---------------------------------------------------------------------------
 -- 账本成员
@@ -62,6 +62,8 @@ CREATE TABLE IF NOT EXISTS t_book_member
     book_id    BIGINT      NOT NULL,
     user_id    BIGINT      NOT NULL,
     role       SMALLINT    NOT NULL DEFAULT 1,
+    alias      VARCHAR(32),
+    joined_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_by BIGINT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_by BIGINT,
@@ -69,8 +71,40 @@ CREATE TABLE IF NOT EXISTS t_book_member
     deleted    SMALLINT    NOT NULL DEFAULT 0
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uk_book_member ON t_book_member (book_id, user_id) WHERE deleted = 0;
+-- 兼容已存在的库：补列（IF NOT EXISTS 保证脚本可重复执行）
+ALTER TABLE t_book_member ADD COLUMN IF NOT EXISTS alias VARCHAR(32);
+ALTER TABLE t_book_member ADD COLUMN IF NOT EXISTS joined_at TIMESTAMPTZ NOT NULL DEFAULT now();
 COMMENT ON TABLE t_book_member IS '账本成员表（共享账本）';
 COMMENT ON COLUMN t_book_member.role IS '0=只读 1=可写 2=管理员';
+COMMENT ON COLUMN t_book_member.alias IS '家庭内称呼（如「爸爸」），为空时展示昵称';
+
+-- ---------------------------------------------------------------------------
+-- 账本邀请码（家庭 / 共享账本的拉人入口）
+-- 不建独立的「家庭/团队」实体：账本本身就是成员容器，邀请码把成员直接拉进账本
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS t_book_invite
+(
+    id         BIGINT      PRIMARY KEY,
+    book_id    BIGINT      NOT NULL,
+    code       VARCHAR(16) NOT NULL,
+    role       SMALLINT    NOT NULL DEFAULT 1,
+    expire_at  TIMESTAMPTZ,
+    max_uses   INTEGER     NOT NULL DEFAULT 1,
+    used_count INTEGER     NOT NULL DEFAULT 0,
+    status     SMALLINT    NOT NULL DEFAULT 1,
+    created_by BIGINT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by BIGINT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted    SMALLINT    NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_book_invite_code ON t_book_invite (code) WHERE deleted = 0;
+CREATE INDEX IF NOT EXISTS idx_book_invite_book ON t_book_invite (book_id) WHERE deleted = 0;
+COMMENT ON TABLE t_book_invite IS '账本邀请码表';
+COMMENT ON COLUMN t_book_invite.code IS '邀请码，全局唯一，8 位大写字母数字';
+COMMENT ON COLUMN t_book_invite.role IS '加入后角色 0=只读 1=可写 2=管理员';
+COMMENT ON COLUMN t_book_invite.max_uses IS '最大使用次数，0 表示不限';
+COMMENT ON COLUMN t_book_invite.status IS '0=已作废 1=有效';
 
 -- ---------------------------------------------------------------------------
 -- 账户

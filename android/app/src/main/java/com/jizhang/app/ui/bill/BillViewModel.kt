@@ -3,6 +3,7 @@ package com.jizhang.app.ui.bill
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jizhang.app.data.local.entity.LocalTransaction
+import com.jizhang.app.data.repository.BookRepository
 import com.jizhang.app.data.repository.PetRepository
 import com.jizhang.app.data.repository.ReportRepository
 import com.jizhang.app.data.repository.SyncManager
@@ -22,6 +23,7 @@ import javax.inject.Inject
 class BillViewModel @Inject constructor(
     private val transactionRepository: TransactionRepository,
     private val reportRepository: ReportRepository,
+    private val bookRepository: BookRepository,
     private val petRepository: PetRepository,
     private val syncManager: SyncManager
 ) : ViewModel() {
@@ -34,6 +36,8 @@ class BillViewModel @Inject constructor(
         val monthExpense: Long = 0L,
         val pet: PetState = PetState(),
         val petMood: PetMood = PetMood.NORMAL,
+        /** 记账人 userId → 展示名（家庭账本里显示「谁记的」） */
+        val memberLabels: Map<Long, String> = emptyMap(),
         val syncing: Boolean = false,
         val message: String? = null
     )
@@ -67,6 +71,11 @@ class BillViewModel @Inject constructor(
             launch {
                 petRepository.state.collect { pet ->
                     _state.update { it.copy(pet = pet) }
+                }
+            }
+            launch {
+                bookRepository.observeMembers(bookId).collect { members ->
+                    _state.update { it.copy(memberLabels = members.associate { it.userId to it.label }) }
                 }
             }
         }

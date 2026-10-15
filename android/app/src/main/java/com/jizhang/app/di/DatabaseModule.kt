@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Room
 import com.jizhang.app.data.local.JizhangDatabase
 import com.jizhang.app.data.local.dao.AccountDao
+import com.jizhang.app.data.local.dao.BookDao
+import com.jizhang.app.data.local.dao.BookMemberDao
 import com.jizhang.app.data.local.dao.BudgetDao
 import com.jizhang.app.data.local.dao.CategoryDao
 import com.jizhang.app.data.local.dao.TransactionDao
@@ -25,7 +27,8 @@ object DatabaseModule {
             // 已定义迁移的版本走迁移路径；仅当出现未定义迁移的版本差时才重建库
             .addMigrations(
                 JizhangDatabase.MIGRATION_3_4,
-                JizhangDatabase.MIGRATION_4_5
+                JizhangDatabase.MIGRATION_4_5,
+                JizhangDatabase.MIGRATION_5_6
             )
             .fallbackToDestructiveMigration()
             .build()
@@ -41,4 +44,10 @@ object DatabaseModule {
 
     @Provides
     fun provideBudgetDao(database: JizhangDatabase): BudgetDao = database.budgetDao()
+
+    @Provides
+    fun provideBookDao(database: JizhangDatabase): BookDao = database.bookDao()
+
+    @Provides
+    fun provideBookMemberDao(database: JizhangDatabase): BookMemberDao = database.bookMemberDao()
 }

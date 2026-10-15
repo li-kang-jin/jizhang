@@ -16,6 +16,15 @@ export function adminLoginApi(payload: LoginPayload): Promise<TokenInfo> {
   return post<TokenInfo>('/admin/auth/login', payload)
 }
 
+export interface ChangePasswordPayload {
+  oldPassword: string
+  newPassword: string
+}
+
+export function adminChangePasswordApi(payload: ChangePasswordPayload): Promise<void> {
+  return post<void>('/admin/auth/password', payload)
+}
+
 /* ---------------- 统计 ---------------- */
 
 export function fetchOverview(): Promise<PlatformOverview> {

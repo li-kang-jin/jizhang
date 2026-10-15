@@ -1,9 +1,11 @@
 package com.jizhang.app.data.repository
 
 import com.jizhang.app.data.local.entity.LocalAccount
+import com.jizhang.app.data.local.entity.LocalBook
 import com.jizhang.app.data.local.entity.LocalCategory
 import com.jizhang.app.data.local.entity.LocalTransaction
 import com.jizhang.app.data.remote.dto.AccountDto
+import com.jizhang.app.data.remote.dto.BookDto
 import com.jizhang.app.data.remote.dto.CategoryDto
 import com.jizhang.app.data.remote.dto.TransactionDto
 import com.jizhang.app.data.remote.dto.TransactionSaveDto
@@ -30,6 +32,7 @@ fun TransactionDto.toLocal(): LocalTransaction = LocalTransaction(
     tradeTime = parseIsoToMillis(tradeTime),
     remark = remark,
     tags = tags.joinToString(",").ifBlank { null },
+    createdBy = createdBy,
     pendingSync = false,
     serverUpdatedAt = updatedAt
 )
@@ -73,4 +76,23 @@ fun AccountDto.toLocal(): LocalAccount = LocalAccount(
     initialBalance = initialBalance,
     icon = icon,
     sort = sort
+)
+
+/**
+ * 服务端账本 → 本地账本。
+ *
+ * @param myUserId 当前登录用户 ID，用于判定「我的个人账本」（个人账本 = type 0 且 owner 是我）
+ * @param sortOrder 列表展示顺序
+ */
+fun BookDto.toLocal(myUserId: Long, sortOrder: Int = 0): LocalBook = LocalBook(
+    id = id,
+    name = name,
+    icon = icon,
+    type = type,
+    ownerId = ownerId ?: 0L,
+    myRole = myRole ?: 1,
+    memberCount = memberCount ?: 1,
+    personal = type == 0 && ownerId != null && ownerId == myUserId,
+    remote = true,
+    sortOrder = sortOrder
 )

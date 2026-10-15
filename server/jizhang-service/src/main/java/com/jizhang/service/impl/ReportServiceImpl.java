@@ -4,17 +4,24 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.jizhang.common.api.ResultCode;
 import com.jizhang.common.exception.BizException;
 import com.jizhang.dao.dto.CategoryStatRow;
+import com.jizhang.dao.dto.MemberStatRow;
 import com.jizhang.dao.dto.PeriodStatRow;
 import com.jizhang.dao.dto.SumRow;
 import com.jizhang.dao.entity.AccountEntity;
+import com.jizhang.dao.entity.BookMemberEntity;
+import com.jizhang.dao.entity.UserEntity;
 import com.jizhang.dao.mapper.AccountMapper;
+import com.jizhang.dao.mapper.BookMemberMapper;
 import com.jizhang.dao.mapper.TransactionMapper;
+import com.jizhang.dao.mapper.UserMapper;
 import com.jizhang.service.ReportService;
 import com.jizhang.service.support.BookAccessChecker;
 import com.jizhang.service.vo.AccountAssetVO;
 import com.jizhang.service.vo.AssetReportVO;
 import com.jizhang.service.vo.CategoryReportVO;
 import com.jizhang.service.vo.CategoryStatVO;
+import com.jizhang.service.vo.MemberReportVO;
+import com.jizhang.service.vo.MemberStatVO;
 import com.jizhang.service.vo.ReportOverviewVO;
 import com.jizhang.service.vo.TrendItemVO;
 import lombok.extern.slf4j.Slf4j;
@@ -27,6 +34,7 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -49,13 +57,19 @@ public class ReportServiceImpl implements ReportService {
 
     private final TransactionMapper transactionMapper;
     private final AccountMapper accountMapper;
+    private final UserMapper userMapper;
+    private final BookMemberMapper bookMemberMapper;
     private final BookAccessChecker bookAccessChecker;
 
     public ReportServiceImpl(TransactionMapper transactionMapper,
                              AccountMapper accountMapper,
+                             UserMapper userMapper,
+                             BookMemberMapper bookMemberMapper,
                              BookAccessChecker bookAccessChecker) {
         this.transactionMapper = transactionMapper;
         this.accountMapper = accountMapper;
+        this.userMapper = userMapper;
+        this.bookMemberMapper = bookMemberMapper;
         this.bookAccessChecker = bookAccessChecker;
     }
 
@@ -186,7 +200,73 @@ public class ReportServiceImpl implements ReportService {
         return vo;
     }
 
+    @Override
+    public MemberReportVO memberReport(Long bookId, OffsetDateTime startTime, OffsetDateTime endTime) {
+        bookAccessChecker.requireReadable(bookId);
+        OffsetDateTime[] range = normalizeRange(startTime, endTime);
+
+        List<MemberStatRow> rows = transactionMapper.statByMember(bookId, range[0], range[1]);
+
+        Map<Long, String> aliasMap = new LinkedHashMap<>();
+        List<Long> userIds = rows.stream()
+                .map(MemberStatRow::getUserId)
+                .filter(Objects::nonNull)
+                .toList();
+        if (!userIds.isEmpty()) {
+            bookMemberMapper.selectList(Wrappers.<BookMemberEntity>lambdaQuery()
+                            .eq(BookMemberEntity::getBookId, bookId)
+                            .in(BookMemberEntity::getUserId, userIds))
+                    .forEach(member -> aliasMap.put(member.getUserId(), member.getAlias()));
+        }
+
+        long totalIncome = 0L;
+        long totalExpense = 0L;
+        List<MemberStatVO> items = new ArrayList<>(rows.size());
+        for (MemberStatRow row : rows) {
+            long income = valueOf(row.getIncome());
+            long expense = valueOf(row.getExpense());
+
+            MemberStatVO item = new MemberStatVO();
+            item.setUserId(row.getUserId());
+            item.setIncome(income);
+            item.setExpense(expense);
+            item.setBalance(income - expense);
+            item.setCount(valueOf(row.getTxCount()));
+
+            UserEntity user = row.getUserId() == null ? null : userMapper.selectById(row.getUserId());
+            if (user != null) {
+                item.setUsername(user.getUsername());
+                item.setNickname(user.getNickname());
+                item.setAvatar(user.getAvatar());
+            }
+            String alias = aliasMap.get(row.getUserId());
+            item.setAlias(alias);
+            item.setDisplayName(displayName(alias, user));
+
+            totalIncome += income;
+            totalExpense += expense;
+            items.add(item);
+        }
+
+        MemberReportVO vo = new MemberReportVO();
+        vo.setTotalIncome(totalIncome);
+        vo.setTotalExpense(totalExpense);
+        vo.setItems(items);
+        return vo;
+    }
+
     /* ---------------- 内部方法 ---------------- */
+
+    /** 展示名：优先家庭内称呼，其次昵称，最后登录名 */
+    private String displayName(String alias, UserEntity user) {
+        if (alias != null && !alias.isBlank()) {
+            return alias;
+        }
+        if (user != null && user.getNickname() != null && !user.getNickname().isBlank()) {
+            return user.getNickname();
+        }
+        return user == null ? "未知成员" : user.getUsername();
+    }
 
     private TrendItemVO buildTrendItem(String period, Map<String, PeriodStatRow> rowMap) {
         PeriodStatRow row = rowMap.get(period);

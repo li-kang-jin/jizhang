@@ -75,7 +75,7 @@ class BudgetAlertWorker(
         if (!loggedIn) {
             return JizhangDatabase.LOCAL_BOOK_ID
         }
-        return tokenStore.bookIdFlow.first().takeIf { it > 0 } ?: JizhangDatabase.LOCAL_BOOK_ID
+        return tokenStore.currentBookIdFlow.first().takeIf { it > 0 } ?: JizhangDatabase.LOCAL_BOOK_ID
     }
 
     /** 分 → 元，固定两位小数 */

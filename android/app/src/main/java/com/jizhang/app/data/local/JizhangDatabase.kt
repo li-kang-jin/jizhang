@@ -5,10 +5,14 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.jizhang.app.data.local.dao.AccountDao
+import com.jizhang.app.data.local.dao.BookDao
+import com.jizhang.app.data.local.dao.BookMemberDao
 import com.jizhang.app.data.local.dao.BudgetDao
 import com.jizhang.app.data.local.dao.CategoryDao
 import com.jizhang.app.data.local.dao.TransactionDao
 import com.jizhang.app.data.local.entity.LocalAccount
+import com.jizhang.app.data.local.entity.LocalBook
+import com.jizhang.app.data.local.entity.LocalBookMember
 import com.jizhang.app.data.local.entity.LocalBudget
 import com.jizhang.app.data.local.entity.LocalCategory
 import com.jizhang.app.data.local.entity.LocalTransaction
@@ -18,13 +22,16 @@ import com.jizhang.app.data.local.entity.LocalTransaction
         LocalTransaction::class,
         LocalCategory::class,
         LocalAccount::class,
-        LocalBudget::class
+        LocalBudget::class,
+        LocalBook::class,
+        LocalBookMember::class
     ],
     // v2：local_transaction 增加 pendingDelete（离线删除支持）
     // v3：local_account 改为 initialBalance（余额实时聚合）+ 本地账本模式
     // v4：新增 local_budget（预算）
     // v5：local_transaction 增加 tags（账单导入的标签列）
-    version = 5,
+    // v6：新增 local_book（多账本 / 家庭共享账本）
+    version = 6,
     exportSchema = false
 )
 abstract class JizhangDatabase : RoomDatabase() {
@@ -36,6 +43,10 @@ abstract class JizhangDatabase : RoomDatabase() {
     abstract fun accountDao(): AccountDao
 
     abstract fun budgetDao(): BudgetDao
+
+    abstract fun bookDao(): BookDao
+
+    abstract fun bookMemberDao(): BookMemberDao
 
     companion object {
         const val NAME = "jizhang.db"
@@ -81,6 +92,57 @@ abstract class JizhangDatabase : RoomDatabase() {
         val MIGRATION_4_5 = object : Migration(4, 5) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE `local_transaction` ADD COLUMN `tags` TEXT")
+            }
+        }
+
+        /**
+         * 5 -> 6：多账本 / 家庭成员支持。
+         * <ul>
+         *   <li>新增 local_book 表，并写入一条本地账本记录（id = 0）。
+         *       老用户的账单都挂在 bookId = 0 下，这条记录保证升级后切换器里仍有账本可选、
+         *       不会出现「账本列表为空」导致看不到已有账单；</li>
+         *   <li>新增 local_book_member 表（家庭成员缓存，用于「谁记的」与按成员统计）；</li>
+         *   <li>local_transaction 增加 createdBy 列（记账人）。</li>
+         * </ul>
+         * 全部是新增表 / 可空新增列，不影响既有数据。
+         */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `local_book` (" +
+                        "`id` INTEGER NOT NULL PRIMARY KEY, " +
+                        "`name` TEXT NOT NULL, " +
+                        "`icon` TEXT, " +
+                        "`type` INTEGER NOT NULL, " +
+                        "`ownerId` INTEGER NOT NULL, " +
+                        "`myRole` INTEGER NOT NULL, " +
+                        "`memberCount` INTEGER NOT NULL, " +
+                        "`personal` INTEGER NOT NULL, " +
+                        "`remote` INTEGER NOT NULL, " +
+                        "`sortOrder` INTEGER NOT NULL)"
+                )
+                db.execSQL(
+                    "INSERT OR IGNORE INTO `local_book` " +
+                        "(`id`, `name`, `icon`, `type`, `ownerId`, `myRole`, `memberCount`, " +
+                        "`personal`, `remote`, `sortOrder`) " +
+                        "VALUES (0, '本地账本', 'book', 0, 0, 2, 1, 1, 0, 0)"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `local_book_member` (" +
+                        "`bookId` INTEGER NOT NULL, " +
+                        "`userId` INTEGER NOT NULL, " +
+                        "`username` TEXT NOT NULL, " +
+                        "`nickname` TEXT, " +
+                        "`alias` TEXT, " +
+                        "`role` INTEGER NOT NULL, " +
+                        "`owner` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`bookId`, `userId`))"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_local_book_member_bookId` " +
+                        "ON `local_book_member` (`bookId`)"
+                )
+                db.execSQL("ALTER TABLE `local_transaction` ADD COLUMN `createdBy` INTEGER")
             }
         }
     }

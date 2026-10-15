@@ -21,12 +21,13 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
 
-        // 后端地址：
-        //   真机调试 -> 电脑的局域网 IP（手机需与电脑处于同一 WiFi）
-        //   模拟器   -> http://10.0.2.2:8080/api/v1/
-        // 也可在命令行覆盖：gradlew installDebug -PapiBaseUrl=http://192.168.1.5:8080/api/v1/
+        // 后端地址。默认指向线上服务器，直接 assembleDebug 打出来的包就能用。
+        //
+        // 本地联调时在命令行覆盖：
+        //   真机   gradlew installDebug -PapiBaseUrl=http://<电脑局域网IP>:8080/api/v1/
+        //   模拟器 gradlew installDebug -PapiBaseUrl=http://10.0.2.2:8080/api/v1/
         val apiBaseUrl = (project.findProperty("apiBaseUrl") as String?)
-            ?: "http://192.168.194.123:8080/api/v1/"
+            ?: "http://159.75.170.154/api/v1/"
         buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
     }
 

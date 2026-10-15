@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.jizhang.app.data.remote.dto.AccountAssetDto
 import com.jizhang.app.data.remote.dto.BudgetOverviewDto
 import com.jizhang.app.data.remote.dto.CategoryStatDto
+import com.jizhang.app.data.remote.dto.MemberReportDto
 import com.jizhang.app.data.remote.dto.ReportOverviewDto
 import com.jizhang.app.data.remote.dto.TrendItemDto
 import com.jizhang.app.data.repository.BudgetRepository
@@ -26,11 +27,15 @@ class ReportViewModel @Inject constructor(
 
     data class UiState(
         val bookId: Long = 0L,
+        /** 当前账本是否为家庭账本（决定是否展示「谁花了多少」） */
+        val shared: Boolean = false,
         /** 当前查看的月份，yyyy-MM */
         val month: String = YearMonth.now().toString(),
         val loading: Boolean = false,
         val categoryType: Int = 1,
         val overview: ReportOverviewDto? = null,
+        /** 按成员统计，仅家庭账本有意义 */
+        val members: MemberReportDto? = null,
         /** 预算进度，未设置预算时 hasBudget = false */
         val budget: BudgetOverviewDto? = null,
         val categories: List<CategoryStatDto> = emptyList(),
@@ -52,18 +57,21 @@ class ReportViewModel @Inject constructor(
 
     private var bound = -1L
 
-    fun bind(bookId: Long) {
-        if (bound == bookId) {
+    fun bind(bookId: Long, shared: Boolean) {
+        if (bound == bookId && _state.value.shared == shared) {
             return
         }
         bound = bookId
-        _state.update { it.copy(bookId = bookId, month = YearMonth.now().toString()) }
+        _state.update {
+            it.copy(bookId = bookId, shared = shared, month = YearMonth.now().toString())
+        }
         load()
     }
 
     /** 全部数据来自本地聚合，断网也能看 */
     fun load() {
         val bookId = _state.value.bookId
+        val shared = _state.value.shared
         val month = YearMonth.parse(_state.value.month)
         viewModelScope.launch {
             _state.update { it.copy(loading = true) }
@@ -74,6 +82,7 @@ class ReportViewModel @Inject constructor(
             val trend = reportRepository.trendOfMonth(bookId, month)
             val assets = reportRepository.assets(bookId)
             val expenseCategories = reportRepository.expenseCategories(bookId)
+            val members = if (shared) reportRepository.memberStats(bookId, month) else null
 
             _state.update {
                 it.copy(
@@ -85,7 +94,8 @@ class ReportViewModel @Inject constructor(
                     trend = trend,
                     totalAssets = assets.totalAssets,
                     assets = assets.accounts,
-                    expenseCategories = expenseCategories
+                    expenseCategories = expenseCategories,
+                    members = members
                 )
             }
         }

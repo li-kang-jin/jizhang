@@ -1,12 +1,15 @@
 package com.jizhang.app.data.repository
 
 import com.jizhang.app.data.local.dao.AccountDao
+import com.jizhang.app.data.local.dao.BookMemberDao
 import com.jizhang.app.data.local.dao.CategoryDao
 import com.jizhang.app.data.local.dao.TransactionDao
 import com.jizhang.app.data.remote.dto.AccountAssetDto
 import com.jizhang.app.data.remote.dto.AssetReportDto
 import com.jizhang.app.data.remote.dto.CategoryReportDto
 import com.jizhang.app.data.remote.dto.CategoryStatDto
+import com.jizhang.app.data.remote.dto.MemberReportDto
+import com.jizhang.app.data.remote.dto.MemberStatDto
 import com.jizhang.app.data.remote.dto.ReportOverviewDto
 import com.jizhang.app.data.remote.dto.TrendItemDto
 import java.time.LocalDate
@@ -25,7 +28,8 @@ import javax.inject.Singleton
 class ReportRepository @Inject constructor(
     private val transactionDao: TransactionDao,
     private val categoryDao: CategoryDao,
-    private val accountDao: AccountDao
+    private val accountDao: AccountDao,
+    private val bookMemberDao: BookMemberDao
 ) {
 
     private companion object {
@@ -132,6 +136,40 @@ class ReportRepository @Inject constructor(
                 color = it.color
             )
         }
+
+    /**
+     * 按成员统计收支（家庭账本「谁花了多少」）。
+     * <p>
+     * 与其它报表一致，全部由本地数据聚合：交易上的 createdBy + 缓存的成员名单，
+     * 因此断网也能看。个人账本只有一条记录。
+     */
+    suspend fun memberStats(bookId: Long, month: YearMonth = YearMonth.now()): MemberReportDto {
+        val start = monthStart(month)
+        val end = monthStart(month.plusMonths(1))
+
+        val rows = transactionDao.sumByMember(bookId, start, end)
+        val memberMap = bookMemberDao.listByBook(bookId).associateBy { it.userId }
+
+        val items = rows.map { row ->
+            val member = row.createdBy?.let { memberMap[it] }
+            MemberStatDto(
+                userId = row.createdBy,
+                username = member?.username,
+                nickname = member?.nickname,
+                alias = member?.alias,
+                displayName = member?.label ?: if (row.createdBy == null) "未记录记账人" else "已退出的成员",
+                income = row.income,
+                expense = row.expense,
+                balance = row.income - row.expense,
+                count = row.txCount
+            )
+        }
+        return MemberReportDto(
+            totalIncome = items.sumOf { it.income },
+            totalExpense = items.sumOf { it.expense },
+            items = items
+        )
+    }
 
     suspend fun assets(bookId: Long): AssetReportDto {
         val accounts = accountDao.listWithBalance(bookId)

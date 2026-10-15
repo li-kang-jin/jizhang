@@ -44,6 +44,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import com.jizhang.app.data.remote.dto.AccountAssetDto
 import com.jizhang.app.data.remote.dto.BudgetOverviewDto
 import com.jizhang.app.data.remote.dto.CategoryStatDto
+import com.jizhang.app.data.remote.dto.MemberReportDto
 import com.jizhang.app.data.remote.dto.ReportOverviewDto
 import com.jizhang.app.data.remote.dto.TrendItemDto
 import com.jizhang.app.data.repository.BudgetPeriods
@@ -56,13 +57,14 @@ import kotlin.math.roundToInt
 @Composable
 fun ReportScreen(
     bookId: Long,
+    shared: Boolean = false,
     viewModel: ReportViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var showBudgetDialog by remember { mutableStateOf(false) }
 
-    LaunchedEffect(bookId) { viewModel.bind(bookId) }
+    LaunchedEffect(bookId, shared) { viewModel.bind(bookId, shared) }
 
     LaunchedEffect(state.message) {
         state.message?.let {
@@ -79,6 +81,10 @@ fun ReportScreen(
         ) {
             item { MonthSwitcher(state, viewModel::switchMonth, viewModel::backToCurrentMonth) }
             item { OverviewCard(state, onRefresh = viewModel::load) }
+            // 家庭账本专属：谁花了多少
+            if (state.shared) {
+                item { MemberCard(state.members) }
+            }
             item { BudgetCard(state.budget, onEdit = { showBudgetDialog = true }) }
             item { CategoryCard(state, onSwitch = viewModel::switchCategoryType) }
             item { TrendCard(state.trend) }
@@ -303,6 +309,75 @@ private fun StatItem(label: String, value: String, color: Color, modifier: Modif
             color = color,
             fontWeight = FontWeight.SemiBold
         )
+    }
+}
+
+/**
+ * 家庭账本专属卡片：这个月家里每个人花了多少。
+ *
+ * 「家庭成员可以看到所有人的收支」在这里落到具体数字上 —— 谁记的账、花了多少一目了然。
+ */
+@Composable
+private fun MemberCard(report: MemberReportDto?) {
+    CardBox {
+        Text(
+            text = "家庭成员收支",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold
+        )
+        Spacer(Modifier.height(4.dp))
+
+        if (report == null || report.items.isEmpty()) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "这个月还没有家庭成员记账",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            return@CardBox
+        }
+
+        Spacer(Modifier.height(8.dp))
+        report.items.forEachIndexed { index, item ->
+            if (index > 0) {
+                Spacer(Modifier.height(10.dp))
+            }
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = item.label,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        text = "${item.count} 笔",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(Modifier.height(2.dp))
+                Row {
+                    Text(
+                        text = "支出 ${formatAmount(item.expense)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = AppColors.expense
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        text = "收入 ${formatAmount(item.income)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = AppColors.income
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        text = "结余 ${formatAmount(item.balance)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
     }
 }
 

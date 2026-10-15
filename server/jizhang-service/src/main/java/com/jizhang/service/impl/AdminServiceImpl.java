@@ -8,6 +8,7 @@ import com.jizhang.common.api.PageResult;
 import com.jizhang.common.api.ResultCode;
 import com.jizhang.common.constant.CommonConstants;
 import com.jizhang.common.context.LoginUser;
+import com.jizhang.common.context.UserContext;
 import com.jizhang.common.exception.BizException;
 import com.jizhang.common.util.JwtUtils;
 import com.jizhang.dao.dto.DailyStatRow;
@@ -21,6 +22,7 @@ import com.jizhang.service.AdminService;
 import com.jizhang.service.dto.AdminBookQueryRequest;
 import com.jizhang.service.dto.AdminTransactionQueryRequest;
 import com.jizhang.service.dto.AdminUserQueryRequest;
+import com.jizhang.service.dto.ChangePasswordRequest;
 import com.jizhang.service.dto.LoginRequest;
 import com.jizhang.service.vo.BookVO;
 import com.jizhang.service.vo.PlatformOverviewVO;
@@ -99,6 +101,27 @@ public class AdminServiceImpl implements AdminService {
         vo.setExpiresIn(jwtUtils.getAccessExpireSeconds());
         vo.setUser(UserVO.from(user));
         return vo;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void changePassword(ChangePasswordRequest request) {
+        Long userId = UserContext.requireUserId();
+        UserEntity user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new BizException(ResultCode.USER_NOT_FOUND);
+        }
+        if (!passwordEncoder.matches(request.getOldPassword(), user.getPassword())) {
+            throw new BizException(ResultCode.PARAM_ERROR, "原密码不正确");
+        }
+        if (passwordEncoder.matches(request.getNewPassword(), user.getPassword())) {
+            throw new BizException(ResultCode.PARAM_ERROR, "新密码不能与原密码相同");
+        }
+        UserEntity update = new UserEntity();
+        update.setId(userId);
+        update.setPassword(passwordEncoder.encode(request.getNewPassword()));
+        userMapper.updateById(update);
+        log.info("管理员修改密码成功: userId={}, username={}", userId, user.getUsername());
     }
 
     @Override

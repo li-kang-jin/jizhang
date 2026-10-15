@@ -4,6 +4,7 @@ import com.jizhang.common.api.PageResult;
 import com.jizhang.service.dto.AdminBookQueryRequest;
 import com.jizhang.service.dto.AdminTransactionQueryRequest;
 import com.jizhang.service.dto.AdminUserQueryRequest;
+import com.jizhang.service.dto.ChangePasswordRequest;
 import com.jizhang.service.dto.LoginRequest;
 import com.jizhang.service.vo.BookVO;
 import com.jizhang.service.vo.PlatformOverviewVO;
@@ -21,6 +22,9 @@ public interface AdminService {
 
     /** 管理员登录（非 ADMIN 角色拒绝） */
     TokenVO login(LoginRequest request);
+
+    /** 修改当前登录管理员的密码 */
+    void changePassword(ChangePasswordRequest request);
 
     PageResult<UserVO> pageUsers(AdminUserQueryRequest request);
 

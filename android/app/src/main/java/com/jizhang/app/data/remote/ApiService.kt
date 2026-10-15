@@ -5,12 +5,19 @@ import com.jizhang.app.data.remote.dto.AccountSaveDto
 import com.jizhang.app.data.remote.dto.ApiResult
 import com.jizhang.app.data.remote.dto.AssetReportDto
 import com.jizhang.app.data.remote.dto.BookDto
+import com.jizhang.app.data.remote.dto.BookInviteDto
+import com.jizhang.app.data.remote.dto.BookMemberDto
+import com.jizhang.app.data.remote.dto.BookSaveDto
 import com.jizhang.app.data.remote.dto.BudgetDto
 import com.jizhang.app.data.remote.dto.BudgetOverviewDto
 import com.jizhang.app.data.remote.dto.BudgetSaveDto
 import com.jizhang.app.data.remote.dto.CategoryDto
 import com.jizhang.app.data.remote.dto.CategoryReportDto
+import com.jizhang.app.data.remote.dto.InviteCreateDto
+import com.jizhang.app.data.remote.dto.JoinBookDto
 import com.jizhang.app.data.remote.dto.LoginRequest
+import com.jizhang.app.data.remote.dto.MemberReportDto
+import com.jizhang.app.data.remote.dto.MemberUpdateDto
 import com.jizhang.app.data.remote.dto.PageResult
 import com.jizhang.app.data.remote.dto.RefreshTokenRequest
 import com.jizhang.app.data.remote.dto.RegisterRequest
@@ -56,6 +63,54 @@ interface ApiService {
 
     @GET("app/books")
     suspend fun books(): ApiResult<List<BookDto>>
+
+    @POST("app/books")
+    suspend fun createBook(@Body request: BookSaveDto): ApiResult<BookDto>
+
+    @PUT("app/books/{id}")
+    suspend fun updateBook(
+        @Path("id") id: Long,
+        @Body request: BookSaveDto
+    ): ApiResult<BookDto>
+
+    @DELETE("app/books/{id}")
+    suspend fun deleteBook(@Path("id") id: Long): ApiResult<Unit>
+
+    /* ---------------- 账本成员 / 邀请码 ---------------- */
+
+    @GET("app/books/{id}/members")
+    suspend fun bookMembers(@Path("id") id: Long): ApiResult<List<BookMemberDto>>
+
+    @PUT("app/books/{id}/members/{userId}")
+    suspend fun updateBookMember(
+        @Path("id") id: Long,
+        @Path("userId") userId: Long,
+        @Body request: MemberUpdateDto
+    ): ApiResult<Unit>
+
+    @DELETE("app/books/{id}/members/{userId}")
+    suspend fun removeBookMember(
+        @Path("id") id: Long,
+        @Path("userId") userId: Long
+    ): ApiResult<Unit>
+
+    @GET("app/books/{id}/invites")
+    suspend fun bookInvites(@Path("id") id: Long): ApiResult<List<BookInviteDto>>
+
+    @POST("app/books/{id}/invites")
+    suspend fun createBookInvite(
+        @Path("id") id: Long,
+        @Body request: InviteCreateDto
+    ): ApiResult<BookInviteDto>
+
+    @DELETE("app/books/{id}/invites/{code}")
+    suspend fun revokeBookInvite(
+        @Path("id") id: Long,
+        @Path("code") code: String
+    ): ApiResult<Unit>
+
+    @POST("app/books/join")
+    suspend fun joinBook(@Body request: JoinBookDto): ApiResult<BookDto>
 
     @GET("app/accounts")
     suspend fun accounts(@Query("bookId") bookId: Long): ApiResult<List<AccountDto>>
@@ -125,6 +180,14 @@ interface ApiService {
 
     @GET("app/reports/assets")
     suspend fun reportAssets(@Query("bookId") bookId: Long): ApiResult<AssetReportDto>
+
+    /** 家庭账本「谁花了多少」 */
+    @GET("app/reports/member")
+    suspend fun reportMember(
+        @Query("bookId") bookId: Long,
+        @Query("startTime") startTime: String? = null,
+        @Query("endTime") endTime: String? = null
+    ): ApiResult<MemberReportDto>
 
     /* ---------------- 预算 ---------------- */
 

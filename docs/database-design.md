@@ -1,8 +1,8 @@
 # 记账系统 - 数据库设计
 
-> 版本：v1.0
+> 版本：v1.1（新增家庭多人记账：邀请码、成员称呼、记账人）
 > 数据库：PostgreSQL 16
-> 更新日期：2026-10-14
+> 更新日期：2026-10-15
 
 ## 1. 设计约定
 
@@ -20,15 +20,28 @@
 ## 2. ER 关系
 
 ```
-user 1 ──< user_book >── 1 book
+user 1 ──< book_member >── 1 book 1 ──< book_invite (邀请码，拉人入口)
                             │
                             ├──< account        (账户：现金/银行卡/支付宝…)
                             ├──< category       (分类：餐饮/交通…，树形)
                             └──< transaction    (交易流水，核心表)
                                     ├─ account_id
                                     ├─ category_id
+                                    ├─ created_by   (记账人，家庭账本按人统计)
                                     └─ 支持转账(transfer) / 收入(income) / 支出(expense)
 ```
+
+### 家庭多人记账的模型（重要）
+
+**不引入独立的「家庭 / 团队」实体，账本本身就是团队**：
+
+- `个人账本`（`t_book.type = 0`）：成员表里只有所有者自己，数据**仅自己可见**；
+- `家庭 / 共享账本`（`t_book.type = 1`）：所有成员都能看到账本内的每一笔收支；
+- 「家庭共同财产」= 家庭账本里的账户；「私房钱」= 个人账本里的账户。**账户不跨账本**，隐私边界天然清晰；
+- 用户之间通过**邀请码**组队：所有者在账本里生成一个 code，家人输入 code 即成为 `t_book_member` 的一员；
+- 一笔交易记录 `created_by`（记账人），用于「谁记的」展示与按成员统计。
+
+「个人用」与「多人用」不是两套模式，而是同一套账本模型下 `type` 的差异。
 
 ## 3. 表结构
 
@@ -57,7 +70,7 @@ user 1 ──< user_book >── 1 book
 | name | varchar(64) | 账本名 |
 | icon | varchar(64) | 图标 |
 | currency | varchar(8) | 本位币，默认 CNY |
-| type | smallint | 0=个人 1=家庭 2=共享 |
+| type | smallint | **0=个人（仅自己可见） 1=家庭/共享（成员互相可见）** |
 | owner_id | bigint | 创建者 |
 | remark | varchar(255) | 备注 |
 | version | int | 乐观锁 |
@@ -71,9 +84,32 @@ user 1 ──< user_book >── 1 book
 | book_id | bigint | 账本 |
 | user_id | bigint | 成员 |
 | role | smallint | 0=只读 1=可写 2=管理员 |
+| alias | varchar(32) | 家庭内称呼（如「爸爸」），为空时展示昵称 |
+| joined_at | timestamptz | 加入时间 |
 | 审计字段 | - | 同上 |
 
 唯一索引：`uk_book_user (book_id, user_id, deleted)`
+
+> 所有者不出现在本表里（`t_book.owner_id` 已表达），成员数 = 1 + 本表记录数。
+
+### 3.3.1 账本邀请码表 `t_book_invite`（家庭拉人入口）
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| id | bigint PK | 主键 |
+| book_id | bigint | 所属账本 |
+| code | varchar(16) | 邀请码，全局唯一，8 位大写字母数字（去除 0/O/1/I） |
+| role | smallint | 加入后角色 0=只读 1=可写 2=管理员 |
+| expire_at | timestamptz | 过期时间，NULL 表示永不过期 |
+| max_uses | int | 最大使用次数，0 表示不限 |
+| used_count | int | 已使用次数 |
+| status | smallint | 0=已作废 1=有效 |
+| 审计字段 | - | 同上 |
+
+唯一索引：`uk_book_invite_code (code, deleted)`
+索引：`idx_book_invite_book (book_id, deleted)`
+
+> **个人账本不允许生成邀请码**（`type = 0` 时服务端直接拒绝），否则「只有自己」的语义会与成员数自相矛盾。
 
 ### 3.4 账户表 `t_account`
 
@@ -126,6 +162,7 @@ user 1 ──< user_book >── 1 book
 | tags | jsonb | 标签数组 |
 | longitude / latitude | numeric(10,7) | 位置（预留） |
 | source | smallint | 来源：1=手动 2=导入 3=周期自动 |
+| created_by | bigint | **记账人**，家庭账本用于「谁记的」与按成员统计 |
 | 审计字段 + version | - | 同上 |
 
 索引：
@@ -173,4 +210,5 @@ user 1 ──< user_book >── 1 book
 
 - 系统内置分类（`book_id = 0`）：支出（餐饮、交通、购物、居住、娱乐、医疗、教育、通讯、人情、其他）、收入（工资、奖金、投资、红包、其他）。
 - 默认账户：现金、支付宝、微信。
-- 新用户注册时自动创建「默认账本」及上述账户/分类副本。
+- 新用户注册时自动创建一个**个人账本**（`type = 0`，名称「XX的账本」）及上述账户/分类副本。
+  本地未登录时的离线账单在首次登录时**一律迁入该个人账本**，绝不迁入家庭账本。

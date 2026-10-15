@@ -1,0 +1,73 @@
+# 生产环境配置（2 核 2G 轻量应用服务器，PG/Redis 走 Docker，后端 systemd 直跑）
+#
+# 启动方式见 deploy/prod/jizhang-api.service：
+#   java -Xms256m -Xmx512m ... -jar /opt/jizhang/bin/jizhang-api.jar --spring.profiles.active=prod
+#
+# 所有敏感项都来自环境变量（/opt/jizhang/.env），本文件不含任何密码。
+
+spring:
+  datasource:
+    driver-class-name: org.postgresql.Driver
+    # 敏感项全部来自 /opt/jizhang/.env（systemd EnvironmentFile 注入）
+    # stringtype=unspecified 让字符串可以直接写入 jsonb 字段
+    url: jdbc:postgresql://${DB_HOST:127.0.0.1}:${DB_PORT:5432}/${DB_NAME:jizhang}?stringtype=unspecified
+    username: ${DB_USER:jizhang}
+    password: ${DB_PASSWORD}
+    hikari:
+      # 开发默认 20 条连接，2G 机器上每条 PG 后端进程都要占内存，压到 10
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 10000
+      idle-timeout: 300000
+      max-lifetime: 1200000
+
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      timeout: 3000ms
+
+  # schema.sql 幂等（CREATE ... IF NOT EXISTS / ADD COLUMN IF NOT EXISTS），每次启动可安全重跑
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:db/schema.sql
+      continue-on-error: false
+      encoding: UTF-8
+
+mybatis-plus:
+  configuration:
+    # 关掉 SQL 打印：开发 profile 用 StdOutImpl，生产写日志既费 IO 又可能泄露数据
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
+
+server:
+  # 只监听本机，由 Nginx 反代。
+  # 这样 8080 不需要在安全组放行，后端不可能被公网直接扫到。
+  address: 127.0.0.1
+  port: 8080
+  shutdown: graceful
+
+springdoc:
+  # 纯 IP 部署、无域名，接口文档不对公网开放
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+
+logging:
+  level:
+    root: info
+    com.jizhang: info
+  file:
+    name: /var/log/jizhang/jizhang-api.log
+  logback:
+    rollingpolicy:
+      max-file-size: 20MB
+      max-history: 7
+      total-size-cap: 200MB

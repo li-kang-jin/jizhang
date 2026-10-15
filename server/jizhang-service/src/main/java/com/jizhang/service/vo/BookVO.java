@@ -29,6 +29,12 @@ public class BookVO {
     /** 当前用户在账本中的角色：0=只读 1=可写 2=管理员 */
     private Integer myRole;
 
+    /** 成员数（含所有者） */
+    private Integer memberCount;
+
+    /** 是否为我自己的个人账本（type=0 且我是 owner） */
+    private Boolean personal;
+
     private OffsetDateTime createdAt;
 
     public static BookVO from(BookEntity entity) {

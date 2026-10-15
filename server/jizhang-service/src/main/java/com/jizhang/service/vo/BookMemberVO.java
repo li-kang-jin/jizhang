@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import lombok.Data;
 
+import java.time.OffsetDateTime;
+
 @Data
 public class BookMemberVO {
 
@@ -21,4 +23,12 @@ public class BookMemberVO {
 
     /** 是否为账本所有者 */
     private Boolean owner;
+
+    /** 家庭内称呼（如「爸爸」），为空时前端展示昵称 */
+    private String alias;
+
+    private OffsetDateTime joinedAt;
+
+    /** 展示名：优先 alias，其次 nickname，最后 username */
+    private String displayName;
 }

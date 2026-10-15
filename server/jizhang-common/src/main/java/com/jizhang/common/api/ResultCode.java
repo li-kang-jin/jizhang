@@ -24,6 +24,9 @@ public enum ResultCode {
     /* 账本 2xxx */
     BOOK_NOT_FOUND(2001, "账本不存在"),
     BOOK_NO_PERMISSION(2002, "无该账本访问权限"),
+    BOOK_INVITE_INVALID(2003, "邀请码无效或已过期"),
+    BOOK_MEMBER_EXISTS(2004, "你已经是该账本成员"),
+    BOOK_MEMBER_NOT_FOUND(2005, "该成员不存在"),
 
     /* 账户 3xxx */
     ACCOUNT_NOT_FOUND(3001, "账户不存在"),

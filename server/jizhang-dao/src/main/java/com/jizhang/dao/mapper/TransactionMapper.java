@@ -3,6 +3,7 @@ package com.jizhang.dao.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.jizhang.dao.dto.CategoryStatRow;
 import com.jizhang.dao.dto.DailyStatRow;
+import com.jizhang.dao.dto.MemberStatRow;
 import com.jizhang.dao.dto.PeriodStatRow;
 import com.jizhang.dao.dto.SumRow;
 import com.jizhang.dao.entity.TransactionEntity;
@@ -93,6 +94,22 @@ public interface TransactionMapper extends BaseMapper<TransactionEntity> {
             + "GROUP BY period ORDER BY period")
     List<PeriodStatRow> statByPeriod(@Param("bookId") Long bookId,
                                      @Param("pattern") String pattern,
+                                     @Param("start") OffsetDateTime start,
+                                     @Param("end") OffsetDateTime end);
+
+    /**
+     * 按记账人统计收入 / 支出（家庭账本的核心诉求：谁花了多少）。
+     * <p>
+     * 转账（type = 3）不计入收支统计。
+     */
+    @Select("SELECT t.created_by AS user_id, "
+            + "COALESCE(sum(CASE WHEN t.type = 2 THEN t.amount ELSE 0 END), 0) AS income, "
+            + "COALESCE(sum(CASE WHEN t.type = 1 THEN t.amount ELSE 0 END), 0) AS expense, "
+            + "count(*) AS tx_count "
+            + "FROM t_transaction t WHERE t.deleted = 0 AND t.book_id = #{bookId} "
+            + "AND t.trade_time >= #{start} AND t.trade_time < #{end} "
+            + "GROUP BY t.created_by ORDER BY expense DESC")
+    List<MemberStatRow> statByMember(@Param("bookId") Long bookId,
                                      @Param("start") OffsetDateTime start,
                                      @Param("end") OffsetDateTime end);
 

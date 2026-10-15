@@ -17,19 +17,27 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -55,6 +63,8 @@ fun ImportDialog(
     bookId: Long,
     onDismiss: () -> Unit,
     onImported: () -> Unit,
+    /** 清空账单后也会回调，用于刷新「我的」页统计 */
+    onBillsCleared: () -> Unit = {},
     viewModel: ImportViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -68,7 +78,12 @@ fun ImportDialog(
 
     val parsed = state.parsed
     val summary = state.summary
-    val showActions = parsed != null && summary == null && !state.parsing && !state.importing
+    val cleared = state.cleared
+    val busy = state.parsing || state.importing || state.clearing
+    val showActions = parsed != null && summary == null && !busy
+    var confirmClear by remember { mutableStateOf(false) }
+
+    LaunchedEffect(cleared) { if (cleared != null) onBillsCleared() }
 
     AppFullScreenDialog(onDismissRequest = onDismiss) {
         // safeDialogContent：底部让出系统手势区，否则「确认导入」按钮会被压住
@@ -99,8 +114,19 @@ fun ImportDialog(
                         onDismiss()
                     }
 
-                    state.parsing || state.importing -> LoadingCard(
-                        if (state.parsing) "正在解析文件…" else "正在导入…"
+                    cleared != null -> ClearedCard(
+                        count = cleared.count,
+                        synced = cleared.synced,
+                        onPick = { launcher.launch(OPEN_DOCUMENT_MIME) },
+                        onDone = viewModel::consumeCleared
+                    )
+
+                    busy -> LoadingCard(
+                        when {
+                            state.parsing -> "正在解析文件…"
+                            state.importing -> "正在导入…"
+                            else -> "正在清空账单…"
+                        }
                     )
 
                     parsed != null -> PreviewContent(fileName = state.fileName, parsed = parsed)
@@ -109,6 +135,12 @@ fun ImportDialog(
                         fileName = state.fileName,
                         onPick = { launcher.launch(OPEN_DOCUMENT_MIME) }
                     )
+                }
+
+                // 导入的源数据有问题时的兜底：先清空本账本账单，再导入修正后的文件
+                if (state.billCount > 0 && !busy) {
+                    Spacer(Modifier.height(14.dp))
+                    ClearCard(count = state.billCount, onClear = { confirmClear = true })
                 }
 
                 state.error?.let { message ->
@@ -145,6 +177,86 @@ fun ImportDialog(
             }
         }
     }
+
+    if (confirmClear) {
+        AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            title = { Text("清空本账本账单") },
+            text = {
+                Text(
+                    "将删除当前账本的 ${state.billCount} 条账单；已同步到云端的会一并删除，" +
+                        "账户余额会自动回滚。此操作不可撤销。"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmClear = false
+                    viewModel.clearBills()
+                }) {
+                    Text("确认清空", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmClear = false }) { Text("取消") }
+            }
+        )
+    }
+}
+
+/** 清空本账本账单：导入源数据有问题时的兜底入口 */
+@Composable
+private fun ClearCard(count: Int, onClear: () -> Unit) {
+    SectionCard("重新导入前清空旧数据") {
+        Text(
+            text = "当前账本已有 $count 条账单。若旧数据的时间、金额不对，可以先清空再导入修正后的文件；" +
+                "已同步到云端的账单会一并删除，账户余额自动回滚。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(12.dp))
+        OutlinedButton(
+            onClick = onClear,
+            shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.outlinedButtonColors(
+                contentColor = MaterialTheme.colorScheme.error
+            ),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Icon(Icons.Filled.DeleteSweep, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.size(8.dp))
+            Text("清空本账本账单（$count 条）")
+        }
+    }
+}
+
+/** 清空完成后的汇报 */
+@Composable
+private fun ClearedCard(count: Int, synced: Boolean, onPick: () -> Unit, onDone: () -> Unit) {
+    SectionCard("已清空") {
+        InfoRow("删除账单", "$count 条")
+        Spacer(Modifier.height(10.dp))
+        Text(
+            text = if (synced) {
+                "本地与云端的账单都已删除，账户余额已回滚。现在可以导入修正后的 CSV 了。"
+            } else {
+                "本地已清空；云端删除暂未同步成功（可能网络不通），下次同步会自动补推。"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(16.dp))
+        Button(
+            onClick = onPick,
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Icon(Icons.Filled.UploadFile, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.size(8.dp))
+            Text("选择 CSV 文件")
+        }
+        Spacer(Modifier.height(4.dp))
+        TextButton(onClick = onDone, modifier = Modifier.fillMaxWidth()) { Text("知道了") }
+    }
 }
 
 @Composable
@@ -159,7 +271,9 @@ private fun GuideCard(fileName: String?, onPick: () -> Unit) {
         Spacer(Modifier.height(12.dp))
         Text(
             text = "· 列顺序可不同，按表头名称自动识别\n" +
+                "· 仅支持 CSV 文本（Excel 请另存为「CSV UTF-8（逗号分隔）」）\n" +
                 "· 编码支持 UTF-8 与 GBK\n" +
+                "· 日期列可带时间（如 2026/10/15 16:20），不带时间按当天 12:00 计\n" +
                 "· 账户、分类不存在时会自动新建\n" +
                 "· 重复导入同一份文件不会产生重复账单",
             style = MaterialTheme.typography.bodySmall,

@@ -27,6 +27,13 @@ data class LocalTransaction(
     val remark: String? = null,
     /** 标签，多个用逗号分隔（账单导入的「标签」列落在这里） */
     val tags: String? = null,
+    /**
+     * 记账人用户 ID。
+     * <p>
+     * 家庭账本里用来显示「这笔记的是谁记的」，以及统计页按成员汇总。
+     * 服务端从同步接口下发；本地离线记账时为 null（同步后回填）。
+     */
+    val createdBy: Long? = null,
     /** 是否待同步到服务端 */
     val pendingSync: Boolean = true,
     /**

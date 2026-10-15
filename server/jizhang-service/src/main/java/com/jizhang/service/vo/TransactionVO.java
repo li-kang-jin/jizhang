@@ -47,6 +47,10 @@ public class TransactionVO {
 
     private Integer source;
 
+    /** 记账人（家庭账本里用于展示「谁记的」与按成员统计） */
+    @JsonSerialize(using = ToStringSerializer.class)
+    private Long createdBy;
+
     private OffsetDateTime updatedAt;
 
     public static TransactionVO from(TransactionEntity entity) {
@@ -68,6 +72,7 @@ public class TransactionVO {
         vo.setLongitude(entity.getLongitude());
         vo.setLatitude(entity.getLatitude());
         vo.setSource(entity.getSource());
+        vo.setCreatedBy(entity.getCreatedBy());
         vo.setUpdatedAt(entity.getUpdatedAt());
         return vo;
     }

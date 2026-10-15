@@ -1,0 +1,75 @@
+# 记账系统后端 —— systemd 单元
+#
+# 部署到 /etc/systemd/system/jizhang-api.service
+# 由 deploy/prod/provision.sh 自动安装。
+#
+# 设计要点（2 核 2G 机器）：
+#   1. 强制限制 JVM 堆：Spring Boot 默认会按物理内存推算堆大小，2G 机器上
+#      不限制的话 JVM 可能去要 1G+，直接把 PG 挤爆被 OOM Killer 杀掉。
+#   2. 用 SerialGC：堆小于 1G、核心数少时，SerialGC 的额外内存开销最小。
+#   3. MemoryMax/MemoryHigh：cgroup 层面的最后一道保险。
+#   4. -XX:+ExitOnOutOfMemoryError：堆溢出时进程直接退出，交给 Restart=always
+#      拉起，好过留在一个半死不活的状态里。
+#   5. 只监听 127.0.0.1:8080（见 application-prod.yml），公网访问一律走 Nginx。
+
+[Unit]
+Description=Jizhang API (Spring Boot)
+Documentation=file:///opt/jizhang/
+After=network-online.target docker.service
+Wants=network-online.target
+# 数据库与缓存在容器里，docker 先起来
+Requires=docker.service
+
+[Service]
+Type=simple
+User=jizhang
+Group=jizhang
+WorkingDirectory=/opt/jizhang
+
+# 密码 / JWT 密钥都在这里，文件权限 600 root:root，systemd 以 root 身份读取后注入
+EnvironmentFile=/opt/jizhang/.env
+
+# 等 PostgreSQL 端口可用再启动，避免容器还没就绪就疯狂重启刷日志。
+# 逻辑放在独立脚本里：systemd 会对 Exec* 行做 $ 变量展开，内联 $(seq ...) 会被误判。
+ExecStartPre=/opt/jizhang/wait-for-db.sh
+
+# 默认 TimeoutStartSec 是 90 秒，比脚本最长等待（120 秒）还短，必须放宽
+TimeoutStartSec=180
+
+ExecStart=/usr/bin/java \
+  -Xms256m \
+  -Xmx512m \
+  -XX:MaxMetaspaceSize=192m \
+  -XX:MaxDirectMemorySize=64m \
+  -Xss512k \
+  -XX:+UseSerialGC \
+  -XX:+ExitOnOutOfMemoryError \
+  -Duser.timezone=UTC \
+  -Dfile.encoding=UTF-8 \
+  -jar /opt/jizhang/bin/jizhang-api.jar \
+  --spring.profiles.active=prod
+
+Restart=always
+RestartSec=10
+# SIGTERM 正常退出（spring.shutdown=graceful）
+SuccessExitStatus=143
+TimeoutStopSec=40
+
+# —— 内存上限：cgroup 保险丝 ——
+MemoryAccounting=true
+MemoryHigh=800M
+MemoryMax=1G
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=jizhang-api
+
+# —— 安全加固 ——
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/log/jizhang
+
+[Install]
+WantedBy=multi-user.target

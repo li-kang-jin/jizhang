@@ -19,6 +19,8 @@ data class TransactionDto(
     val images: List<String> = emptyList(),
     val tags: List<String> = emptyList(),
     val source: Int = 1,
+    /** 记账人用户 ID（家庭账本里用于展示「谁记的」与按成员统计） */
+    val createdBy: Long? = null,
     val updatedAt: String? = null
 )
 

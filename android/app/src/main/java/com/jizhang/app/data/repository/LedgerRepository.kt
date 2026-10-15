@@ -34,7 +34,7 @@ class LedgerRepository @Inject constructor(
      * @return 本次写入本地的交易条数
      */
     suspend fun pull(bookId: Long): Int {
-        val cursor = tokenStore.lastSyncAt()?.takeIf { it.isNotBlank() }
+        val cursor = tokenStore.lastSyncAt(bookId)?.takeIf { it.isNotBlank() }
         val result = api.syncPull(
             SyncPullRequest(
                 deviceId = tokenStore.deviceId(),
@@ -75,14 +75,14 @@ class LedgerRepository @Inject constructor(
         // 用服务端返回的 nextCursor 推进游标（不要用 serverTime，分页截断时会漏数据）
         val next = data.nextCursor?.takeIf { it.isNotBlank() }
             ?: data.serverTime?.takeIf { it.isNotBlank() }
-        next?.let { tokenStore.saveLastSyncAt(it) }
+        next?.let { tokenStore.saveLastSyncAt(bookId, it) }
 
         return data.transactions.size
     }
 
-    /** 全量同步：清空游标后重新拉取 */
+    /** 全量同步：清空该账本的游标后重新拉取 */
     suspend fun fullPull(bookId: Long): Int {
-        tokenStore.saveLastSyncAt("")
+        tokenStore.saveLastSyncAt(bookId, "")
         return pull(bookId)
     }
 }

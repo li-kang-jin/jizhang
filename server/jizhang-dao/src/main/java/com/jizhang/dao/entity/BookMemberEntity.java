@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 
+import java.time.OffsetDateTime;
+
 /**
  * 账本成员（支持共享账本）。
  */
@@ -18,4 +20,10 @@ public class BookMemberEntity extends BaseEntity {
 
     /** 0=只读 1=可写 2=管理员 */
     private Integer role;
+
+    /** 家庭内称呼（如「爸爸」），为空时前端展示昵称 */
+    private String alias;
+
+    /** 加入时间 */
+    private OffsetDateTime joinedAt;
 }

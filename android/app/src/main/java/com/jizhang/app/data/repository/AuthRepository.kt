@@ -2,11 +2,13 @@ package com.jizhang.app.data.repository
 
 import com.jizhang.app.data.local.JizhangDatabase
 import com.jizhang.app.data.local.dao.AccountDao
+import com.jizhang.app.data.local.dao.BookDao
 import com.jizhang.app.data.local.dao.CategoryDao
 import com.jizhang.app.data.local.dao.TransactionDao
 import com.jizhang.app.data.prefs.TokenStore
 import com.jizhang.app.data.remote.ApiService
 import com.jizhang.app.data.remote.dto.AccountSaveDto
+import com.jizhang.app.data.remote.dto.BookSaveDto
 import com.jizhang.app.data.remote.dto.LoginRequest
 import com.jizhang.app.data.remote.dto.RegisterRequest
 import com.jizhang.app.data.remote.dto.UserDto
@@ -25,6 +27,7 @@ data class MigrationSummary(
 class AuthRepository @Inject constructor(
     private val api: ApiService,
     private val tokenStore: TokenStore,
+    private val bookDao: BookDao,
     private val transactionDao: TransactionDao,
     private val accountDao: AccountDao,
     private val categoryDao: CategoryDao
@@ -32,6 +35,10 @@ class AuthRepository @Inject constructor(
 
     /**
      * 登录，并把本地账本的数据迁移到服务端账本。
+     * <p>
+     * **迁移目标固定是「我的个人账本」**（`type = 0` 且 owner 是自己），没有就新建一个。
+     * 不能像以前那样取「账号下的第一个账本」—— 家庭共享后第一个账本很可能是家庭账本，
+     * 那会把用户离线期间记的私人账单直接暴露给全家人。
      * <p>
      * 迁移策略：按「名称 + 类型」把本地账户匹配到服务端，匹配不到就在服务端新建，
      * 拿到服务端 ID 后回写本地交易，最后把本地账本的记录整体改挂到服务端账本下。
@@ -46,12 +53,26 @@ class AuthRepository @Inject constructor(
         }
 
         tokenStore.saveLogin(token)
+        val myUserId = token.user.id
 
-        val books = api.books().data.orEmpty()
-        val book = books.firstOrNull() ?: error("该账号还没有账本，请先注册一个新账号")
-        tokenStore.saveBookId(book.id)
+        var books = api.books().data.orEmpty()
+        if (books.isEmpty()) {
+            error("该账号还没有账本，请先注册一个新账号")
+        }
 
-        migrateLocalData(book.id)
+        // 个人账本：本地账单的唯一合法去处
+        val personal = books.firstOrNull { it.type == 0 && it.ownerId == myUserId }
+            ?: api.createBook(BookSaveDto(name = "我的账本", type = 0)).data
+            ?: error("创建个人账本失败")
+        if (books.none { it.id == personal.id }) {
+            books = books + personal
+        }
+
+        bookDao.clearRemote()
+        bookDao.upsertAll(books.mapIndexed { index, dto -> dto.toLocal(myUserId, index) })
+        tokenStore.saveCurrentBookId(personal.id)
+
+        migrateLocalData(personal.id)
     }
 
     suspend fun register(username: String, password: String, nickname: String): Result<Unit> =
@@ -67,6 +88,7 @@ class AuthRepository @Inject constructor(
     }
 
     suspend fun logout() {
+        bookDao.clearRemote()
         tokenStore.clear()
     }
 

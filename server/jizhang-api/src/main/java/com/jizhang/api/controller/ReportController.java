@@ -5,6 +5,7 @@ import com.jizhang.common.constant.CommonConstants;
 import com.jizhang.service.ReportService;
 import com.jizhang.service.vo.AssetReportVO;
 import com.jizhang.service.vo.CategoryReportVO;
+import com.jizhang.service.vo.MemberReportVO;
 import com.jizhang.service.vo.ReportOverviewVO;
 import com.jizhang.service.vo.TrendItemVO;
 import io.swagger.v3.oas.annotations.Operation;
@@ -63,5 +64,14 @@ public class ReportController {
     @GetMapping("/assets")
     public Result<AssetReportVO> assets(@RequestParam Long bookId) {
         return Result.success(reportService.assets(bookId));
+    }
+
+    @Operation(summary = "成员收支统计", description = "家庭账本「谁花了多少」，按记账人聚合")
+    @GetMapping("/member")
+    public Result<MemberReportVO> member(
+            @RequestParam Long bookId,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime startTime,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime endTime) {
+        return Result.success(reportService.memberReport(bookId, startTime, endTime));
     }
 }

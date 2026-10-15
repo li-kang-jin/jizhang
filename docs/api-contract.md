@@ -67,6 +67,9 @@
 | 1004 | Token 已失效，请重新登录 |
 | 2001 | 账本不存在 |
 | 2002 | 无该账本访问权限 |
+| 2003 | 邀请码无效或已过期 |
+| 2004 | 你已经是该账本成员 |
+| 2005 | 该成员不存在 |
 | 3001 | 账户不存在 |
 | 3002 | 账户余额不足 |
 | 4001 | 分类不存在 |
@@ -131,20 +134,100 @@
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/app/books` | 我的账本列表 |
+| GET | `/app/books` | 我的账本列表（含 `type` / `myRole` / `memberCount` / `personal`） |
 | POST | `/app/books` | 创建账本 |
 | GET | `/app/books/{id}` | 账本详情 |
 | PUT | `/app/books/{id}` | 修改账本 |
-| DELETE | `/app/books/{id}` | 删除账本（软删） |
+| DELETE | `/app/books/{id}` | 删除账本（软删，仅所有者） |
 | GET | `/app/books/{id}/members` | 成员列表 |
-| POST | `/app/books/{id}/members` | 邀请成员 |
-| DELETE | `/app/books/{id}/members/{userId}` | 移除成员 |
+| POST | `/app/books/{id}/members` | 直接按 userId 添加成员（仅所有者） |
+| PUT | `/app/books/{id}/members/{userId}` | 修改成员角色 / 家庭内称呼（仅所有者） |
+| DELETE | `/app/books/{id}/members/{userId}` | 移除成员（仅所有者） |
+| GET | `/app/books/{id}/invites` | 有效邀请码列表（仅所有者） |
+| POST | `/app/books/{id}/invites` | 生成邀请码（仅所有者） |
+| DELETE | `/app/books/{id}/invites/{code}` | 作废邀请码（仅所有者） |
+| POST | `/app/books/join` | **凭邀请码加入账本** |
 
 创建请求：
 
 ```json
 { "name": "家庭账本", "currency": "CNY", "type": 1, "icon": "home", "remark": "" }
 ```
+
+> `type`：`0=个人`（仅自己可见）、`1=家庭/共享`（成员互相可见）。
+> **个人账本不能生成邀请码**，服务端返回 `400`：`个人账本不能邀请成员，请先创建家庭账本`。
+
+账本列表响应 `data`：
+
+```json
+[
+  {
+    "id": "1836745123456789",
+    "name": "我的账本",
+    "type": 0,
+    "ownerId": "1836745100000001",
+    "myRole": 2,
+    "memberCount": 1,
+    "personal": true
+  }
+]
+```
+
+### 3.1 生成邀请码
+
+`POST /app/books/{id}/invites`
+
+```json
+{ "role": 1, "expireDays": 7, "maxUses": 1 }
+```
+
+`expireDays = 0` 表示永不过期，`maxUses = 0` 表示不限次数。响应 `data`：
+
+```json
+{ "code": "FAM8K3QA", "role": 1, "expireAt": "2026-10-22T08:00:00Z", "maxUses": 1, "usedCount": 0 }
+```
+
+### 3.2 凭邀请码加入
+
+`POST /app/books/join`
+
+```json
+{ "code": "fam8k3qa" }
+```
+
+响应 `data` 为加入后的账本（同账本对象）。失败时 `code = 2003 邀请码无效或已过期`。
+已是成员时幂等返回，不消耗邀请码次数。
+
+### 3.3 成员
+
+成员列表响应 `data`：
+
+```json
+[
+  {
+    "userId": "1836745100000001",
+    "username": "zhangsan",
+    "nickname": "张三",
+    "alias": "爸爸",
+    "displayName": "爸爸",
+    "role": 2,
+    "owner": true,
+    "joinedAt": "2026-10-14T08:00:00Z"
+  }
+]
+```
+
+> `displayName` 由服务端算好：优先 `alias`（家庭内称呼），其次 `nickname`，最后 `username`。
+> **家庭账本内 `role >= 1` 的成员可以增删改任意交易**（家庭内部互信），操作留痕在 `updated_by`；
+> `role = 0` 为只读。
+
+修改成员：`PUT /app/books/{id}/members/{userId}`
+
+```json
+{ "role": 2, "alias": "妈妈" }
+```
+
+两字段均可为空表示不修改；`alias` 传空串表示清除称呼。不能修改所有者的角色。
 
 ---
 
@@ -226,7 +309,8 @@
 
 转账（`type=3`）时 `amount` 为转出金额，`toAccountId` 必填，`categoryId` 忽略。
 
-响应中的 `id` 均以字符串返回。
+响应中的 `id` 均以字符串返回，并额外带回 **`createdBy`（记账人用户 ID）**，
+家庭账本用它展示「谁记的」以及做按成员统计。
 
 ---
 
@@ -238,6 +322,7 @@
 | GET | `/app/reports/category?bookId=&type=1&startTime=&endTime=` | 分类占比（饼图） |
 | GET | `/app/reports/trend?bookId=&granularity=day&startTime=&endTime=` | 收支趋势（折线图） |
 | GET | `/app/reports/assets?bookId=` | 账户资产分布（柱状/饼图） |
+| GET | `/app/reports/member?bookId=&startTime=&endTime=` | **按成员统计收支**（家庭账本「谁花了多少」） |
 
 `overview` 响应：
 
@@ -262,6 +347,30 @@
   ]
 }
 ```
+
+`member` 响应（按交易的记账人 `created_by` 聚合，转账不计入）：
+
+```json
+{
+  "totalIncome": 1500000,
+  "totalExpense": 823400,
+  "items": [
+    {
+      "userId": "1836745100000001",
+      "nickname": "张三",
+      "alias": "爸爸",
+      "displayName": "爸爸",
+      "income": 1500000,
+      "expense": 520000,
+      "balance": 980000,
+      "count": 42
+    }
+  ]
+}
+```
+
+> 客户端同样会把这套统计**在本地算一遍**（交易上的 `createdBy` + 缓存的成员名单），
+> 因此断网、未登录也能看到「谁花了多少」。
 
 ---
 
@@ -339,13 +448,18 @@
 1. 通用响应 / 全局异常 / 参数校验 / 链路追踪（traceId）
 2. 认证模块（注册、登录、刷新令牌、登出、当前用户）
 3. 账本 / 账户 / 分类 / 交易的完整 CRUD，交易写操作自动维护账户余额
-4. 账本共享成员管理
-5. 管理后台：管理员登录、用户查询与启用/禁用、账本查询、交易查询、平台总览与增长趋势
-6. SpringDoc 在线接口文档（`/swagger-ui.html`）
+4. 账本共享成员管理：成员列表、修改角色 / 家庭内称呼、移除成员
+5. **家庭多人记账**：邀请码生成 / 查看 / 作废 / 凭码加入；账本 `type` 区分个人与家庭；
+   交易带 `createdBy`；`/app/reports/member` 按成员统计「谁花了多少」
+6. 管理后台：管理员登录、用户查询与启用/禁用、账本查询、交易查询、平台总览与增长趋势
+7. SpringDoc 在线接口文档（`/swagger-ui.html`）
 
 ### 待实现（阶段二）
 
-1. `/app/reports/*` C 端统计报表：总览、分类占比、收支趋势、资产分布
-2. `/app/sync/*` 多端同步：增量拉取、批量推送、冲突处理
-3. 周期账单、预算管理、票据上传（对象存储）
-4. 令牌黑名单切换为 Redis 实现（当前为单机内存实现）
+1. 周期账单、票据上传（对象存储）
+2. 令牌黑名单切换为 Redis 实现（当前为单机内存实现）
+3. 家庭多人记账的增强项（V1 刻意不做）：
+   - **待审批加入**：输码后由所有者确认才进账本（当前是输码即加入）
+   - **家庭实体层**：一支成员管多个家庭账本（当前账本即团队，每个家庭账本各自邀请）
+   - **账户级可见性**：共享账本里放「私有账户」（当前私房钱请放个人账本）
+   - 邀请链接 / 二维码分享、加入成功推送通知

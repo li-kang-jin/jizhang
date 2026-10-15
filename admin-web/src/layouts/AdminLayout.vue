@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import type { FormInstance, FormRules } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
+import { adminChangePasswordApi } from '@/api/admin'
 
 const route = useRoute()
 const router = useRouter()
@@ -25,6 +27,71 @@ async function handleLogout() {
     router.push({ name: 'login' })
   } catch {
     // 用户取消，无需处理
+  }
+}
+
+/* ---------------- 修改密码 ---------------- */
+
+const pwdDialogVisible = ref(false)
+const pwdLoading = ref(false)
+const pwdFormRef = ref<FormInstance>()
+
+const pwdForm = reactive({
+  oldPassword: '',
+  newPassword: '',
+  confirmPassword: ''
+})
+
+const pwdRules: FormRules = {
+  oldPassword: [{ required: true, message: '请输入原密码', trigger: 'blur' }],
+  newPassword: [
+    { required: true, message: '请输入新密码', trigger: 'blur' },
+    { min: 6, max: 32, message: '新密码长度需在 6-32 之间', trigger: 'blur' }
+  ],
+  confirmPassword: [
+    { required: true, message: '请再次输入新密码', trigger: 'blur' },
+    {
+      trigger: 'blur',
+      validator: (_rule: unknown, value: string, callback: (error?: string | Error) => void) => {
+        if (value !== pwdForm.newPassword) {
+          callback(new Error('两次输入的新密码不一致'))
+          return
+        }
+        callback()
+      }
+    }
+  ]
+}
+
+function openPwdDialog() {
+  pwdForm.oldPassword = ''
+  pwdForm.newPassword = ''
+  pwdForm.confirmPassword = ''
+  pwdDialogVisible.value = true
+}
+
+async function submitPwdChange() {
+  if (!pwdFormRef.value) {
+    return
+  }
+  const valid = await pwdFormRef.value.validate().catch(() => false)
+  if (!valid) {
+    return
+  }
+  pwdLoading.value = true
+  try {
+    await adminChangePasswordApi({
+      oldPassword: pwdForm.oldPassword,
+      newPassword: pwdForm.newPassword
+    })
+    pwdDialogVisible.value = false
+    ElMessage.success('密码修改成功，请使用新密码重新登录')
+    auth.logout()
+    router.push({ name: 'login' })
+  } catch {
+    // 错误提示已在 axios 拦截器中统一处理
+  } finally {
+    pwdLoading.value = false
   }
 }
 </script>
@@ -66,7 +133,8 @@ async function handleLogout() {
                 <el-dropdown-item disabled>
                   {{ auth.user?.username }}（{{ auth.user?.role }}）
                 </el-dropdown-item>
-                <el-dropdown-item divided @click="handleLogout">退出登录</el-dropdown-item>
+                <el-dropdown-item divided @click="openPwdDialog">修改密码</el-dropdown-item>
+                <el-dropdown-item @click="handleLogout">退出登录</el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>
@@ -77,6 +145,36 @@ async function handleLogout() {
         <router-view />
       </el-main>
     </el-container>
+
+    <el-dialog
+      v-model="pwdDialogVisible"
+      title="修改密码"
+      width="420px"
+      :close-on-click-modal="false"
+      append-to-body
+    >
+      <el-form
+        ref="pwdFormRef"
+        :model="pwdForm"
+        :rules="pwdRules"
+        label-width="88px"
+        @keyup.enter="submitPwdChange"
+      >
+        <el-form-item label="原密码" prop="oldPassword">
+          <el-input v-model="pwdForm.oldPassword" type="password" placeholder="请输入原密码" show-password />
+        </el-form-item>
+        <el-form-item label="新密码" prop="newPassword">
+          <el-input v-model="pwdForm.newPassword" type="password" placeholder="6-32 位字符" show-password />
+        </el-form-item>
+        <el-form-item label="确认密码" prop="confirmPassword">
+          <el-input v-model="pwdForm.confirmPassword" type="password" placeholder="请再次输入新密码" show-password />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="pwdDialogVisible = false">取 消</el-button>
+        <el-button type="primary" :loading="pwdLoading" @click="submitPwdChange">确 定</el-button>
+      </template>
+    </el-dialog>
   </el-container>
 </template>
 

@@ -1,0 +1,88 @@
+# 生产：只跑 PostgreSQL 与 Redis。
+# 后端是 systemd 直跑 jar（见 jizhang-api.service），不容器化 —— 2G 内存下少一层开销。
+#
+# 关键差异（相对 deploy/docker-compose.yml 的开发版）：
+#   1. 端口只绑 127.0.0.1，公网扫不到数据库；安全组也不放行 5432/6379
+#   2. 密码从 /opt/jizhang/.env 读取（compose 会自动加载同目录的 .env）
+#   3. 按 2G 内存调小 PG/Redis 的内存占用
+#
+# 用法：cd /opt/jizhang && docker compose -f docker-compose.prod.yml up -d
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: jizhang-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      # 只绑本机：后端在宿主机上直连 127.0.0.1:5432
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    shm_size: 128mb
+    command:
+      - postgres
+      # —— 2G 内存下的 PG 调优：默认值会让 PG 吃掉大半内存 ——
+      - -c
+      - shared_buffers=192MB
+      - -c
+      - effective_cache_size=768MB
+      - -c
+      - maintenance_work_mem=48MB
+      - -c
+      - work_mem=4MB
+      # 连接池上限 10 + 管理后台少量连接，40 足够
+      - -c
+      - max_connections=40
+      - -c
+      - wal_buffers=8MB
+      - -c
+      - timezone=UTC
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis:7-alpine
+    container_name: jizhang-redis
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      # 限制内存占用，避免 redis 在 2G 机器上无限增长
+      - --maxmemory
+      - 96mb
+      - --maxmemory-policy
+      - allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  postgres-data:
+  redis-data:

@@ -29,6 +29,14 @@ data class SumAmountRow(
     val expense: Long
 )
 
+/** 按记账人聚合的收支结果 */
+data class MemberAmountRow(
+    val createdBy: Long?,
+    val income: Long,
+    val expense: Long,
+    val txCount: Long
+)
+
 @Dao
 interface TransactionDao {
 
@@ -78,9 +86,20 @@ interface TransactionDao {
     @Query("UPDATE local_transaction SET pendingDelete = 1, pendingSync = 0 WHERE id IN (:ids)")
     suspend fun markPendingDelete(ids: List<Long>)
 
+    /** 标记整本账本的账单为「待删除」（导入脏数据清理用） */
+    @Query(
+        "UPDATE local_transaction SET pendingDelete = 1, pendingSync = 0 " +
+            "WHERE bookId = :bookId AND pendingDelete = 0"
+    )
+    suspend fun markAllPendingDelete(bookId: Long): Int
+
     /** 物理删除（仅在删除动作确认同步成功、或清理时使用） */
     @Query("DELETE FROM local_transaction WHERE id IN (:ids)")
     suspend fun deleteByIds(ids: List<Long>)
+
+    /** 物理删除整本账本的账单（仅本地账本清理用：没有服务端副本，不必留墓碑行） */
+    @Query("DELETE FROM local_transaction WHERE bookId = :bookId")
+    suspend fun deleteByBook(bookId: Long)
 
     @Query("UPDATE local_transaction SET pendingSync = 0 WHERE id IN (:ids)")
     suspend fun markSynced(ids: List<Long>)
@@ -126,6 +145,18 @@ interface TransactionDao {
             "AND tradeTime >= :start AND tradeTime < :end GROUP BY period ORDER BY period"
     )
     suspend fun sumByDay(bookId: Long, start: Long, end: Long): List<PeriodAmountRow>
+
+    /** 按记账人聚合收支（家庭账本「谁花了多少」） */
+    @Query(
+        "SELECT createdBy AS createdBy, " +
+            "COALESCE(SUM(CASE WHEN type = 2 THEN amount ELSE 0 END), 0) AS income, " +
+            "COALESCE(SUM(CASE WHEN type = 1 THEN amount ELSE 0 END), 0) AS expense, " +
+            "COUNT(*) AS txCount " +
+            "FROM local_transaction WHERE bookId = :bookId AND pendingDelete = 0 " +
+            "AND tradeTime >= :start AND tradeTime < :end " +
+            "GROUP BY createdBy ORDER BY expense DESC"
+    )
+    suspend fun sumByMember(bookId: Long, start: Long, end: Long): List<MemberAmountRow>
 
     /** 账户作为主账户的净流入（支出/转账为负，收入为正） */
     @Query(

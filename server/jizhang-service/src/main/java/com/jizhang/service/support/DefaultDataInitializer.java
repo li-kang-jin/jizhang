@@ -80,21 +80,33 @@ public class DefaultDataInitializer {
         fillBase(book, userId, now);
         bookMapper.insert(book);
 
+        initForNewBook(book.getId(), userId);
+
+        log.info("用户 {} 初始化完成，默认账本 id={}", userId, book.getId());
+    }
+
+    /**
+     * 为指定账本创建默认账户与收支分类（新建账本时也需要，否则记账页无可选账户）。
+     * 调用方需保证已开启事务。
+     */
+    public void initForNewBook(Long bookId, Long userId) {
+        OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+
         int sort = 0;
-        createAccount(book.getId(), "现金", 1, sort++, userId, now);
-        createAccount(book.getId(), "支付宝", 4, sort++, userId, now);
-        createAccount(book.getId(), "微信", 5, sort, userId, now);
+        createAccount(bookId, "现金", 1, sort++, userId, now);
+        createAccount(bookId, "支付宝", 4, sort++, userId, now);
+        createAccount(bookId, "微信", 5, sort, userId, now);
 
         sort = 0;
         for (CategoryTemplate template : EXPENSE_CATEGORIES) {
-            createCategory(book.getId(), template, 1, sort++, userId, now);
+            createCategory(bookId, template, 1, sort++, userId, now);
         }
         sort = 0;
         for (CategoryTemplate template : INCOME_CATEGORIES) {
-            createCategory(book.getId(), template, 2, sort++, userId, now);
+            createCategory(bookId, template, 2, sort++, userId, now);
         }
 
-        log.info("用户 {} 初始化完成，默认账本 id={}", userId, book.getId());
+        log.info("账本 {} 默认账户与分类创建完成", bookId);
     }
 
     private void createAccount(Long bookId, String name, int type, int sort, Long userId, OffsetDateTime now) {

@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.CloudSync
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Login
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.UploadFile
@@ -45,6 +46,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.jizhang.app.BuildConfig
 import com.jizhang.app.data.prefs.TokenStore
+import com.jizhang.app.data.repository.AuthRepository
 import com.jizhang.app.data.repository.PetRepository
 import com.jizhang.app.data.repository.SyncManager
 import com.jizhang.app.data.repository.TransactionRepository
@@ -66,7 +68,8 @@ class MineViewModel @Inject constructor(
     private val tokenStore: TokenStore,
     private val transactionRepository: TransactionRepository,
     private val petRepository: PetRepository,
-    private val syncManager: SyncManager
+    private val syncManager: SyncManager,
+    private val authRepository: AuthRepository
 ) : ViewModel() {
 
     data class UiState(
@@ -117,21 +120,27 @@ class MineViewModel @Inject constructor(
         viewModelScope.launch { refresh() }
     }
 
+    /** 同步全部账本（个人账本 + 所有家庭账本） */
     fun sync() {
-        val bookId = _state.value.bookId
         if (!_state.value.loggedIn) {
             _state.update { it.copy(message = "登录后即可同步到云端") }
             return
         }
         viewModelScope.launch {
             _state.update { it.copy(syncing = true) }
-            syncManager.sync(bookId)
-                .onSuccess { outcome ->
+            syncManager.syncAll()
+                .onSuccess { summary ->
                     refresh()
+                    val failed = if (summary.failedBooks.isEmpty()) {
+                        ""
+                    } else {
+                        "；失败：${summary.failedBooks.joinToString("、")}"
+                    }
                     _state.update {
                         it.copy(
                             syncing = false,
-                            message = "同步完成：上传 ${outcome.pushed} 条，删除 ${outcome.deleted} 条，拉取 ${outcome.pulled} 条"
+                            message = "同步完成：上传 ${summary.pushed} 条，" +
+                                "删除 ${summary.deleted} 条，拉取 ${summary.pulled} 条$failed"
                         )
                     }
                 }
@@ -143,8 +152,8 @@ class MineViewModel @Inject constructor(
 
     fun logout() {
         viewModelScope.launch {
-            tokenStore.clear()
-            _state.update { it.copy(loggedIn = false, message = "已退出登录，本地账单仍保留") }
+            authRepository.logout()
+            _state.update { it.copy(loggedIn = false) }
         }
     }
 
@@ -157,10 +166,14 @@ class MineViewModel @Inject constructor(
 fun MineScreen(
     bookId: Long,
     loggedIn: Boolean,
+    currentBookName: String?,
+    currentBookShared: Boolean,
     onOpenSettings: () -> Unit,
     onOpenImport: () -> Unit,
+    onOpenBooks: () -> Unit,
     importDone: Int,
     onLoginChanged: (String?) -> Unit,
+    onLoggedOut: () -> Unit,
     viewModel: MineViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -217,6 +230,35 @@ fun MineScreen(
                         Spacer(Modifier.size(4.dp))
                         Text("个性化", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                     }
+                }
+            }
+        }
+
+        item {
+            SectionBox {
+                Text("账本", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(10.dp))
+                InfoRow("当前账本", currentBookName ?: "本地账本")
+                Spacer(Modifier.height(8.dp))
+                InfoRow(
+                    "账本类型",
+                    if (currentBookShared) "家庭账本 · 家人互相可见" else "个人账本 · 仅自己可见"
+                )
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    text = "家庭账本全体成员都能看到彼此的收支；私人开销请记在个人账本里。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(12.dp))
+                Button(
+                    onClick = onOpenBooks,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.size(8.dp))
+                    Text("账本与成员管理")
                 }
             }
         }
@@ -345,6 +387,7 @@ fun MineScreen(
                 TextButton(onClick = {
                     confirmLogout = false
                     viewModel.logout()
+                    onLoggedOut()
                 }) { Text("退出") }
             },
             dismissButton = {

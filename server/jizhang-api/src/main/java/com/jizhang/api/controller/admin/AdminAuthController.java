@@ -3,6 +3,7 @@ package com.jizhang.api.controller.admin;
 import com.jizhang.common.api.Result;
 import com.jizhang.common.constant.CommonConstants;
 import com.jizhang.service.AdminService;
+import com.jizhang.service.dto.ChangePasswordRequest;
 import com.jizhang.service.dto.LoginRequest;
 import com.jizhang.service.vo.TokenVO;
 import io.swagger.v3.oas.annotations.Operation;
@@ -31,5 +32,12 @@ public class AdminAuthController {
     @PostMapping("/login")
     public Result<TokenVO> login(@Valid @RequestBody LoginRequest request) {
         return Result.success(adminService.login(request));
+    }
+
+    @Operation(summary = "修改当前管理员密码")
+    @PostMapping("/password")
+    public Result<Void> changePassword(@Valid @RequestBody ChangePasswordRequest request) {
+        adminService.changePassword(request);
+        return Result.success();
     }
 }

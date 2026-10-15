@@ -4,7 +4,11 @@ import com.jizhang.common.api.Result;
 import com.jizhang.common.constant.CommonConstants;
 import com.jizhang.service.BookService;
 import com.jizhang.service.dto.BookSaveRequest;
+import com.jizhang.service.dto.InviteCreateRequest;
+import com.jizhang.service.dto.JoinBookRequest;
 import com.jizhang.service.dto.MemberAddRequest;
+import com.jizhang.service.dto.MemberUpdateRequest;
+import com.jizhang.service.vo.BookInviteVO;
 import com.jizhang.service.vo.BookMemberVO;
 import com.jizhang.service.vo.BookVO;
 import io.swagger.v3.oas.annotations.Operation;
@@ -79,10 +83,45 @@ public class BookController {
         return Result.success();
     }
 
+    @Operation(summary = "修改成员", description = "修改成员角色或家庭内称呼，仅所有者可操作")
+    @PutMapping("/{id}/members/{userId}")
+    public Result<Void> updateMember(@PathVariable Long id,
+                                     @PathVariable Long userId,
+                                     @Valid @RequestBody MemberUpdateRequest request) {
+        bookService.updateMember(id, userId, request);
+        return Result.success();
+    }
+
     @Operation(summary = "移除成员")
     @DeleteMapping("/{id}/members/{userId}")
     public Result<Void> removeMember(@PathVariable Long id, @PathVariable Long userId) {
         bookService.removeMember(id, userId);
         return Result.success();
+    }
+
+    @Operation(summary = "邀请码列表", description = "仅所有者可查看，只返回未过期且未作废的邀请码")
+    @GetMapping("/{id}/invites")
+    public Result<List<BookInviteVO>> invites(@PathVariable Long id) {
+        return Result.success(bookService.invites(id));
+    }
+
+    @Operation(summary = "生成邀请码", description = "家庭账本拉人入口，仅所有者可操作")
+    @PostMapping("/{id}/invites")
+    public Result<BookInviteVO> createInvite(@PathVariable Long id,
+                                             @Valid @RequestBody InviteCreateRequest request) {
+        return Result.success(bookService.createInvite(id, request));
+    }
+
+    @Operation(summary = "作废邀请码", description = "仅所有者可操作")
+    @DeleteMapping("/{id}/invites/{code}")
+    public Result<Void> revokeInvite(@PathVariable Long id, @PathVariable String code) {
+        bookService.revokeInvite(id, code);
+        return Result.success();
+    }
+
+    @Operation(summary = "凭邀请码加入账本", description = "输入家人分享的邀请码即加入对应账本")
+    @PostMapping("/join")
+    public Result<BookVO> join(@Valid @RequestBody JoinBookRequest request) {
+        return Result.success(bookService.joinByCode(request.getCode()));
     }
 }

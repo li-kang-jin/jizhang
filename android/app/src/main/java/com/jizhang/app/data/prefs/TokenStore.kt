@@ -30,19 +30,27 @@ class TokenStore @Inject constructor(
         val USER_ID = stringPreferencesKey("user_id")
         val USERNAME = stringPreferencesKey("username")
         val NICKNAME = stringPreferencesKey("nickname")
-        val BOOK_ID = stringPreferencesKey("book_id")
-        val LAST_SYNC_AT = stringPreferencesKey("last_sync_at")
+        val CURRENT_BOOK_ID = stringPreferencesKey("current_book_id")
         val DEVICE_ID = stringPreferencesKey("device_id")
+
+        /** 同步游标按账本分开存：多账本各自增量拉取，不能共用一个游标 */
+        fun lastSyncAt(bookId: Long) = stringPreferencesKey("last_sync_at_$bookId")
     }
 
     val isLoggedIn: Flow<Boolean> =
         context.dataStore.data.map { !it[Keys.ACCESS_TOKEN].isNullOrBlank() }
 
-    val bookIdFlow: Flow<Long> =
-        context.dataStore.data.map { it[Keys.BOOK_ID]?.toLongOrNull() ?: 0L }
+    /** 当前账本，0 表示未登录时的本地账本 */
+    val currentBookIdFlow: Flow<Long> =
+        context.dataStore.data.map { it[Keys.CURRENT_BOOK_ID]?.toLongOrNull() ?: 0L }
+
+    suspend fun currentBookId(): Long = context.dataStore.data.first()[Keys.CURRENT_BOOK_ID]?.toLongOrNull() ?: 0L
 
     val nicknameFlow: Flow<String> =
         context.dataStore.data.map { it[Keys.NICKNAME] ?: it[Keys.USERNAME] ?: "" }
+
+    val userIdFlow: Flow<Long> =
+        context.dataStore.data.map { it[Keys.USER_ID]?.toLongOrNull() ?: 0L }
 
     suspend fun accessToken(): String? = context.dataStore.data.first()[Keys.ACCESS_TOKEN]
 
@@ -61,14 +69,15 @@ class TokenStore @Inject constructor(
         }
     }
 
-    suspend fun saveBookId(bookId: Long) {
-        context.dataStore.edit { it[Keys.BOOK_ID] = bookId.toString() }
+    suspend fun saveCurrentBookId(bookId: Long) {
+        context.dataStore.edit { it[Keys.CURRENT_BOOK_ID] = bookId.toString() }
     }
 
-    suspend fun lastSyncAt(): String? = context.dataStore.data.first()[Keys.LAST_SYNC_AT]
+    suspend fun lastSyncAt(bookId: Long): String? =
+        context.dataStore.data.first()[Keys.lastSyncAt(bookId)]
 
-    suspend fun saveLastSyncAt(value: String) {
-        context.dataStore.edit { it[Keys.LAST_SYNC_AT] = value }
+    suspend fun saveLastSyncAt(bookId: Long, value: String) {
+        context.dataStore.edit { it[Keys.lastSyncAt(bookId)] = value }
     }
 
     /** 设备标识，首次使用时生成并固化 */

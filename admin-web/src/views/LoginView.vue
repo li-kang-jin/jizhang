@@ -84,8 +84,6 @@ async function handleSubmit() {
           登 录
         </el-button>
       </el-form>
-
-      <div class="tips">默认管理员账号：admin / admin123456</div>
     </div>
   </div>
 </template>
@@ -128,12 +126,5 @@ async function handleSubmit() {
 .submit-btn {
   width: 100%;
   margin-top: 4px;
-}
-
-.tips {
-  margin-top: 18px;
-  text-align: center;
-  font-size: 12px;
-  color: #a0a4ab;
 }
 </style>

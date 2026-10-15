@@ -2,6 +2,7 @@ package com.jizhang.service;
 
 import com.jizhang.service.vo.AssetReportVO;
 import com.jizhang.service.vo.CategoryReportVO;
+import com.jizhang.service.vo.MemberReportVO;
 import com.jizhang.service.vo.ReportOverviewVO;
 import com.jizhang.service.vo.TrendItemVO;
 
@@ -36,4 +37,11 @@ public interface ReportService {
 
     /** 账户资产分布 */
     AssetReportVO assets(Long bookId);
+
+    /**
+     * 按成员统计收支（家庭账本「谁花了多少」）。
+     * <p>
+     * 统计维度是交易的记账人 {@code created_by}。个人账本也可以调用，只是只有一条记录。
+     */
+    MemberReportVO memberReport(Long bookId, OffsetDateTime startTime, OffsetDateTime endTime);
 }

@@ -57,6 +57,8 @@ import com.jizhang.app.ui.theme.JizhangTheme
 @Composable
 fun BillScreen(
     bookId: Long,
+    /** 家庭账本才显示「谁记的」 */
+    shared: Boolean = false,
     onOpenAccounts: () -> Unit,
     viewModel: BillViewModel = hiltViewModel()
 ) {
@@ -96,7 +98,17 @@ fun BillScreen(
                 item { EmptyHint() }
             } else {
                 items(state.transactions, key = { it.id }) { item ->
-                    TransactionRow(item = item, onDelete = { viewModel.delete(item.id) })
+                    TransactionRow(
+                        item = item,
+                        shared = shared,
+                        // createdBy 为空说明是本机刚记、还没同步的账，那必然是「我」
+                        creatorName = if (!shared) {
+                            null
+                        } else {
+                            item.createdBy?.let { state.memberLabels[it] } ?: "我"
+                        },
+                        onDelete = { viewModel.delete(item.id) }
+                    )
                 }
             }
         }
@@ -252,7 +264,12 @@ private fun EmptyHint() {
 }
 
 @Composable
-private fun TransactionRow(item: LocalTransaction, onDelete: () -> Unit) {
+private fun TransactionRow(
+    item: LocalTransaction,
+    shared: Boolean,
+    creatorName: String?,
+    onDelete: () -> Unit
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -275,6 +292,7 @@ private fun TransactionRow(item: LocalTransaction, onDelete: () -> Unit) {
                 Text(
                     text = buildString {
                         append(formatDateTime(item.tradeTime))
+                        if (shared && !creatorName.isNullOrBlank()) append(" · $creatorName 记的")
                         if (item.pendingSync) append(" · 待同步")
                     },
                     style = MaterialTheme.typography.labelSmall,
@@ -361,7 +379,7 @@ private fun BillPreviewContent(
             item { EmptyHint() }
         } else {
             items(transactions, key = { it.id }) { item ->
-                TransactionRow(item = item, onDelete = {})
+                TransactionRow(item = item, shared = false, creatorName = null, onDelete = {})
             }
         }
     }
