@@ -28,6 +28,19 @@ data class AccountDto(
     val includeInTotal: Int = 1
 )
 
+/** 新增 / 修改账户的请求体 */
+@Serializable
+data class AccountSaveDto(
+    val bookId: Long,
+    val name: String,
+    val type: Int,
+    val initialBalance: Long = 0,
+    val currency: String = "CNY",
+    val icon: String? = null,
+    val sort: Int = 0,
+    val includeInTotal: Int = 1
+)
+
 @Serializable
 data class CategoryDto(
     val id: Long,

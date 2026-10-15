@@ -178,3 +178,32 @@ CREATE TABLE IF NOT EXISTS t_sync_log
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uk_sync_user_device ON t_sync_log (user_id, device_id) WHERE deleted = 0;
 COMMENT ON TABLE t_sync_log IS '多端同步游标表';
+
+-- ---------------------------------------------------------------------------
+-- 预算
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS t_budget
+(
+    id          BIGINT      PRIMARY KEY,
+    book_id     BIGINT      NOT NULL,
+    category_id BIGINT      NOT NULL DEFAULT 0,
+    period      VARCHAR(7)  NOT NULL,
+    amount      BIGINT      NOT NULL,
+    remark      VARCHAR(255),
+    version     INTEGER     NOT NULL DEFAULT 0,
+    created_by  BIGINT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by  BIGINT,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted     SMALLINT    NOT NULL DEFAULT 0
+);
+-- 用 category_id = 0 表示「账本总预算」而不是 NULL，
+-- 否则 PostgreSQL 的唯一索引不约束 NULL，同一周期会插出多条总预算
+CREATE UNIQUE INDEX IF NOT EXISTS uk_budget_book_cat_period
+    ON t_budget (book_id, category_id, period) WHERE deleted = 0;
+CREATE INDEX IF NOT EXISTS idx_budget_book_period
+    ON t_budget (book_id, period) WHERE deleted = 0;
+COMMENT ON TABLE t_budget IS '预算表（按月度周期）';
+COMMENT ON COLUMN t_budget.category_id IS '0=账本总预算，其余为对应分类的预算';
+COMMENT ON COLUMN t_budget.period IS '预算周期，格式 yyyy-MM（UTC）';
+COMMENT ON COLUMN t_budget.amount IS '预算金额（分）';

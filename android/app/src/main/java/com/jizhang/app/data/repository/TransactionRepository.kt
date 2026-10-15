@@ -2,12 +2,12 @@ package com.jizhang.app.data.repository
 
 import com.jizhang.app.data.local.dao.TransactionDao
 import com.jizhang.app.data.local.entity.LocalTransaction
+import com.jizhang.app.data.local.newClientId
 import com.jizhang.app.data.prefs.TokenStore
 import com.jizhang.app.data.remote.ApiService
 import com.jizhang.app.data.remote.dto.SyncPushRequest
 import com.jizhang.app.data.remote.dto.TransactionSaveDto
 import kotlinx.coroutines.flow.Flow
-import kotlin.random.Random
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -36,9 +36,13 @@ class TransactionRepository @Inject constructor(
         accountId: Long,
         categoryId: Long?,
         tradeTime: Long,
-        remark: String?
+        remark: String?,
+        /** 标签，多个用逗号分隔 */
+        tags: String? = null,
+        /** 转账的对方账户（type = 3 时使用） */
+        toAccountId: Long? = null
     ): Long {
-        val id = generateId()
+        val id = newClientId()
         transactionDao.upsert(
             LocalTransaction(
                 id = id,
@@ -46,9 +50,11 @@ class TransactionRepository @Inject constructor(
                 type = type,
                 amount = amount,
                 accountId = accountId,
+                toAccountId = toAccountId,
                 categoryId = categoryId,
                 tradeTime = tradeTime,
                 remark = remark,
+                tags = tags,
                 pendingSync = true,
                 pendingDelete = false
             )
@@ -98,13 +104,6 @@ class TransactionRepository @Inject constructor(
 
     /** 在线新增（不走本地队列，主要用于调试） */
     suspend fun createOnline(dto: TransactionSaveDto) = api.createTransaction(dto)
-
-    /**
-     * 生成客户端主键：毫秒时间戳左移 20 位 + 20 位随机数。
-     * 保证离线创建的唯一性，服务端按该 ID 做幂等写入。
-     */
-    private fun generateId(): Long =
-        (System.currentTimeMillis() shl 20) or Random.nextInt(1 shl 20).toLong()
 }
 
 /** 一次推送的结果 */

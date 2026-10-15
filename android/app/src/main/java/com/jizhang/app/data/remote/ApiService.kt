@@ -1,9 +1,13 @@
 package com.jizhang.app.data.remote
 
 import com.jizhang.app.data.remote.dto.AccountDto
+import com.jizhang.app.data.remote.dto.AccountSaveDto
 import com.jizhang.app.data.remote.dto.ApiResult
 import com.jizhang.app.data.remote.dto.AssetReportDto
 import com.jizhang.app.data.remote.dto.BookDto
+import com.jizhang.app.data.remote.dto.BudgetDto
+import com.jizhang.app.data.remote.dto.BudgetOverviewDto
+import com.jizhang.app.data.remote.dto.BudgetSaveDto
 import com.jizhang.app.data.remote.dto.CategoryDto
 import com.jizhang.app.data.remote.dto.CategoryReportDto
 import com.jizhang.app.data.remote.dto.LoginRequest
@@ -24,6 +28,7 @@ import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.POST
+import retrofit2.http.PUT
 import retrofit2.http.Path
 import retrofit2.http.Query
 
@@ -54,6 +59,18 @@ interface ApiService {
 
     @GET("app/accounts")
     suspend fun accounts(@Query("bookId") bookId: Long): ApiResult<List<AccountDto>>
+
+    @POST("app/accounts")
+    suspend fun createAccount(@Body request: AccountSaveDto): ApiResult<AccountDto>
+
+    @PUT("app/accounts/{id}")
+    suspend fun updateAccount(
+        @Path("id") id: Long,
+        @Body request: AccountSaveDto
+    ): ApiResult<AccountDto>
+
+    @DELETE("app/accounts/{id}")
+    suspend fun deleteAccount(@Path("id") id: Long): ApiResult<Unit>
 
     @GET("app/categories")
     suspend fun categories(
@@ -108,4 +125,27 @@ interface ApiService {
 
     @GET("app/reports/assets")
     suspend fun reportAssets(@Query("bookId") bookId: Long): ApiResult<AssetReportDto>
+
+    /* ---------------- 预算 ---------------- */
+
+    @GET("app/budgets")
+    suspend fun budgets(
+        @Query("bookId") bookId: Long,
+        @Query("period") period: String? = null
+    ): ApiResult<List<BudgetDto>>
+
+    @GET("app/budgets/overview")
+    suspend fun budgetOverview(
+        @Query("bookId") bookId: Long,
+        @Query("period") period: String? = null
+    ): ApiResult<BudgetOverviewDto>
+
+    @POST("app/budgets")
+    suspend fun saveBudget(@Body request: BudgetSaveDto): ApiResult<Long>
+
+    @DELETE("app/budgets/{id}")
+    suspend fun deleteBudget(
+        @Path("id") id: Long,
+        @Query("bookId") bookId: Long
+    ): ApiResult<Unit>
 }

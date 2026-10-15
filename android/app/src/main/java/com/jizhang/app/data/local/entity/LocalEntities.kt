@@ -25,6 +25,8 @@ data class LocalTransaction(
     /** 交易时间（epoch millis） */
     val tradeTime: Long,
     val remark: String? = null,
+    /** 标签，多个用逗号分隔（账单导入的「标签」列落在这里） */
+    val tags: String? = null,
     /** 是否待同步到服务端 */
     val pendingSync: Boolean = true,
     /**
@@ -53,14 +55,63 @@ data class LocalCategory(
     val sort: Int = 0
 )
 
+/**
+ * 本地账户。
+ * <p>
+ * 不存冗余的「当前余额」字段：余额由交易实时聚合得出，
+ * 避免记账/删除/迁移等路径都要维护余额一致性。
+ */
 @Entity(tableName = "local_account", indices = [Index("bookId")])
 data class LocalAccount(
     @PrimaryKey val id: Long,
     val bookId: Long,
     val name: String,
+    /** 1=现金 2=储蓄卡 3=信用卡 4=支付宝 5=微信 6=投资 7=其他 */
     val type: Int,
-    /** 余额（分） */
-    val balance: Long = 0,
+    /** 初始余额（分） */
+    val initialBalance: Long = 0,
     val icon: String? = null,
     val sort: Int = 0
+)
+
+/**
+ * 本地预算。
+ * <p>
+ * 与交易一样走「离线优先」：先写本地并标记待同步，再由同步任务推给服务端。
+ * categoryId 为 0 表示账本总预算。
+ */
+@Entity(
+    tableName = "local_budget",
+    indices = [Index("bookId"), Index("pendingSync")]
+)
+data class LocalBudget(
+    @PrimaryKey val id: Long,
+    val bookId: Long,
+    /** 0 = 账本总预算 */
+    val categoryId: Long = 0L,
+    /** 预算周期，yyyy-MM */
+    val period: String,
+    /** 预算金额（分） */
+    val amount: Long,
+    val remark: String? = null,
+    /** 是否待同步到服务端 */
+    val pendingSync: Boolean = true,
+    /** 本地最后修改时间（epoch millis） */
+    val clientUpdatedAt: Long = System.currentTimeMillis()
+)
+
+/**
+ * 账户 + 实时余额的查询结果（Room 只读投影，非数据库表）。
+ * <p>
+ * 余额 = 初始余额 + 该账户交易的净流入，由 SQL 实时聚合，不落库。
+ */
+data class AccountWithBalance(
+    val id: Long,
+    val bookId: Long,
+    val name: String,
+    val type: Int,
+    val initialBalance: Long,
+    val icon: String?,
+    val sort: Int,
+    val balance: Long
 )

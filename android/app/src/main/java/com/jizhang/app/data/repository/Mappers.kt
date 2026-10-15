@@ -29,6 +29,7 @@ fun TransactionDto.toLocal(): LocalTransaction = LocalTransaction(
     categoryId = categoryId,
     tradeTime = parseIsoToMillis(tradeTime),
     remark = remark,
+    tags = tags.joinToString(",").ifBlank { null },
     pendingSync = false,
     serverUpdatedAt = updatedAt
 )
@@ -43,10 +44,15 @@ fun LocalTransaction.toSaveDto(): TransactionSaveDto = TransactionSaveDto(
     categoryId = categoryId,
     tradeTime = millisToIso(tradeTime),
     remark = remark,
+    tags = tags.toTagList(),
     source = 1,
     // 同步冲突判定以本地修改时间为准
     updatedAt = millisToIso(clientUpdatedAt)
 )
+
+/** 本地逗号分隔的标签 → 标签列表 */
+fun String?.toTagList(): List<String> =
+    this?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
 
 fun CategoryDto.toLocal(): LocalCategory = LocalCategory(
     id = id,
@@ -64,7 +70,7 @@ fun AccountDto.toLocal(): LocalAccount = LocalAccount(
     bookId = bookId,
     name = name,
     type = type,
-    balance = balance,
+    initialBalance = initialBalance,
     icon = icon,
     sort = sort
 )

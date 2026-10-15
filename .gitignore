@@ -4,6 +4,8 @@ target/
 *.jar
 *.war
 !.mvn/wrapper/maven-wrapper.jar
+# Gradle Wrapper 必须入库，否则别人 clone 后无法构建
+!android/gradle/wrapper/gradle-wrapper.jar
 .mvn/timing.properties
 .mvn/wrapper/*.jar
 
@@ -35,6 +37,7 @@ android/.gradle/
 android/build/
 android/app/build/
 android/local.properties
+android/captures/
 android/captures/
 android/.cxx/
 *.apk
