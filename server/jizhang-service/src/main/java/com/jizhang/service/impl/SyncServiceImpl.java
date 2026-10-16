@@ -6,12 +6,16 @@ import com.jizhang.common.context.UserContext;
 import com.jizhang.dao.entity.AccountEntity;
 import com.jizhang.dao.entity.BaseEntity;
 import com.jizhang.dao.entity.BookEntity;
+import com.jizhang.dao.entity.BudgetEntity;
 import com.jizhang.dao.entity.CategoryEntity;
+import com.jizhang.dao.entity.RecurringExpenseEntity;
 import com.jizhang.dao.entity.SyncLogEntity;
 import com.jizhang.dao.entity.TransactionEntity;
 import com.jizhang.dao.mapper.AccountMapper;
 import com.jizhang.dao.mapper.BookMapper;
+import com.jizhang.dao.mapper.BudgetMapper;
 import com.jizhang.dao.mapper.CategoryMapper;
+import com.jizhang.dao.mapper.RecurringExpenseMapper;
 import com.jizhang.dao.mapper.SyncLogMapper;
 import com.jizhang.dao.mapper.TransactionMapper;
 import com.jizhang.service.SyncService;
@@ -22,7 +26,9 @@ import com.jizhang.service.dto.TransactionSaveRequest;
 import com.jizhang.service.support.BookAccessChecker;
 import com.jizhang.service.vo.AccountVO;
 import com.jizhang.service.vo.BookVO;
+import com.jizhang.service.vo.BudgetVO;
 import com.jizhang.service.vo.CategoryVO;
+import com.jizhang.service.vo.RecurringExpenseVO;
 import com.jizhang.service.vo.SyncPullVO;
 import com.jizhang.service.vo.SyncPushVO;
 import com.jizhang.service.vo.TransactionVO;
@@ -58,6 +64,8 @@ public class SyncServiceImpl implements SyncService {
     private final AccountMapper accountMapper;
     private final CategoryMapper categoryMapper;
     private final TransactionMapper transactionMapper;
+    private final BudgetMapper budgetMapper;
+    private final RecurringExpenseMapper recurringExpenseMapper;
     private final SyncLogMapper syncLogMapper;
     private final BookAccessChecker bookAccessChecker;
     private final TransactionService transactionService;
@@ -66,6 +74,8 @@ public class SyncServiceImpl implements SyncService {
                            AccountMapper accountMapper,
                            CategoryMapper categoryMapper,
                            TransactionMapper transactionMapper,
+                           BudgetMapper budgetMapper,
+                           RecurringExpenseMapper recurringExpenseMapper,
                            SyncLogMapper syncLogMapper,
                            BookAccessChecker bookAccessChecker,
                            TransactionService transactionService) {
@@ -73,6 +83,8 @@ public class SyncServiceImpl implements SyncService {
         this.accountMapper = accountMapper;
         this.categoryMapper = categoryMapper;
         this.transactionMapper = transactionMapper;
+        this.budgetMapper = budgetMapper;
+        this.recurringExpenseMapper = recurringExpenseMapper;
         this.syncLogMapper = syncLogMapper;
         this.bookAccessChecker = bookAccessChecker;
         this.transactionService = transactionService;
@@ -101,6 +113,17 @@ public class SyncServiceImpl implements SyncService {
                 .eq(CategoryEntity::getBookId, bookId)
                 .gt(CategoryEntity::getUpdatedAt, since));
 
+        // 预算条数天然很少（单账本 × 周期 × 分类），不做分页
+        List<BudgetEntity> budgets = budgetMapper.selectList(Wrappers.<BudgetEntity>lambdaQuery()
+                .eq(BudgetEntity::getBookId, bookId)
+                .gt(BudgetEntity::getUpdatedAt, since));
+
+        // 固定支出同样条数很少，不需要分页
+        List<RecurringExpenseEntity> recurringExpenses =
+                recurringExpenseMapper.selectList(Wrappers.<RecurringExpenseEntity>lambdaQuery()
+                        .eq(RecurringExpenseEntity::getBookId, bookId)
+                        .gt(RecurringExpenseEntity::getUpdatedAt, since));
+
         List<TransactionEntity> transactions = transactionMapper.selectList(
                 Wrappers.<TransactionEntity>lambdaQuery()
                         .eq(TransactionEntity::getBookId, bookId)
@@ -117,14 +140,19 @@ public class SyncServiceImpl implements SyncService {
         vo.setAccounts(accounts.stream().map(AccountVO::from).toList());
         vo.setCategories(categories.stream().map(CategoryVO::from).toList());
         vo.setTransactions(transactions.stream().map(TransactionVO::from).toList());
+        vo.setBudgets(budgets.stream().map(BudgetVO::from).toList());
+        vo.setRecurringExpenses(recurringExpenses.stream().map(RecurringExpenseVO::from).toList());
         vo.setHasMore(hasMore);
 
         vo.setDeletedBookIds(bookMapper.selectDeletedIdsSince(userId, since));
         vo.setDeletedAccountIds(accountMapper.selectDeletedIdsSince(bookId, since));
         vo.setDeletedCategoryIds(categoryMapper.selectDeletedIdsSince(bookId, since));
         vo.setDeletedTransactionIds(transactionMapper.selectDeletedIdsSince(bookId, since));
+        vo.setDeletedBudgetIds(budgetMapper.selectDeletedIdsSince(bookId, since));
+        vo.setDeletedRecurringExpenseIds(recurringExpenseMapper.selectDeletedIdsSince(bookId, since));
 
-        vo.setNextCursor(resolveNextCursor(vo, books, accounts, categories, transactions, hasMore));
+        vo.setNextCursor(resolveNextCursor(vo, books, accounts, categories, budgets, recurringExpenses,
+                transactions, hasMore));
 
         saveSyncCursor(userId, request.getDeviceId(), vo.getServerTime());
         log.debug("同步拉取: user={}, device={}, book={}, since={}, tx={}, hasMore={}",
@@ -141,6 +169,8 @@ public class SyncServiceImpl implements SyncService {
                                               List<BookEntity> books,
                                               List<AccountEntity> accounts,
                                               List<CategoryEntity> categories,
+                                              List<BudgetEntity> budgets,
+                                              List<RecurringExpenseEntity> recurringExpenses,
                                               List<TransactionEntity> transactions,
                                               boolean hasMore) {
         if (hasMore && !transactions.isEmpty()) {
@@ -154,6 +184,8 @@ public class SyncServiceImpl implements SyncService {
         cursor = maxUpdatedAt(cursor, books);
         cursor = maxUpdatedAt(cursor, accounts);
         cursor = maxUpdatedAt(cursor, categories);
+        cursor = maxUpdatedAt(cursor, budgets);
+        cursor = maxUpdatedAt(cursor, recurringExpenses);
         cursor = maxUpdatedAt(cursor, transactions);
         return cursor == null ? vo.getServerTime() : cursor;
     }

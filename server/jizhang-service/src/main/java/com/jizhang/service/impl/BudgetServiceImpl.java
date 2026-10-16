@@ -13,6 +13,7 @@ import com.jizhang.dao.mapper.TransactionMapper;
 import com.jizhang.service.BudgetService;
 import com.jizhang.service.dto.BudgetSaveRequest;
 import com.jizhang.service.support.BookAccessChecker;
+import com.jizhang.service.support.BudgetPeriod;
 import com.jizhang.service.vo.BudgetOverviewVO;
 import com.jizhang.service.vo.BudgetVO;
 import lombok.extern.slf4j.Slf4j;
@@ -21,9 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
-import java.time.YearMonth;
 import java.time.ZoneOffset;
-import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -47,6 +46,9 @@ public class BudgetServiceImpl implements BudgetService {
 
     private static final String TOTAL_BUDGET_NAME = "总预算";
 
+    /** 预测超支超过这个比例才算「有风险」 */
+    private static final double AT_RISK_RATIO = 1.1d;
+
     private final BudgetMapper budgetMapper;
     private final CategoryMapper categoryMapper;
     private final TransactionMapper transactionMapper;
@@ -63,63 +65,68 @@ public class BudgetServiceImpl implements BudgetService {
     }
 
     @Override
-    public List<BudgetVO> list(Long bookId, String period) {
+    public List<BudgetVO> list(Long bookId, BudgetPeriod period) {
         bookAccessChecker.requireReadable(bookId);
-        YearMonth month = resolveMonth(period);
 
-        List<BudgetEntity> budgets = budgetMapper.selectByPeriod(bookId, month.toString());
-        Map<Long, Long> usedMap = expenseByCategory(bookId, month);
+        List<BudgetEntity> budgets = budgetMapper.selectByPeriod(bookId, period.cycle(), period.start());
+        Map<Long, Long> usedMap = expenseByCategory(bookId, period);
 
         List<BudgetVO> result = new ArrayList<>();
         for (BudgetEntity budget : budgets) {
             if (isTotal(budget.getCategoryId())) {
                 continue;
             }
-            result.add(toVO(budget, null, usedMap.getOrDefault(budget.getCategoryId(), 0L)));
+            result.add(toVO(budget, null, usedMap.getOrDefault(budget.getCategoryId(), 0L), period));
         }
         return result;
     }
 
     @Override
-    public BudgetOverviewVO overview(Long bookId, String period) {
+    public BudgetOverviewVO overview(Long bookId, BudgetPeriod period, LocalDate today) {
         bookAccessChecker.requireReadable(bookId);
-        YearMonth month = resolveMonth(period);
 
-        OffsetDateTime start = startOfMonth(month);
-        OffsetDateTime end = startOfMonth(month.plusMonths(1));
-
-        List<BudgetEntity> budgets = budgetMapper.selectByPeriod(bookId, month.toString());
-        Map<Long, Long> usedMap = expenseByCategory(bookId, month);
+        LocalDate day = today == null ? LocalDate.now(ZoneOffset.UTC) : today;
+        List<BudgetEntity> budgets = budgetMapper.selectByPeriod(bookId, period.cycle(), period.start());
+        Map<Long, Long> usedMap = expenseByCategory(bookId, period);
 
         BudgetEntity totalBudget = budgets.stream()
                 .filter(b -> isTotal(b.getCategoryId()))
                 .findFirst()
                 .orElse(null);
-        SumRow monthSum = transactionMapper.sumIncomeExpense(bookId, start, end);
-        long monthExpense = monthSum == null ? 0L : safe(monthSum.getExpense());
+        SumRow periodSum = transactionMapper.sumIncomeExpense(
+                bookId, startOfDayUtc(period.start()), startOfDayUtc(period.endExclusive()));
+        long periodExpense = periodSum == null ? 0L : safe(periodSum.getExpense());
 
         long totalAmount = totalBudget == null ? 0L : safe(totalBudget.getAmount());
-        long remaining = totalAmount - monthExpense;
+        long remaining = totalAmount - periodExpense;
 
-        LocalDate today = LocalDate.now(ZoneOffset.UTC);
-        int daysInMonth = month.lengthOfMonth();
-        int daysLeft = daysLeft(month, today, daysInMonth);
+        int daysTotal = period.daysTotal();
+        int elapsedDays = elapsedDays(period, day, daysTotal);
+        int daysLeft = daysLeft(period, day, daysTotal);
 
         BudgetOverviewVO vo = new BudgetOverviewVO();
-        vo.setPeriod(month.toString());
+        vo.setCycle(period.cycle());
+        vo.setPeriodStart(period.start());
+        vo.setPeriod(period.label());
         vo.setHasBudget(totalBudget != null);
         vo.setTotalBudgetId(totalBudget == null ? null : totalBudget.getId());
         vo.setTotalBudget(totalAmount);
-        vo.setTotalUsed(monthExpense);
+        vo.setTotalUsed(periodExpense);
         // 未设置总预算时不展示「剩余」，避免出现负数误导用户
         vo.setRemaining(totalAmount == 0 ? 0L : remaining);
-        vo.setUsedRatio(totalAmount == 0 ? null : (double) monthExpense / totalAmount);
-        vo.setExceeded(totalAmount > 0 && monthExpense > totalAmount);
-        vo.setMonthExpense(monthExpense);
-        vo.setDaysInMonth(daysInMonth);
+        vo.setUsedRatio(totalAmount == 0 ? null : (double) periodExpense / totalAmount);
+        vo.setExceeded(totalAmount > 0 && periodExpense > totalAmount);
+        vo.setMonthExpense(periodExpense);
+        vo.setDaysInMonth(daysTotal);
+        vo.setDaysTotal(daysTotal);
         vo.setDaysLeft(daysLeft);
+        vo.setElapsedDays(elapsedDays);
         vo.setDailyAvailable(remaining > 0 && daysLeft > 0 ? remaining / daysLeft : 0L);
-        vo.setSuggestDaily(totalAmount == 0 ? 0L : totalAmount / daysInMonth);
+        vo.setSuggestDaily(totalAmount == 0 ? 0L : totalAmount / daysTotal);
+        vo.setTodayExpense(todayExpense(bookId, day));
+        vo.setBurnRate(burnRate(periodExpense, elapsedDays));
+        vo.setForecastExpense(forecastExpense(periodExpense, elapsedDays, daysLeft));
+        vo.setStatus(status(totalAmount, periodExpense, vo.getForecastExpense()));
 
         Map<Long, CategoryEntity> categoryMap = loadCategories(bookId);
         List<BudgetVO> items = new ArrayList<>();
@@ -129,7 +136,7 @@ public class BudgetServiceImpl implements BudgetService {
                 continue;
             }
             BudgetVO item = toVO(budget, categoryMap.get(budget.getCategoryId()),
-                    usedMap.getOrDefault(budget.getCategoryId(), 0L));
+                    usedMap.getOrDefault(budget.getCategoryId(), 0L), period);
             items.add(item);
             if (Boolean.TRUE.equals(item.getExceeded())) {
                 overruns.add(item);
@@ -144,7 +151,7 @@ public class BudgetServiceImpl implements BudgetService {
     @Transactional(rollbackFor = Exception.class)
     public Long save(BudgetSaveRequest request) {
         bookAccessChecker.requireWritable(request.getBookId());
-        YearMonth month = resolveMonth(request.getPeriod());
+        BudgetPeriod period = BudgetPeriod.resolve(request.getCycle(), request.getPeriodStart(), request.getPeriod());
 
         long categoryId = request.getCategoryId() == null ? TOTAL_BUDGET_CATEGORY : request.getCategoryId();
         if (categoryId < 0) {
@@ -157,14 +164,16 @@ public class BudgetServiceImpl implements BudgetService {
         BudgetEntity exist = budgetMapper.selectOne(Wrappers.<BudgetEntity>lambdaQuery()
                 .eq(BudgetEntity::getBookId, request.getBookId())
                 .eq(BudgetEntity::getCategoryId, categoryId)
-                .eq(BudgetEntity::getPeriod, month.toString())
+                .eq(BudgetEntity::getCycle, period.cycle())
+                .eq(BudgetEntity::getPeriodStart, period.start())
                 .last("limit 1"));
 
         if (exist == null) {
             BudgetEntity entity = new BudgetEntity();
             entity.setBookId(request.getBookId());
             entity.setCategoryId(categoryId);
-            entity.setPeriod(month.toString());
+            entity.setCycle(period.cycle());
+            entity.setPeriodStart(period.start());
             entity.setAmount(request.getAmount());
             entity.setRemark(request.getRemark());
             entity.setVersion(0);
@@ -192,7 +201,7 @@ public class BudgetServiceImpl implements BudgetService {
 
     /* ---------------- 内部方法 ---------------- */
 
-    private BudgetVO toVO(BudgetEntity budget, CategoryEntity category, long used) {
+    private BudgetVO toVO(BudgetEntity budget, CategoryEntity category, long used, BudgetPeriod period) {
         long amount = safe(budget.getAmount());
         long remaining = amount - used;
 
@@ -201,7 +210,9 @@ public class BudgetServiceImpl implements BudgetService {
         vo.setCategoryId(budget.getCategoryId());
         vo.setCategoryName(category == null ? TOTAL_BUDGET_NAME : category.getName());
         vo.setCategoryIcon(category == null ? null : category.getIcon());
-        vo.setPeriod(budget.getPeriod());
+        vo.setCycle(period.cycle());
+        vo.setPeriodStart(period.start());
+        vo.setPeriod(period.label());
         vo.setAmount(amount);
         vo.setUsed(used);
         vo.setRemaining(remaining);
@@ -211,10 +222,10 @@ public class BudgetServiceImpl implements BudgetService {
         return vo;
     }
 
-    /** 当月各分类的支出合计，key 为 categoryId */
-    private Map<Long, Long> expenseByCategory(Long bookId, YearMonth month) {
+    /** 周期内各分类的支出合计，key 为 categoryId */
+    private Map<Long, Long> expenseByCategory(Long bookId, BudgetPeriod period) {
         List<CategoryStatRow> rows = transactionMapper.statByCategory(
-                bookId, TYPE_EXPENSE, startOfMonth(month), startOfMonth(month.plusMonths(1)));
+                bookId, TYPE_EXPENSE, startOfDayUtc(period.start()), startOfDayUtc(period.endExclusive()));
 
         Map<Long, Long> map = new HashMap<>();
         for (CategoryStatRow row : rows) {
@@ -223,6 +234,12 @@ public class BudgetServiceImpl implements BudgetService {
             }
         }
         return map;
+    }
+
+    private long todayExpense(Long bookId, LocalDate today) {
+        SumRow sum = transactionMapper.sumIncomeExpense(
+                bookId, startOfDayUtc(today), startOfDayUtc(today.plusDays(1)));
+        return sum == null ? 0L : safe(sum.getExpense());
     }
 
     private Map<Long, CategoryEntity> loadCategories(Long bookId) {
@@ -245,33 +262,68 @@ public class BudgetServiceImpl implements BudgetService {
     }
 
     /**
-     * 当月剩余天数（含今天）。
-     * 已过去的月份返回 0，未来月份返回整月天数。
+     * 周期内已过天数（含今天）。
+     * 周期未开始为 0，已结束为整个周期长度。
      */
-    private int daysLeft(YearMonth month, LocalDate today, int daysInMonth) {
-        YearMonth current = YearMonth.from(today);
-        if (month.isBefore(current)) {
+    private int elapsedDays(BudgetPeriod period, LocalDate today, int daysTotal) {
+        if (today.isBefore(period.start())) {
             return 0;
         }
-        if (month.isAfter(current)) {
-            return daysInMonth;
+        if (!today.isBefore(period.endExclusive())) {
+            return daysTotal;
         }
-        return daysInMonth - today.getDayOfMonth() + 1;
+        return (int) (today.toEpochDay() - period.start().toEpochDay()) + 1;
     }
 
-    private YearMonth resolveMonth(String period) {
-        if (period == null || period.isBlank()) {
-            return YearMonth.now(ZoneOffset.UTC);
+    /**
+     * 周期内剩余天数（含今天）。
+     * 注意不能写成 {@code daysTotal - elapsedDays + 1}：周期已结束时 elapsedDays == daysTotal，
+     * 那个式子会算出 1，把「已经没有剩余天数」错报成「还剩今天」。
+     */
+    private int daysLeft(BudgetPeriod period, LocalDate today, int daysTotal) {
+        if (today.isBefore(period.start())) {
+            return daysTotal;
         }
-        try {
-            return YearMonth.parse(period);
-        } catch (DateTimeParseException e) {
-            throw new BizException(ResultCode.PARAM_ERROR, "月份格式应为 yyyy-MM");
+        if (!today.isBefore(period.endExclusive())) {
+            return 0;
         }
+        return (int) (period.endExclusive().toEpochDay() - today.toEpochDay());
     }
 
-    private OffsetDateTime startOfMonth(YearMonth month) {
-        return month.atDay(1).atStartOfDay().atOffset(ZoneOffset.UTC);
+    /** 日均消耗（分/天）。周期还没开始时不预测。 */
+    private Double burnRate(long used, int elapsedDays) {
+        return elapsedDays <= 0 ? null : (double) used / elapsedDays;
+    }
+
+    /**
+     * 按当前速度预测期末支出。
+     * <p>
+     * 已花 + 日均 × 今天之后还会剩余的天数。故意**不复用** dailyAvailable（那是「还能花多少」，
+     * 不是「按现状会花多少」），两者语义相反，混用会把预测算成永远不超支。
+     */
+    private Long forecastExpense(long used, int elapsedDays, int daysLeft) {
+        if (elapsedDays <= 0) {
+            return null;
+        }
+        int remainAfterToday = Math.max(daysLeft - 1, 0);
+        return used + Math.round((double) used / elapsedDays * remainAfterToday);
+    }
+
+    private String status(long totalAmount, long used, Long forecast) {
+        if (totalAmount <= 0) {
+            return "NO_BUDGET";
+        }
+        if (used > totalAmount) {
+            return "OVER";
+        }
+        if (forecast != null && forecast > totalAmount * AT_RISK_RATIO) {
+            return "AT_RISK";
+        }
+        return "ON_TRACK";
+    }
+
+    private OffsetDateTime startOfDayUtc(LocalDate date) {
+        return date.atStartOfDay().atOffset(ZoneOffset.UTC);
     }
 
     private boolean isTotal(Long categoryId) {

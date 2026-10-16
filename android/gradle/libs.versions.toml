@@ -15,6 +15,8 @@ retrofitSerialization = "1.0.0"
 okhttp = "4.12.0"
 serialization = "1.7.3"
 coil = "2.7.0"
+# 统计图：Vico（Compose 原生，含 Material 3 主题样式）
+vico = "2.1.3"
 datastore = "1.1.1"
 work = "2.10.0"
 junit = "4.13.2"
@@ -64,6 +66,9 @@ kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 
 # Image
 coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil" }
+
+# Chart
+vico-compose-m3 = { group = "com.patrykandpatrick.vico", name = "compose-m3", version.ref = "vico" }
 
 # Test
 junit = { group = "junit", name = "junit", version.ref = "junit" }

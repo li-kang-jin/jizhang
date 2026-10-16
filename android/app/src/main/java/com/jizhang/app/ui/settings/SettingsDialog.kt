@@ -241,6 +241,52 @@ fun SettingsDialog(
                             )
                         }
                     }
+
+                    Spacer(Modifier.height(14.dp))
+
+                    SectionCard("记账与账单") {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("按键震动反馈", style = MaterialTheme.typography.bodyMedium)
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    text = "记账数字键盘按键时的触感反馈",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = appState.hapticEnabled,
+                                onCheckedChange = appViewModel::setHapticEnabled
+                            )
+                        }
+
+                        Spacer(Modifier.height(16.dp))
+                        TemplatePicker(
+                            title = "记账页模板",
+                            options = listOf(1 to "经典键盘", 2 to "极简速记", 3 to "备注工作台"),
+                            descriptions = mapOf(
+                                1 to "金额大字 + 分类九宫格 + 常驻数字键盘，信息最全",
+                                2 to "金额收进顶栏、分类横滑、键盘铺满，3 秒记一笔",
+                                3 to "卡片表单，备注标签直接展开，键盘按需弹出"
+                            ),
+                            current = appState.recordTemplate,
+                            onSelect = appViewModel::setRecordTemplate
+                        )
+
+                        Spacer(Modifier.height(16.dp))
+                        TemplatePicker(
+                            title = "账单页模板",
+                            options = listOf(1 to "清爽列表", 2 to "信息卡片", 3 to "紧凑单行"),
+                            descriptions = mapOf(
+                                1 to "一行一条，重点看金额",
+                                2 to "卡片式两行布局，信息更完整",
+                                3 to "高密度单行，一屏看更多"
+                            ),
+                            current = appState.billTemplate,
+                            onSelect = appViewModel::setBillTemplate
+                        )
+                    }
                 }
         }
     }
@@ -307,6 +353,66 @@ private fun ThemePicker(current: AppTheme, onSelect: (AppTheme) -> Unit) {
                             Icon(Icons.Filled.Check, contentDescription = null, tint = palette.primary)
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+/** 三选一模板选择器：整行可点，选中项高亮 + 对勾 */
+@Composable
+private fun TemplatePicker(
+    title: String,
+    options: List<Pair<Int, String>>,
+    descriptions: Map<Int, String>,
+    current: Int,
+    onSelect: (Int) -> Unit
+) {
+    Text(title, style = MaterialTheme.typography.labelMedium)
+    Spacer(Modifier.height(8.dp))
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        options.forEach { (value, label) ->
+            val selected = current == value
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(
+                        if (selected) {
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant
+                        }
+                    )
+                    .border(
+                        width = if (selected) 2.dp else 1.dp,
+                        color = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                        shape = RoundedCornerShape(14.dp)
+                    )
+                    .clickable { onSelect(value) }
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                    )
+                    descriptions[value]?.let { desc ->
+                        Text(
+                            text = desc,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                if (selected) {
+                    Icon(
+                        Icons.Filled.Check,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
                 }
             }
         }

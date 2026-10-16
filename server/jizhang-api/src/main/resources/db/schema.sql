@@ -218,26 +218,74 @@ COMMENT ON TABLE t_sync_log IS '多端同步游标表';
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS t_budget
 (
-    id          BIGINT      PRIMARY KEY,
-    book_id     BIGINT      NOT NULL,
-    category_id BIGINT      NOT NULL DEFAULT 0,
-    period      VARCHAR(7)  NOT NULL,
-    amount      BIGINT      NOT NULL,
-    remark      VARCHAR(255),
-    version     INTEGER     NOT NULL DEFAULT 0,
-    created_by  BIGINT,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_by  BIGINT,
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    deleted     SMALLINT    NOT NULL DEFAULT 0
+    id           BIGINT      PRIMARY KEY,
+    book_id      BIGINT      NOT NULL,
+    category_id  BIGINT      NOT NULL DEFAULT 0,
+    -- 周期用「类型 + 首日」表达，结束日由 cycle 推导（首日 + 1 月 / 1 周 / 1 年），
+    -- 不存字符串周期：yyyy-MM / 2026-W42 / 2026 需要分别解析，ISO 周还有跨年归属歧义
+    cycle        SMALLINT    NOT NULL DEFAULT 1,
+    period_start DATE        NOT NULL,
+    amount       BIGINT      NOT NULL,
+    remark       VARCHAR(255),
+    version      INTEGER     NOT NULL DEFAULT 0,
+    created_by   BIGINT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by   BIGINT,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted      SMALLINT    NOT NULL DEFAULT 0
 );
 -- 用 category_id = 0 表示「账本总预算」而不是 NULL，
 -- 否则 PostgreSQL 的唯一索引不约束 NULL，同一周期会插出多条总预算
-CREATE UNIQUE INDEX IF NOT EXISTS uk_budget_book_cat_period
-    ON t_budget (book_id, category_id, period) WHERE deleted = 0;
-CREATE INDEX IF NOT EXISTS idx_budget_book_period
-    ON t_budget (book_id, period) WHERE deleted = 0;
-COMMENT ON TABLE t_budget IS '预算表（按月度周期）';
+CREATE UNIQUE INDEX IF NOT EXISTS uk_budget_book_cat_cycle_start
+    ON t_budget (book_id, category_id, cycle, period_start) WHERE deleted = 0;
+CREATE INDEX IF NOT EXISTS idx_budget_book_period_start
+    ON t_budget (book_id, period_start) WHERE deleted = 0;
+COMMENT ON TABLE t_budget IS '预算表（每月 / 每周 / 每年）';
 COMMENT ON COLUMN t_budget.category_id IS '0=账本总预算，其余为对应分类的预算';
-COMMENT ON COLUMN t_budget.period IS '预算周期，格式 yyyy-MM（UTC）';
+COMMENT ON COLUMN t_budget.cycle IS '周期类型：1=每月 2=每周（ISO 周）3=每年';
+COMMENT ON COLUMN t_budget.period_start IS '周期首日（含）；结束日为右开边界，由 cycle 推导';
 COMMENT ON COLUMN t_budget.amount IS '预算金额（分）';
+
+-- ---------------------------------------------------------------------------
+-- 固定支出（房租 / 房贷 / 会员费这类按期必须支出的钱）
+-- ---------------------------------------------------------------------------
+-- 只登记规则，不生成交易：它不参与账单数据，只参与「本期还没到期的部分先从预算里预留」。
+-- 主键由客户端生成（毫秒时间戳左移 20 位 + 20 位随机数），服务端按 id 幂等写入，
+-- 与 t_transaction 同一套约定，离线创建的多端记录不会互相覆盖。
+CREATE TABLE IF NOT EXISTS t_recurring_expense
+(
+    id            BIGINT      PRIMARY KEY,
+    book_id       BIGINT      NOT NULL,
+    name          VARCHAR(64) NOT NULL,
+    -- 归类到的分类；0 表示未指定（与 t_budget 一样用 0 而不是 NULL，避免唯一约束失效）
+    category_id   BIGINT      NOT NULL DEFAULT 0,
+    -- 频率与「哪天发生」的规则，与客户端 RecurringExpenses.occurrences 一一对应
+    freq          SMALLINT    NOT NULL DEFAULT 2,
+    day_of_week   SMALLINT    NOT NULL DEFAULT 1,
+    day_of_month  SMALLINT    NOT NULL DEFAULT 1,
+    month_of_year SMALLINT    NOT NULL DEFAULT 1,
+    amount        BIGINT      NOT NULL,
+    -- 生效首日 / 失效日（含）；结束日为空表示长期有效
+    start_date    DATE        NOT NULL,
+    end_date      DATE,
+    enabled       SMALLINT    NOT NULL DEFAULT 1,
+    remark        VARCHAR(255),
+    version       INTEGER     NOT NULL DEFAULT 0,
+    created_by    BIGINT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by    BIGINT,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted       SMALLINT    NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_recurring_expense_book
+    ON t_recurring_expense (book_id) WHERE deleted = 0;
+COMMENT ON TABLE t_recurring_expense IS '固定支出规则（只做预算预留，不自动生成账单）';
+COMMENT ON COLUMN t_recurring_expense.category_id IS '0=未指定分类';
+COMMENT ON COLUMN t_recurring_expense.freq IS '频率：1=每周 2=每月 3=每年';
+COMMENT ON COLUMN t_recurring_expense.day_of_week IS '每周用：1=周一 … 7=周日';
+COMMENT ON COLUMN t_recurring_expense.day_of_month IS '每月用：1-31，当月天数不足时取当月最后一天';
+COMMENT ON COLUMN t_recurring_expense.month_of_year IS '每年用：1-12';
+COMMENT ON COLUMN t_recurring_expense.amount IS '金额（分）';
+COMMENT ON COLUMN t_recurring_expense.start_date IS '生效首日（含）';
+COMMENT ON COLUMN t_recurring_expense.end_date IS '失效日（含），空表示长期有效';
+COMMENT ON COLUMN t_recurring_expense.enabled IS '1=启用 0=停用，停用的不参与预算预留';

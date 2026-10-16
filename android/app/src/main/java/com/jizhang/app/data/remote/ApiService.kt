@@ -13,12 +13,15 @@ import com.jizhang.app.data.remote.dto.BudgetOverviewDto
 import com.jizhang.app.data.remote.dto.BudgetSaveDto
 import com.jizhang.app.data.remote.dto.CategoryDto
 import com.jizhang.app.data.remote.dto.CategoryReportDto
+import com.jizhang.app.data.remote.dto.CategorySaveDto
 import com.jizhang.app.data.remote.dto.InviteCreateDto
 import com.jizhang.app.data.remote.dto.JoinBookDto
 import com.jizhang.app.data.remote.dto.LoginRequest
 import com.jizhang.app.data.remote.dto.MemberReportDto
 import com.jizhang.app.data.remote.dto.MemberUpdateDto
 import com.jizhang.app.data.remote.dto.PageResult
+import com.jizhang.app.data.remote.dto.RecurringExpenseDto
+import com.jizhang.app.data.remote.dto.RecurringExpenseSaveDto
 import com.jizhang.app.data.remote.dto.RefreshTokenRequest
 import com.jizhang.app.data.remote.dto.RegisterRequest
 import com.jizhang.app.data.remote.dto.ReportOverviewDto
@@ -133,6 +136,18 @@ interface ApiService {
         @Query("type") type: Int? = null
     ): ApiResult<List<CategoryDto>>
 
+    @POST("app/categories")
+    suspend fun createCategory(@Body request: CategorySaveDto): ApiResult<CategoryDto>
+
+    @PUT("app/categories/{id}")
+    suspend fun updateCategory(
+        @Path("id") id: Long,
+        @Body request: CategorySaveDto
+    ): ApiResult<CategoryDto>
+
+    @DELETE("app/categories/{id}")
+    suspend fun deleteCategory(@Path("id") id: Long): ApiResult<Unit>
+
     /* ---------------- 交易 ---------------- */
 
     @GET("app/transactions")
@@ -191,16 +206,23 @@ interface ApiService {
 
     /* ---------------- 预算 ---------------- */
 
+    /** 周期用 cycle(1=月 2=周 3=年) + periodStart(yyyy-MM-dd) 表达；period 仅为兼容旧服务端 */
     @GET("app/budgets")
     suspend fun budgets(
         @Query("bookId") bookId: Long,
+        @Query("cycle") cycle: Int? = null,
+        @Query("periodStart") periodStart: String? = null,
         @Query("period") period: String? = null
     ): ApiResult<List<BudgetDto>>
 
     @GET("app/budgets/overview")
     suspend fun budgetOverview(
         @Query("bookId") bookId: Long,
-        @Query("period") period: String? = null
+        @Query("cycle") cycle: Int? = null,
+        @Query("periodStart") periodStart: String? = null,
+        @Query("period") period: String? = null,
+        /** 本地时区的「今天」，与服务端 UTC 口径对齐，避免算出的每日额度差一天 */
+        @Query("today") today: String? = null
     ): ApiResult<BudgetOverviewDto>
 
     @POST("app/budgets")
@@ -208,6 +230,22 @@ interface ApiService {
 
     @DELETE("app/budgets/{id}")
     suspend fun deleteBudget(
+        @Path("id") id: Long,
+        @Query("bookId") bookId: Long
+    ): ApiResult<Unit>
+
+    /* ---------------- 固定支出 ---------------- */
+
+    /** 全部固定支出（含已停用）。写走 REST，读也走 REST，跨设备一致性由同步拉取带回 */
+    @GET("app/recurring-expenses")
+    suspend fun recurringExpenses(@Query("bookId") bookId: Long): ApiResult<List<RecurringExpenseDto>>
+
+    /** id 由客户端生成；同 id 重复提交视为修改 */
+    @POST("app/recurring-expenses")
+    suspend fun saveRecurringExpense(@Body request: RecurringExpenseSaveDto): ApiResult<Long>
+
+    @DELETE("app/recurring-expenses/{id}")
+    suspend fun deleteRecurringExpense(
         @Path("id") id: Long,
         @Query("bookId") bookId: Long
     ): ApiResult<Unit>

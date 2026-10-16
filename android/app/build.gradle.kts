@@ -100,6 +100,9 @@ dependencies {
 
     implementation(libs.coil.compose)
 
+    // 统计图（Compose 原生，compose-m3 带 M3 样式的坐标轴 / 标记）
+    implementation(libs.vico.compose.m3)
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

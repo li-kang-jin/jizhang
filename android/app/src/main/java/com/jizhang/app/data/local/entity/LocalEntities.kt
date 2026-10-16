@@ -108,6 +108,52 @@ data class LocalBudget(
 )
 
 /**
+ * 固定支出（房租 / 房贷 / 会员费这类按期必须支出的钱）。
+ * <p>
+ * 第一版只做「预算内预留」：**不自动生成账单**，只参与预算计算 ——
+ * 把本期还没到期的固定支出从「每天可花」里扣掉，避免月中交完房租就被判定为超支。
+ * 因为不动账单数据，所以没有「自动生成重复记账」和「用户已手动记过」这类需要去重的问题。
+ * <p>
+ * 与交易、预算一样走「离线优先」：先写本地并标记待同步，再由同步任务推给服务端。
+ * 服务端只存规则本身，「本期预留了多少」始终由本机按本地时区 + 本地流水实时计算。
+ */
+@Entity(
+    tableName = "local_recurring_expense",
+    indices = [Index("bookId"), Index("enabled"), Index("pendingSync")]
+)
+data class LocalRecurringExpense(
+    @PrimaryKey val id: Long,
+    val bookId: Long,
+    val name: String,
+    /** 计入哪个分类的预算（同时也是「这是哪类固定开销」的归类） */
+    val categoryId: Long = 0L,
+    /** 频率：1=每周 2=每月 3=每年 */
+    val freq: Int = FREQ_MONTHLY,
+    /** 每周用：1=周一 … 7=周日 */
+    val dayOfWeek: Int = 1,
+    /** 每月用：1-31；当月天数不足时取当月最后一天（例如 31 号在小月按 30 号） */
+    val dayOfMonth: Int = 1,
+    /** 每年用：1-12 */
+    val monthOfYear: Int = 1,
+    /** 金额（分） */
+    val amount: Long,
+    /** 生效首日（含），epoch millis 的当地 0 点 */
+    val startDate: Long = 0L,
+    /** 失效日（含），null 表示长期有效 */
+    val endDate: Long? = null,
+    val enabled: Boolean = true,
+    val remark: String? = null,
+    /** 是否待同步到服务端 */
+    val pendingSync: Boolean = true
+) {
+    companion object {
+        const val FREQ_WEEKLY = 1
+        const val FREQ_MONTHLY = 2
+        const val FREQ_YEARLY = 3
+    }
+}
+
+/**
  * 账户 + 实时余额的查询结果（Room 只读投影，非数据库表）。
  * <p>
  * 余额 = 初始余额 + 该账户交易的净流入，由 SQL 实时聚合，不落库。

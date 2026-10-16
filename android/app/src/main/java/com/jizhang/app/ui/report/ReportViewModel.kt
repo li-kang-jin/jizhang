@@ -160,17 +160,26 @@ class ReportViewModel @Inject constructor(
 
         viewModelScope.launch {
             budgetRepository.save(bookId, categoryId, period, cents)
-            onDone(null)
-            load()
+                .onSuccess {
+                    onDone(null)
+                    load()
+                }
+                .onFailure { onDone(it.message ?: "保存失败") }
         }
     }
 
     /** 删除预算 */
     fun deleteBudget(budgetId: Long) {
+        val bookId = _state.value.bookId
         viewModelScope.launch {
-            budgetRepository.delete(budgetId)
-            _state.update { it.copy(message = "预算已删除") }
-            load()
+            budgetRepository.delete(budgetId, bookId)
+                .onSuccess {
+                    _state.update { it.copy(message = "预算已删除") }
+                    load()
+                }
+                .onFailure { error ->
+                    _state.update { it.copy(message = error.message ?: "删除失败") }
+                }
         }
     }
 

@@ -67,6 +67,48 @@ class TransactionRepository @Inject constructor(
     }
 
     /**
+     * 更新一笔已有记账。
+     * <p>
+     * 保留原 id 与 createdBy：同步协议按客户端 id 幂等（服务端该 id 不存在就新建、存在就更新），
+     * 一旦换了 id 就会在服务端多出一笔。修改后重新打上待同步标记，断网修改也不会丢。
+     *
+     * @return 是否更新成功；目标账单已被删除（或不存在）时返回 false
+     */
+    suspend fun updateLocal(
+        id: Long,
+        type: Int,
+        amount: Long,
+        accountId: Long,
+        categoryId: Long?,
+        tradeTime: Long,
+        remark: String?,
+        /** 标签，多个用逗号分隔 */
+        tags: String? = null,
+        /** 转账的对方账户（type = 3 时使用） */
+        toAccountId: Long? = null
+    ): Boolean {
+        val exist = transactionDao.findById(id) ?: return false
+        // 已标记删除的账单不再接受编辑：否则「删除」和「修改」两个动作会在同步时打架
+        if (exist.pendingDelete) {
+            return false
+        }
+        transactionDao.upsert(
+            exist.copy(
+                type = type,
+                amount = amount,
+                accountId = accountId,
+                toAccountId = toAccountId,
+                categoryId = categoryId,
+                tradeTime = tradeTime,
+                remark = remark,
+                tags = tags,
+                pendingSync = true
+            )
+        )
+        return true
+    }
+
+    /**
      * 删除记账。
      * <p>
      * 只在本地打上待删除标记（UI 立刻不可见），真正的删除动作由同步任务推送到服务端。
@@ -120,7 +162,10 @@ class TransactionRepository @Inject constructor(
                 deletedTransactionIds = deleteIds
             )
         )
-        val data = result.data ?: return PushResult(0, 0)
+        // 业务失败（例如导入时自动新建的账户还不在服务端 → 服务端整批拒绝）时 data 为空，
+        // 这里必须把服务端的原因带出去，否则 UI 会显示成「同步完成：上传 0 条」而看不出出错
+        val data = result.data
+            ?: return PushResult(0, 0, error = result.message.ifBlank { "同步推送失败" })
 
         if (data.successIds.isNotEmpty()) {
             transactionDao.markSynced(data.successIds)
@@ -146,8 +191,15 @@ data class ClearResult(
 
 /** 一次推送的结果 */
 data class PushResult(
+    /** 推送成功的新增 / 修改条数 */
     val updated: Int,
-    val deleted: Int
+    /** 推送成功的删除条数 */
+    val deleted: Int,
+    /** 服务端拒绝时返回的业务错误信息（为空表示推送成功） */
+    val error: String? = null
 ) {
     val total: Int get() = updated + deleted
+
+    /** 是否被服务端整批拒绝（本地待同步记录原样保留） */
+    val failed: Boolean get() = error != null
 }

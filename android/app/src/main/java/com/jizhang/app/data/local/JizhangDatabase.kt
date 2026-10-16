@@ -9,12 +9,14 @@ import com.jizhang.app.data.local.dao.BookDao
 import com.jizhang.app.data.local.dao.BookMemberDao
 import com.jizhang.app.data.local.dao.BudgetDao
 import com.jizhang.app.data.local.dao.CategoryDao
+import com.jizhang.app.data.local.dao.RecurringExpenseDao
 import com.jizhang.app.data.local.dao.TransactionDao
 import com.jizhang.app.data.local.entity.LocalAccount
 import com.jizhang.app.data.local.entity.LocalBook
 import com.jizhang.app.data.local.entity.LocalBookMember
 import com.jizhang.app.data.local.entity.LocalBudget
 import com.jizhang.app.data.local.entity.LocalCategory
+import com.jizhang.app.data.local.entity.LocalRecurringExpense
 import com.jizhang.app.data.local.entity.LocalTransaction
 
 @Database(
@@ -24,14 +26,17 @@ import com.jizhang.app.data.local.entity.LocalTransaction
         LocalAccount::class,
         LocalBudget::class,
         LocalBook::class,
-        LocalBookMember::class
+        LocalBookMember::class,
+        LocalRecurringExpense::class
     ],
     // v2：local_transaction 增加 pendingDelete（离线删除支持）
     // v3：local_account 改为 initialBalance（余额实时聚合）+ 本地账本模式
     // v4：新增 local_budget（预算）
     // v5：local_transaction 增加 tags（账单导入的标签列）
     // v6：新增 local_book（多账本 / 家庭共享账本）
-    version = 6,
+    // v7：新增 local_recurring_expense（固定支出，只参与预算预留，不自动记账）
+    // v8：local_recurring_expense 增加 pendingSync（固定支出参与多端同步）
+    version = 8,
     exportSchema = false
 )
 abstract class JizhangDatabase : RoomDatabase() {
@@ -43,6 +48,8 @@ abstract class JizhangDatabase : RoomDatabase() {
     abstract fun accountDao(): AccountDao
 
     abstract fun budgetDao(): BudgetDao
+
+    abstract fun recurringExpenseDao(): RecurringExpenseDao
 
     abstract fun bookDao(): BookDao
 
@@ -143,6 +150,59 @@ abstract class JizhangDatabase : RoomDatabase() {
                         "ON `local_book_member` (`bookId`)"
                 )
                 db.execSQL("ALTER TABLE `local_transaction` ADD COLUMN `createdBy` INTEGER")
+            }
+        }
+
+        /**
+         * 6 -> 7：新增 local_recurring_expense（固定支出）。
+         * <p>
+         * 纯新增表，不动既有数据。
+         */
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `local_recurring_expense` (" +
+                        "`id` INTEGER NOT NULL PRIMARY KEY, " +
+                        "`bookId` INTEGER NOT NULL, " +
+                        "`name` TEXT NOT NULL, " +
+                        "`categoryId` INTEGER NOT NULL DEFAULT 0, " +
+                        "`freq` INTEGER NOT NULL DEFAULT 2, " +
+                        "`dayOfWeek` INTEGER NOT NULL DEFAULT 1, " +
+                        "`dayOfMonth` INTEGER NOT NULL DEFAULT 1, " +
+                        "`monthOfYear` INTEGER NOT NULL DEFAULT 1, " +
+                        "`amount` INTEGER NOT NULL, " +
+                        "`startDate` INTEGER NOT NULL DEFAULT 0, " +
+                        "`endDate` INTEGER, " +
+                        "`enabled` INTEGER NOT NULL DEFAULT 1, " +
+                        "`remark` TEXT)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_local_recurring_expense_bookId` " +
+                        "ON `local_recurring_expense` (`bookId`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_local_recurring_expense_enabled` " +
+                        "ON `local_recurring_expense` (`enabled`)"
+                )
+            }
+        }
+
+        /**
+         * 7 -> 8：local_recurring_expense 增加 pendingSync（固定支出接入多端同步）。
+         * <p>
+         * 已有记录默认标记为待同步：它们此前只存在于本机，需要补推到服务端，
+         * 否则换设备后规则会凭空消失。
+         */
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `local_recurring_expense` " +
+                        "ADD COLUMN `pendingSync` INTEGER NOT NULL DEFAULT 1"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_local_recurring_expense_pendingSync` " +
+                        "ON `local_recurring_expense` (`pendingSync`)"
+                )
             }
         }
     }

@@ -14,7 +14,7 @@
 | 设计文档 | 技术选型 / 数据库设计 / 接口契约 | `docs/` |
 | 部署与脚本 | docker-compose · Maven 配置 · 端到端验证脚本 | `deploy/` |
 
-后端共 **65 个接口**，覆盖认证、账本、账户、分类、交易、报表、多端同步、管理后台八个模块。
+后端接口覆盖认证、账本、账户、分类、交易、报表、预算与固定支出、多端同步、管理后台九个模块。
 
 ## 快速开始
 
@@ -108,7 +108,7 @@ App 内置一只叫「小锦锦」的宠物：每记一笔账获得金币，金�
 
 ## 端到端验证
 
-`deploy/` 下提供两个脚本，可在后端启动后直接运行：
+`deploy/` 下提供四个脚本，可在后端启动后直接运行：
 
 ```bash
 # 注册 / 登录 / 账本 / 账户 / 分类 / 交易 / 余额联动 / 登出失效
@@ -116,6 +116,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy/smoke-test.ps1
 
 # 报表（总览、分类占比、趋势、资产）与同步（全量、增量、冲突、删除）
 powershell -NoProfile -ExecutionPolicy Bypass -File deploy/report-sync-test.ps1
+
+# 预算（总预算 / 分类预算、进度、超支、越权）
+powershell -NoProfile -ExecutionPolicy Bypass -File deploy/budget-test.ps1
+
+# 固定支出（保存 / 幂等更新 / 参数兜底 / 同步下发 / 删除随同步 / 越权）
+powershell -NoProfile -ExecutionPolicy Bypass -File deploy/recurring-expense-test.ps1
 ```
 
 ## 核心设计
@@ -154,4 +160,5 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy/report-sync-test.ps1
 
 - 令牌黑名单当前为**单机内存实现**，多实例部署需替换为 Redis 实现（接口已抽象）
 - 客户端 `usesCleartextTraffic` 为开启状态（HTTP 调试用），生产应改用 HTTPS
-- 周期账单、预算管理、账单导入等功能尚未实现，详见 `docs/api-contract.md` 的「待实现」一节
+- 周期账单（到点自动生成账单）、票据上传等功能尚未实现，详见 `docs/api-contract.md` 的「待实现」一节。
+  固定支出规则已支持多端同步，但**只做预算内预留、不自动记账**

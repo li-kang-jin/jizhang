@@ -153,3 +153,16 @@ data class CategoryDto(
     val system: Boolean = false,
     val children: List<CategoryDto> = emptyList()
 )
+
+/** 新增 / 修改分类的请求体（对应服务端 CategorySaveRequest） */
+@Serializable
+data class CategorySaveDto(
+    val bookId: Long,
+    val parentId: Long = 0L,
+    val name: String,
+    /** 1=支出 2=收入 */
+    val type: Int,
+    val icon: String? = null,
+    val color: String? = null,
+    val sort: Int = 0
+)

@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.List;
 
@@ -18,9 +19,11 @@ import java.util.List;
 public interface BudgetMapper extends BaseMapper<BudgetEntity> {
 
     /** 查询某账本某周期的全部预算（总预算的 category_id 为 0，排在最前） */
-    @Select("SELECT * FROM t_budget WHERE deleted = 0 AND book_id = #{bookId} AND period = #{period} "
-            + "ORDER BY category_id")
-    List<BudgetEntity> selectByPeriod(@Param("bookId") Long bookId, @Param("period") String period);
+    @Select("SELECT * FROM t_budget WHERE deleted = 0 AND book_id = #{bookId} "
+            + "AND cycle = #{cycle} AND period_start = #{periodStart} ORDER BY category_id")
+    List<BudgetEntity> selectByPeriod(@Param("bookId") Long bookId,
+                                     @Param("cycle") Integer cycle,
+                                     @Param("periodStart") LocalDate periodStart);
 
     /**
      * 查询指定账本内已软删除的预算 ID。

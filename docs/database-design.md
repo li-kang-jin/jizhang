@@ -24,6 +24,8 @@ user 1 ──< book_member >── 1 book 1 ──< book_invite (邀请码，拉
                             │
                             ├──< account        (账户：现金/银行卡/支付宝…)
                             ├──< category       (分类：餐饮/交通…，树形)
+                            ├──< budget         (预算：总预算 / 分类预算，按 月/周/年 周期)
+                            ├──< recurring_expense (固定支出规则：房租/房贷/会员费，只做预算预留)
                             └──< transaction    (交易流水，核心表)
                                     ├─ account_id
                                     ├─ category_id
@@ -170,20 +172,56 @@ user 1 ──< book_member >── 1 book 1 ──< book_invite (邀请码，拉
 - `idx_tx_account (account_id, trade_time DESC)`
 - `idx_tx_category (category_id, trade_time DESC)`
 
-### 3.7 周期账单表 `t_periodic_bill`（预留）
+### 3.7 预算表 `t_budget` 与固定支出表 `t_recurring_expense`
+
+#### 预算表 `t_budget`
+
+总预算（`category_id = 0`）与分类预算，月 / 周 / 年三种周期各存一条。
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | id | bigint PK | 主键 |
 | book_id | bigint | 账本 |
-| name | varchar(64) | 名称（如「房租」） |
-| type | smallint | 同交易 type |
-| amount | bigint | 金额（分） |
-| account_id / to_account_id / category_id | bigint | 同交易 |
-| cron_expr | varchar(64) | 触发规则 |
-| next_run_at | timestamptz | 下次执行时间 |
-| enabled | smallint | 是否启用 |
+| category_id | bigint | 0 = 账本总预算，其余为对应分类 |
+| cycle | smallint | 周期类型：1=每月 2=每周（ISO 周）3=每年 |
+| period_start | date | 周期首日（含），结束日由 cycle 推导（+1 月 / 1 周 / 1 年） |
+| amount | bigint | 预算金额（分） |
+| remark | varchar(255) | 备注 |
 | 审计字段 + version | - | 同上 |
+
+唯一索引：`uk_budget_book_cat_cycle_start (book_id, category_id, cycle, period_start) WHERE deleted = 0`
+
+> 用 `category_id = 0` 表示「账本总预算」而不是 NULL：PostgreSQL 的唯一索引不约束 NULL，
+> 用 NULL 会插出多条总预算。
+
+#### 固定支出表 `t_recurring_expense`
+
+房租、房贷、会员费这类按期固定开销。**只登记规则，不生成账单**：它不参与流水，
+只让客户端把「本期还没到期的部分」从预算的每日可花额度里预留出来。
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| id | bigint PK | 主键，**由客户端生成**（毫秒时间戳左移 20 位 + 20 位随机数） |
+| book_id | bigint | 账本 |
+| name | varchar(64) | 名称（如「房租」） |
+| category_id | bigint | 归类到的分类，0 = 未指定 |
+| freq | smallint | 频率：1=每周 2=每月 3=每年 |
+| day_of_week | smallint | 每周用：1=周一 … 7=周日 |
+| day_of_month | smallint | 每月用：1-31，超出当月天数时按当月最后一天 |
+| month_of_year | smallint | 每年用：1-12 |
+| amount | bigint | 金额（分） |
+| start_date | date | 生效首日（含） |
+| end_date | date | 失效日（含），可空表示长期有效 |
+| enabled | smallint | 1=启用 0=停用（停用的不参与预留） |
+| 审计字段 + version | - | 同上 |
+
+索引：`idx_recurring_expense_book (book_id) WHERE deleted = 0`
+
+主键由客户端生成的必要性：同名固定支出允许存在多条，没有可作业务键的字段，
+幂等只能落在客户端 ID 上 —— 与 `t_transaction` 同一套约定，离线创建的多端记录不会互相覆盖。
+
+> 「到点自动生成账单」的**周期账单**（原 `t_periodic_bill` 预留设计：
+> `cron_expr` / `next_run_at` / `account_id`）仍未实现，见 `api-contract.md` 的待实现一节。
 
 ### 3.8 同步日志表 `t_sync_log`（多端同步）
 

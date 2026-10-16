@@ -3,7 +3,9 @@ package com.jizhang.app.data.repository
 import com.jizhang.app.data.local.JizhangDatabase
 import com.jizhang.app.data.local.dao.AccountDao
 import com.jizhang.app.data.local.dao.BookDao
+import com.jizhang.app.data.local.dao.BudgetDao
 import com.jizhang.app.data.local.dao.CategoryDao
+import com.jizhang.app.data.local.dao.RecurringExpenseDao
 import com.jizhang.app.data.local.dao.TransactionDao
 import com.jizhang.app.data.prefs.TokenStore
 import com.jizhang.app.data.remote.ApiService
@@ -30,7 +32,9 @@ class AuthRepository @Inject constructor(
     private val bookDao: BookDao,
     private val transactionDao: TransactionDao,
     private val accountDao: AccountDao,
-    private val categoryDao: CategoryDao
+    private val categoryDao: CategoryDao,
+    private val budgetDao: BudgetDao,
+    private val recurringExpenseDao: RecurringExpenseDao
 ) {
 
     /**
@@ -95,7 +99,11 @@ class AuthRepository @Inject constructor(
     private suspend fun migrateLocalData(targetBookId: Long): MigrationSummary {
         val localBookId = JizhangDatabase.LOCAL_BOOK_ID
         val localTransactionCount = transactionDao.countByBook(localBookId)
-        if (localTransactionCount == 0) {
+
+        // 预算 / 固定支出即使一条账都没记也要迁：用户完全可能先设好预算再开始记账
+        val hasLocalBudget = budgetDao.listByBook(localBookId).isNotEmpty()
+        val hasLocalRecurring = recurringExpenseDao.listByBook(localBookId).isNotEmpty()
+        if (localTransactionCount == 0 && !hasLocalBudget && !hasLocalRecurring) {
             return MigrationSummary(0, 0)
         }
 
@@ -127,11 +135,17 @@ class AuthRepository @Inject constructor(
             val matched = remoteCategories.firstOrNull { it.type == local.type && it.name == local.name }
             if (matched != null) {
                 transactionDao.migrateCategory(local.id, matched.id)
+                // 预算与固定支出也引用了分类 id，必须一起改写；
+                // 匹配不到的分类按既有规则不新建，那部分预算推送时会被服务端拒掉（保持待同步）
+                budgetDao.migrateCategory(local.id, matched.id)
+                recurringExpenseDao.migrateCategory(local.id, matched.id)
             }
         }
 
-        // 3. 交易改挂到服务端账本（同时会被标记为待同步，随后自动推送）
+        // 3. 交易 / 预算 / 固定支出改挂到服务端账本（交易会被标记为待同步，随后自动推送）
         transactionDao.migrateBook(localBookId, targetBookId)
+        budgetDao.migrateBook(localBookId, targetBookId)
+        recurringExpenseDao.migrateBook(localBookId, targetBookId)
 
         // 4. 本地账本的账户 / 分类交给服务端数据接管
         accountDao.deleteByBook(localBookId)

@@ -17,6 +17,7 @@ import javax.inject.Singleton
 class SyncManager @Inject constructor(
     private val transactionRepository: TransactionRepository,
     private val ledgerRepository: LedgerRepository,
+    private val budgetRepository: BudgetRepository,
     private val bookDao: BookDao
 ) {
 
@@ -25,9 +26,21 @@ class SyncManager @Inject constructor(
 
     /** 首次进入应用或手动触发时的全量同步。 */
     suspend fun fullSync(bookId: Long): Result<SyncOutcome> = runCatching {
-        val push = transactionRepository.pushPending(bookId)
+        val push = pushWithRepair(bookId)
+        pushPendingExtras(bookId)
         val pulled = ledgerRepository.fullPull(bookId)
         SyncOutcome(pushed = push.updated, deleted = push.deleted, pulled = pulled)
+    }
+
+    /**
+     * 补推本地待同步的预算与固定支出。
+     * <p>
+     * 同步推送协议只处理交易，这两类必须单独走 REST；离线期间改的、登录时从本地账本迁过来的
+     * 都在这里补上。失败不影响交易同步（属于附属数据），所以异常直接吞掉。
+     */
+    private suspend fun pushPendingExtras(bookId: Long) {
+        runCatching { budgetRepository.pushPending(bookId) }
+        runCatching { budgetRepository.pushPendingRecurring(bookId) }
     }
 
     /**
@@ -49,13 +62,35 @@ class SyncManager @Inject constructor(
                     deleted += it.deleted
                     pulled += it.pulled
                 }
-                .onFailure { failed += book.name }
+                .onFailure { failed += "$book.name（${it.message ?: "未知错误"}）" }
         }
         SyncSummary(pushed = pushed, deleted = deleted, pulled = pulled, failedBooks = failed)
     }
 
+    /**
+     * 推送本地变更；被服务端整批拒绝时自动修复一次再重试。
+     * <p>
+     * 最常见的拒绝原因：导入账单时自动新建的账户只存在于本地，
+     * 服务端校验不过（「账户不存在」）导致整批回滚。
+     * 这里先把账户对齐到服务端（缺的建出来、本地引用改写），再重试一次。
+     */
+    private suspend fun pushWithRepair(bookId: Long): PushResult {
+        var push = transactionRepository.pushPending(bookId)
+        if (push.failed) {
+            ledgerRepository.reconcileLedger(bookId)
+            push = transactionRepository.pushPending(bookId)
+        }
+        return push
+    }
+
     private suspend fun doSync(bookId: Long): SyncOutcome {
-        val push = transactionRepository.pushPending(bookId)
+        val push = pushWithRepair(bookId)
+        // 修复后仍被拒绝：本地记录原样留着，把服务端返回的原因抛给上层展示，
+        // 不要报告成「上传 0 条」这种看起来正常的结果
+        if (push.failed) {
+            error(push.error ?: "同步推送失败")
+        }
+        pushPendingExtras(bookId)
         val pulled = ledgerRepository.pull(bookId)
         return SyncOutcome(pushed = push.updated, deleted = push.deleted, pulled = pulled)
     }

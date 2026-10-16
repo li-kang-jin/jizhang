@@ -48,6 +48,12 @@ class AppViewModel @Inject constructor(
         val books: List<LocalBook> = emptyList(),
         /** 预算超支提醒开关 */
         val budgetAlertEnabled: Boolean = true,
+        /** 记账数字键盘的震动反馈开关 */
+        val hapticEnabled: Boolean = true,
+        /** 记账页模板：1 经典 / 2 极简速记 / 3 详情备注 */
+        val recordTemplate: Int = 1,
+        /** 账单页模板：1 清爽列表 / 2 信息卡片 / 3 紧凑单行 */
+        val billTemplate: Int = 1,
         /** 登录后是否需要提示用户已迁移数据 */
         val loginTip: String? = null,
         /** 一次性提示（切账本、同步结果等） */
@@ -71,6 +77,24 @@ class AppViewModel @Inject constructor(
         viewModelScope.launch {
             settingsStore.budgetAlertFlow.collect { enabled ->
                 _state.update { it.copy(budgetAlertEnabled = enabled) }
+            }
+        }
+
+        viewModelScope.launch {
+            settingsStore.hapticFlow.collect { enabled ->
+                _state.update { it.copy(hapticEnabled = enabled) }
+            }
+        }
+
+        viewModelScope.launch {
+            settingsStore.recordTemplateFlow.collect { value ->
+                _state.update { it.copy(recordTemplate = value) }
+            }
+        }
+
+        viewModelScope.launch {
+            settingsStore.billTemplateFlow.collect { value ->
+                _state.update { it.copy(billTemplate = value) }
             }
         }
 
@@ -132,6 +156,18 @@ class AppViewModel @Inject constructor(
             settingsStore.setBudgetAlert(enabled)
             BudgetAlertScheduler.sync(context, enabled)
         }
+    }
+
+    fun setHapticEnabled(enabled: Boolean) {
+        viewModelScope.launch { settingsStore.setHaptic(enabled) }
+    }
+
+    fun setRecordTemplate(value: Int) {
+        viewModelScope.launch { settingsStore.setRecordTemplate(value) }
+    }
+
+    fun setBillTemplate(value: Int) {
+        viewModelScope.launch { settingsStore.setBillTemplate(value) }
     }
 
     /** 登录成功后调用：重新拉账本并做一次全量同步 */

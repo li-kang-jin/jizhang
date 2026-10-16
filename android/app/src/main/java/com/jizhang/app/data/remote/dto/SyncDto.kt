@@ -24,10 +24,24 @@ data class SyncPullDto(
     val accounts: List<AccountDto> = emptyList(),
     val categories: List<CategoryDto> = emptyList(),
     val transactions: List<TransactionDto> = emptyList(),
+    /**
+     * 预算额度（不含进度，进度由客户端按本地流水实时聚合）。
+     * <p>
+     * 预算的**写**走 REST 接口，这里只负责把别的设备 / 家庭成员改过的额度拉回来。
+     */
+    val budgets: List<BudgetDto> = emptyList(),
+    /**
+     * 固定支出规则（不含「本期预留多少」，那由客户端按本地时区实时算）。
+     * <p>
+     * 与预算一样，**写**走 REST 接口，这里只把别的设备 / 家庭成员改过的规则拉回来。
+     */
+    val recurringExpenses: List<RecurringExpenseDto> = emptyList(),
     val deletedBookIds: List<Long> = emptyList(),
     val deletedAccountIds: List<Long> = emptyList(),
     val deletedCategoryIds: List<Long> = emptyList(),
-    val deletedTransactionIds: List<Long> = emptyList()
+    val deletedTransactionIds: List<Long> = emptyList(),
+    val deletedBudgetIds: List<Long> = emptyList(),
+    val deletedRecurringExpenseIds: List<Long> = emptyList()
 )
 
 @Serializable

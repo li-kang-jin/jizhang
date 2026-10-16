@@ -43,9 +43,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.jizhang.app.data.local.entity.LocalRecurringExpense
 import com.jizhang.app.data.remote.dto.BudgetDto
 import com.jizhang.app.data.remote.dto.BudgetOverviewDto
 import com.jizhang.app.data.repository.BudgetCycle
+import com.jizhang.app.data.repository.FixedReservation
 import com.jizhang.app.ui.common.formatAmount
 import com.jizhang.app.ui.report.BudgetDialog
 import com.jizhang.app.ui.theme.AppColors
@@ -57,6 +59,7 @@ import kotlin.math.roundToInt
 @Composable
 fun BudgetScreen(
     bookId: Long,
+    onOpenRecurring: () -> Unit,
     viewModel: BudgetViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -94,10 +97,18 @@ fun BudgetScreen(
             item {
                 TotalBudgetCard(
                     overview = state.overview,
+                    reservation = state.reservation,
                     onEdit = {
                         dialogCategoryId = 0L
                         showDialog = true
                     }
+                )
+            }
+            item {
+                FixedExpenseCard(
+                    recurring = state.recurring,
+                    reservation = state.reservation,
+                    onManage = onOpenRecurring
                 )
             }
             item {
@@ -225,7 +236,11 @@ private fun InheritHint(count: Int) {
 }
 
 @Composable
-private fun TotalBudgetCard(overview: BudgetOverviewDto?, onEdit: () -> Unit) {
+private fun TotalBudgetCard(
+    overview: BudgetOverviewDto?,
+    reservation: FixedReservation,
+    onEdit: () -> Unit
+) {
     CardBox {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -264,6 +279,14 @@ private fun TotalBudgetCard(overview: BudgetOverviewDto?, onEdit: () -> Unit) {
         val ratio = (overview.usedRatio ?: 0.0).toFloat().coerceIn(0f, 1f)
         val barColor = if (overview.exceeded) AppColors.expense else AppColors.accent
 
+        // 预测刻度：按当前消耗速度，期末会花到总预算的哪个位置
+        val forecastRatio = overview.forecastExpense
+            ?.takeIf { overview.totalBudget > 0L }
+            ?.let { (it.toFloat() / overview.totalBudget).coerceIn(0f, 1f) }
+        val showForecastMark = forecastRatio != null && forecastRatio > ratio + 0.01f
+        // 今天还能不能花：日均可用减去今天已经花掉的
+        val todayRemaining = (overview.dailyAvailable - overview.todayExpense).coerceAtLeast(0L)
+
         Row(verticalAlignment = Alignment.Bottom) {
             Text(
                 text = formatAmount(overview.totalUsed),
@@ -287,15 +310,45 @@ private fun TotalBudgetCard(overview: BudgetOverviewDto?, onEdit: () -> Unit) {
         }
 
         Spacer(Modifier.height(8.dp))
-        LinearProgressIndicator(
-            progress = { ratio },
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(8.dp)
-                .clip(RoundedCornerShape(4.dp)),
-            color = barColor,
-            trackColor = MaterialTheme.colorScheme.surfaceVariant
-        )
+        ) {
+            LinearProgressIndicator(
+                progress = { ratio },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(8.dp)
+                    .clip(RoundedCornerShape(4.dp)),
+                color = barColor,
+                trackColor = MaterialTheme.colorScheme.surfaceVariant
+            )
+            if (showForecastMark && forecastRatio != null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(forecastRatio)
+                        .height(8.dp),
+                    contentAlignment = Alignment.CenterEnd
+                ) {
+                    Box(
+                        Modifier
+                            .width(3.dp)
+                            .height(8.dp)
+                            .background(MaterialTheme.colorScheme.onSurfaceVariant)
+                    )
+                }
+            }
+        }
+
+        if (showForecastMark && forecastRatio != null) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "竖线 = 按现在的花法，期末预计花到 ${formatAmount(overview.forecastExpense ?: 0L)} 元",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
 
         Spacer(Modifier.height(12.dp))
         Row(Modifier.fillMaxWidth()) {
@@ -319,17 +372,151 @@ private fun TotalBudgetCard(overview: BudgetOverviewDto?, onEdit: () -> Unit) {
             )
         }
 
-        if (overview.exceeded) {
-            Spacer(Modifier.height(10.dp))
-            Text(
-                text = "已超支 ${formatAmount(overview.totalUsed - overview.totalBudget)} 元",
-                style = MaterialTheme.typography.labelMedium,
-                color = AppColors.expense
+        Spacer(Modifier.height(10.dp))
+        Row(Modifier.fillMaxWidth()) {
+            StatItem(
+                label = "今日已花",
+                value = "${formatAmount(overview.todayExpense)} 元",
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f)
             )
-        } else if (overview.suggestDaily > 0) {
+            StatItem(
+                label = "今天还能花",
+                value = "${formatAmount(todayRemaining)} 元",
+                color = if (todayRemaining == 0L) AppColors.expense else AppColors.income,
+                modifier = Modifier.weight(1f)
+            )
+            StatItem(
+                label = "固定支出预留",
+                value = "${formatAmount(overview.fixedReserved)} 元",
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        val prediction = predictionText(overview)
+        if (prediction != null) {
             Spacer(Modifier.height(10.dp))
             Text(
-                text = "按额度平摊，每天约 ${formatAmount(overview.suggestDaily)} 元",
+                text = prediction.first,
+                style = MaterialTheme.typography.labelMedium,
+                color = prediction.second
+            )
+        }
+
+        if (reservation.total > 0L) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "日均可用已扣掉本期还没到期的 ${reservation.items.size} 笔固定支出",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/** 预测结论：超支 / 有风险 / 正常。返回 null 表示没有可说的 */
+@Composable
+private fun predictionText(overview: BudgetOverviewDto): Pair<String, Color>? = when (overview.status) {
+    BudgetOverviewDto.STATUS_OVER -> "已超支 ${formatAmount(overview.totalUsed - overview.totalBudget)} 元" to AppColors.expense
+
+    BudgetOverviewDto.STATUS_AT_RISK -> {
+        val forecast = overview.forecastExpense ?: 0L
+        // 还没到期的固定支出也要算进期末支出，否则房租没扣的那几天会被误判成安全
+        val gap = (forecast + overview.fixedReserved - overview.totalBudget).coerceAtLeast(0L)
+        "按现在的花法预计花到 ${formatAmount(forecast)} 元，可能超支约 ${formatAmount(gap)} 元" to AppColors.expense
+    }
+
+    else -> when {
+        overview.forecastExpense != null && overview.elapsedDays > 0 ->
+            "按现在的花法预计花到 ${formatAmount(overview.forecastExpense)} 元，在预算内" to AppColors.income
+
+        overview.suggestDaily > 0L ->
+            "按额度平摊，每天约 ${formatAmount(overview.suggestDaily)} 元" to MaterialTheme.colorScheme.onSurfaceVariant
+
+        else -> null
+    }
+}
+
+/** 固定支出卡片：只做预算内预留，不自动记账 */
+@Composable
+private fun FixedExpenseCard(
+    recurring: List<LocalRecurringExpense>,
+    reservation: FixedReservation,
+    onManage: () -> Unit
+) {
+    CardBox {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "固定支出",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = "管理",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable(onClick = onManage)
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            )
+        }
+
+        Spacer(Modifier.height(10.dp))
+
+        if (recurring.isEmpty()) {
+            Text(
+                text = "房租、房贷、会员费这类每期都要花的钱，登记成固定支出后，" +
+                    "本期还没到期的部分会先从预算里预留出来，不会把「每天可花」挤成 0。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            return@CardBox
+        }
+
+        val enabledCount = recurring.count { it.enabled }
+        Text(
+            text = "生效中 $enabledCount 项 · 本期预留 ${formatAmount(reservation.total)} 元",
+            style = MaterialTheme.typography.bodyMedium
+        )
+
+        if (reservation.items.isEmpty()) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "本期没有还没到期的固定支出",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            return@CardBox
+        }
+
+        Spacer(Modifier.height(8.dp))
+        reservation.items.take(3).forEach { item ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = item.expense.name,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = "${item.nextDate.monthValue}/${item.nextDate.dayOfMonth} 扣 " +
+                        "${formatAmount(item.amount)} 元",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        if (reservation.items.size > 3) {
+            Spacer(Modifier.height(3.dp))
+            Text(
+                text = "还有 ${reservation.items.size - 3} 笔本期预留",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

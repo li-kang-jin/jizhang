@@ -76,6 +76,13 @@ interface TransactionDao {
     @Query("SELECT COUNT(*) FROM local_transaction WHERE bookId = :bookId AND pendingDelete = 0")
     suspend fun countByBook(bookId: Long): Int
 
+    /** 某分类下还有多少笔账单（删除 / 改类型前查引用，与服务端同一套规则） */
+    @Query("SELECT COUNT(*) FROM local_transaction WHERE categoryId = :categoryId AND pendingDelete = 0")
+    suspend fun countByCategory(categoryId: Long): Int
+
+    @Query("SELECT * FROM local_transaction WHERE id = :id")
+    suspend fun findById(id: Long): LocalTransaction?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(item: LocalTransaction)
 
@@ -182,6 +189,10 @@ interface CategoryDao {
     @Query("SELECT * FROM local_category WHERE bookId = :bookId ORDER BY sort, id")
     suspend fun listByBook(bookId: Long): List<LocalCategory>
 
+    /** 分类管理页：按账本实时监听（新建 / 删除后列表自动刷新） */
+    @Query("SELECT * FROM local_category WHERE bookId = :bookId ORDER BY sort, id")
+    fun observeByBook(bookId: Long): Flow<List<LocalCategory>>
+
     @Query("SELECT * FROM local_category WHERE bookId = :bookId AND type = :type ORDER BY sort, id")
     suspend fun listByBookAndType(bookId: Long, type: Int): List<LocalCategory>
 
@@ -232,6 +243,10 @@ interface AccountDao {
 
     @Query("SELECT * FROM local_account WHERE bookId = :bookId ORDER BY sort, id")
     suspend fun listByBook(bookId: Long): List<LocalAccount>
+
+    /** 账单页筛选项、记账页账户选择用：账户变化后要能实时反映 */
+    @Query("SELECT * FROM local_account WHERE bookId = :bookId ORDER BY sort, id")
+    fun observeByBook(bookId: Long): Flow<List<LocalAccount>>
 
     @Query("SELECT * FROM local_account WHERE id = :id")
     suspend fun findById(id: Long): LocalAccount?

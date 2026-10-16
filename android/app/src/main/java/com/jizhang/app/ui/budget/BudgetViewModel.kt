@@ -2,13 +2,16 @@ package com.jizhang.app.ui.budget
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.jizhang.app.data.local.entity.LocalRecurringExpense
 import com.jizhang.app.data.remote.dto.BudgetOverviewDto
 import com.jizhang.app.data.remote.dto.CategoryStatDto
 import com.jizhang.app.data.repository.BudgetCycle
 import com.jizhang.app.data.repository.BudgetPeriods
 import com.jizhang.app.data.repository.BudgetRepository
+import com.jizhang.app.data.repository.FixedReservation
 import com.jizhang.app.data.repository.ReportRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,6 +26,9 @@ import javax.inject.Inject
  * <p>
  * 支持每月 / 每周 / 每年三种周期，进入当前周期且没有任何预算时，
  * 会自动沿用上一周期的额度，省去每次重新设置。
+ * <p>
+ * 固定支出只做「预算内预留」：不自动生成账单，但会把本期还没到期的房租 / 房贷
+ * 从每日可花里扣掉（见 [BudgetRepository.reservedFixed]）。
  */
 @HiltViewModel
 class BudgetViewModel @Inject constructor(
@@ -37,6 +43,10 @@ class BudgetViewModel @Inject constructor(
         val loading: Boolean = false,
         val overview: BudgetOverviewDto? = null,
         val expenseCategories: List<CategoryStatDto> = emptyList(),
+        /** 全部固定支出（含已停用） */
+        val recurring: List<LocalRecurringExpense> = emptyList(),
+        /** 本期还没到期的固定支出预留明细 */
+        val reservation: FixedReservation = FixedReservation(),
         /** 本次进入自动沿用上一周期的预算条数 */
         val inheritedCount: Int = 0,
         val message: String? = null
@@ -54,6 +64,7 @@ class BudgetViewModel @Inject constructor(
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private var bound = -1L
+    private var recurringJob: Job? = null
 
     fun bind(bookId: Long) {
         if (bound == bookId) {
@@ -68,6 +79,15 @@ class BudgetViewModel @Inject constructor(
                 inheritedCount = 0
             )
         }
+
+        // 用 Flow 监听而不是一次性读取：在固定支出弹窗里增删后这里要立刻刷新
+        recurringJob?.cancel()
+        recurringJob = viewModelScope.launch {
+            budgetRepository.observeRecurring(bookId).collect { list ->
+                _state.update { it.copy(recurring = list) }
+            }
+        }
+
         load(autoInherit = true)
     }
 
@@ -118,6 +138,7 @@ class BudgetViewModel @Inject constructor(
             }
 
             val overview = budgetRepository.overview(current.bookId, current.period)
+            val reservation = budgetRepository.reservedFixed(current.bookId, current.period)
             val categories = reportRepository.expenseCategories(current.bookId)
 
             _state.update {
@@ -125,6 +146,7 @@ class BudgetViewModel @Inject constructor(
                     loading = false,
                     overview = overview,
                     expenseCategories = categories,
+                    reservation = reservation,
                     inheritedCount = inherited,
                     message = if (inherited > 0) {
                         "已沿用上一周期的 $inherited 条预算"
@@ -167,16 +189,54 @@ class BudgetViewModel @Inject constructor(
 
         viewModelScope.launch {
             budgetRepository.save(current.bookId, categoryId, current.period, cents)
-            onDone(null)
-            load()
+                .onSuccess {
+                    onDone(null)
+                    load()
+                }
+                .onFailure { onDone(it.message ?: "保存失败") }
         }
     }
 
     fun deleteBudget(budgetId: Long) {
+        val bookId = _state.value.bookId
         viewModelScope.launch {
-            budgetRepository.delete(budgetId)
-            load()
-            _state.update { it.copy(message = "预算已删除") }
+            budgetRepository.delete(budgetId, bookId)
+                .onSuccess {
+                    load()
+                    _state.update { it.copy(message = "预算已删除") }
+                }
+                .onFailure { error ->
+                    _state.update { it.copy(message = error.message ?: "删除失败") }
+                }
+        }
+    }
+
+    /* ---------------- 固定支出 ---------------- */
+
+    fun saveRecurring(item: LocalRecurringExpense) {
+        viewModelScope.launch {
+            budgetRepository.saveRecurring(item)
+                .onSuccess {
+                    load()
+                    _state.update { it.copy(message = "已保存") }
+                }
+                .onFailure { error ->
+                    _state.update { it.copy(message = error.message ?: "保存失败") }
+                }
+        }
+    }
+
+    fun deleteRecurring(id: Long) {
+        val bookId = _state.value.bookId
+        viewModelScope.launch {
+            budgetRepository.deleteRecurring(id, bookId)
+                .onSuccess {
+                    load()
+                    _state.update { it.copy(message = "已删除") }
+                }
+                .onFailure { error ->
+                    _state.update { it.copy(message = error.message ?: "删除失败") }
+                }
         }
     }
 

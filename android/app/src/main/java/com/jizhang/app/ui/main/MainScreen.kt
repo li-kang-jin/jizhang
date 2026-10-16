@@ -44,6 +44,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.jizhang.app.data.local.entity.LocalTransaction
 import com.jizhang.app.ui.AppViewModel
 import com.jizhang.app.ui.account.AccountListDialog
 import com.jizhang.app.ui.bill.BillScreen
@@ -51,6 +52,9 @@ import com.jizhang.app.ui.book.BookListDialog
 import com.jizhang.app.ui.book.BookMemberDialog
 import com.jizhang.app.ui.book.BookViewModel
 import com.jizhang.app.ui.budget.BudgetScreen
+import com.jizhang.app.ui.budget.BudgetViewModel
+import com.jizhang.app.ui.budget.RecurringExpenseDialog
+import com.jizhang.app.ui.category.CategoryListDialog
 import com.jizhang.app.ui.importer.ImportDialog
 import com.jizhang.app.ui.mine.MineScreen
 import com.jizhang.app.ui.record.RecordScreen
@@ -71,9 +75,13 @@ fun MainScreen(appViewModel: AppViewModel) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var showRecord by remember { mutableStateOf(false) }
     var showAccounts by remember { mutableStateOf(false) }
+    var showCategories by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showImport by remember { mutableStateOf(false) }
     var showBooks by remember { mutableStateOf(false) }
+    var showRecurring by remember { mutableStateOf(false) }
+    // 非空表示记账页以「编辑这笔账单」的方式打开（账单页点条目进来）
+    var editingTransaction by remember { mutableStateOf<LocalTransaction?>(null) }
     // 导入完成后 +1，用来通知「我的」页刷新本地统计
     var importDone by remember { mutableIntStateOf(0) }
 
@@ -81,6 +89,12 @@ fun MainScreen(appViewModel: AppViewModel) {
     val bookViewModel: BookViewModel = hiltViewModel()
     val bookState by bookViewModel.state.collectAsStateWithLifecycle()
     LaunchedEffect(state.loggedIn) { bookViewModel.setLoggedIn(state.loggedIn) }
+
+    // 预算 ViewModel 提到根部：固定支出覆盖层要挂在 Scaffold 之后才盖得住底部导航栏，
+    // 而它需要预算页的数据（固定支出列表、本期预留、支出分类），
+    // hiltViewModel() 在同一个 ViewModelStoreOwner 下拿到的是同一实例，与预算页共享状态
+    val budgetViewModel: BudgetViewModel = hiltViewModel()
+    val budgetState by budgetViewModel.state.collectAsStateWithLifecycle()
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -154,7 +168,11 @@ fun MainScreen(appViewModel: AppViewModel) {
         floatingActionButton = {
             if (tab == 0) {
                 ExtendedFloatingActionButton(
-                    onClick = { showRecord = true },
+                    // 从悬浮按钮进来一定是新增，得先清掉上一轮可能残留的编辑目标
+                    onClick = {
+                        editingTransaction = null
+                        showRecord = true
+                    },
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary,
                     icon = { Icon(Icons.Filled.Add, contentDescription = null) },
@@ -168,7 +186,13 @@ fun MainScreen(appViewModel: AppViewModel) {
                 0 -> BillScreen(
                     bookId = state.bookId,
                     shared = state.currentBook?.shared == true,
-                    onOpenAccounts = { showAccounts = true }
+                    billTemplate = state.billTemplate,
+                    onOpenAccounts = { showAccounts = true },
+                    onOpenCategories = { showCategories = true },
+                    onEdit = {
+                        editingTransaction = it
+                        showRecord = true
+                    }
                 )
 
                 1 -> ReportScreen(
@@ -176,7 +200,11 @@ fun MainScreen(appViewModel: AppViewModel) {
                     shared = state.currentBook?.shared == true
                 )
 
-                2 -> BudgetScreen(bookId = state.bookId)
+                2 -> BudgetScreen(
+                    bookId = state.bookId,
+                    onOpenRecurring = { showRecurring = true },
+                    viewModel = budgetViewModel
+                )
 
                 else -> MineScreen(
                     bookId = state.bookId,
@@ -200,13 +228,26 @@ fun MainScreen(appViewModel: AppViewModel) {
     if (showRecord) {
         RecordScreen(
             bookId = state.bookId,
-            onDismiss = { showRecord = false },
-            onSaved = { showRecord = false }
+            hapticEnabled = state.hapticEnabled,
+            recordTemplate = state.recordTemplate,
+            editTransaction = editingTransaction,
+            onDismiss = {
+                showRecord = false
+                editingTransaction = null
+            },
+            onSaved = {
+                showRecord = false
+                editingTransaction = null
+            }
         )
     }
 
     if (showAccounts) {
         AccountListDialog(bookId = state.bookId, onDismiss = { showAccounts = false })
+    }
+
+    if (showCategories) {
+        CategoryListDialog(bookId = state.bookId, onDismiss = { showCategories = false })
     }
 
     if (showSettings) {
@@ -219,6 +260,19 @@ fun MainScreen(appViewModel: AppViewModel) {
             onDismiss = { showImport = false },
             onImported = { importDone++ },
             onBillsCleared = { importDone++ }
+        )
+    }
+
+    // 固定支出管理：全屏覆盖层，必须与 Scaffold 同级才能盖住底部导航栏
+    if (showRecurring) {
+        RecurringExpenseDialog(
+            bookId = state.bookId,
+            recurring = budgetState.recurring,
+            reservation = budgetState.reservation,
+            expenseCategories = budgetState.expenseCategories,
+            onSave = budgetViewModel::saveRecurring,
+            onDelete = budgetViewModel::deleteRecurring,
+            onDismiss = { showRecurring = false }
         )
     }
 

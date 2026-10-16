@@ -129,4 +129,29 @@ object BudgetPeriods {
 
     private fun toMillis(date: LocalDate): Long =
         date.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+
+    /* ---------------- 与服务端对齐的线格式 ---------------- */
+
+    /**
+     * 服务端的周期类型用 1/2/3 表达（见 `BudgetPeriod`），
+     * 这里和 [BudgetCycle] 的 ordinal 做转换，别在调用处各写一遍映射。
+     */
+    fun wireCycle(cycle: BudgetCycle): Int = cycle.ordinal + 1
+
+    /** 线格式 -> 周期类型；越界（脏数据 / 老服务端）一律按每月处理，不让它崩 */
+    fun cycleOfWire(value: Int?): BudgetCycle =
+        BudgetCycle.entries.getOrElse((value ?: 1) - 1) { BudgetCycle.MONTH }
+
+    /** period 字符串 -> 服务端要的周期首日（yyyy-MM-dd） */
+    fun startIso(period: String): String = startDate(period).toString()
+
+    /** (cycle, periodStart) -> period 字符串；periodStart 缺失或非法时退回当前周期 */
+    fun ofWire(cycle: Int?, periodStart: String?): String {
+        val resolved = cycleOfWire(cycle)
+        if (periodStart.isNullOrBlank()) {
+            return of(resolved)
+        }
+        return runCatching { of(resolved, LocalDate.parse(periodStart.trim())) }
+            .getOrElse { of(resolved) }
+    }
 }

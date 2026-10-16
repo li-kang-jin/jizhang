@@ -37,3 +37,27 @@ fun categoryIconOf(key: String?): ImageVector = when (key) {
     "trend" -> Icons.Filled.TrendingUp
     else -> Icons.Filled.Category
 }
+
+/** 一个可选的分类图标 */
+data class CategoryIconOption(val key: String, val label: String)
+
+/**
+ * 新建 / 编辑分类时可挑的图标。
+ * <p>
+ * key 必须与 [categoryIconOf] 的分支对应，否则会全部退化成默认图标。
+ */
+val CATEGORY_ICON_OPTIONS: List<CategoryIconOption> = listOf(
+    CategoryIconOption("restaurant", "餐饮"),
+    CategoryIconOption("bus", "交通"),
+    CategoryIconOption("shopping", "购物"),
+    CategoryIconOption("home", "居住"),
+    CategoryIconOption("game", "娱乐"),
+    CategoryIconOption("medical", "医疗"),
+    CategoryIconOption("book", "学习"),
+    CategoryIconOption("phone", "通讯"),
+    CategoryIconOption("gift", "礼物"),
+    CategoryIconOption("salary", "工资"),
+    CategoryIconOption("award", "奖金"),
+    CategoryIconOption("trend", "理财"),
+    CategoryIconOption("category", "其他")
+)

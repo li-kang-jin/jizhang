@@ -44,6 +44,11 @@ public class SyncPullVO {
 
     private List<TransactionVO> transactions = new ArrayList<>();
 
+    private List<BudgetVO> budgets = new ArrayList<>();
+
+    /** 固定支出规则（写走 REST，这里只把别的设备 / 家庭成员改过的规则拉回来） */
+    private List<RecurringExpenseVO> recurringExpenses = new ArrayList<>();
+
     @JsonSerialize(contentUsing = ToStringSerializer.class)
     private List<Long> deletedBookIds = new ArrayList<>();
 
@@ -55,4 +60,10 @@ public class SyncPullVO {
 
     @JsonSerialize(contentUsing = ToStringSerializer.class)
     private List<Long> deletedTransactionIds = new ArrayList<>();
+
+    @JsonSerialize(contentUsing = ToStringSerializer.class)
+    private List<Long> deletedBudgetIds = new ArrayList<>();
+
+    @JsonSerialize(contentUsing = ToStringSerializer.class)
+    private List<Long> deletedRecurringExpenseIds = new ArrayList<>();
 }
