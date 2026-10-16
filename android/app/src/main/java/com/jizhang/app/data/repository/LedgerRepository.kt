@@ -30,18 +30,32 @@ class LedgerRepository @Inject constructor(
     suspend fun cachedCategories(bookId: Long, type: Int): List<LocalCategory> =
         categoryDao.listByBookAndType(bookId, type)
 
-    suspend fun cachedAccounts(bookId: Long): List<LocalAccount> = accountDao.listByBook(bookId)
+    /**
+     * 记账页可选的账户。
+     *
+     * @param includeArchived 编辑已有账单时必须带上归档账户：那笔账原本记在归档账户上，
+     *                        过滤掉会让它在保存时被悄悄改成别的账户
+     */
+    suspend fun cachedAccounts(bookId: Long, includeArchived: Boolean = false): List<LocalAccount> =
+        if (includeArchived) {
+            accountDao.listByBook(bookId)
+        } else {
+            // 全都归档了（或一个都没有）时退回全量：否则记账页会「没有账户可选」，看起来像坏了
+            accountDao.listActiveByBook(bookId).ifEmpty { accountDao.listByBook(bookId) }
+        }
 
     /** 全部分类（支出 + 收入），账单页筛选用 */
     fun observeCategories(bookId: Long): Flow<List<LocalCategory>> = categoryDao.observeByBook(bookId)
 
     /**
-     * 账户列表的变化流。
+     * 账户列表的变化流（只含未归档账户）。
      * <p>
      * 必须用 Flow：在「账户管理 / 分类管理」里新建后，账单页的筛选项要立刻能看到，
      * 一次性读取会因为「同一账本不重复绑定」的早退而停留在旧数据。
+     * 归档账户不再出现在筛选里 —— 用户已经不用它了，留着只会让下拉变长。
      */
-    fun observeAccounts(bookId: Long): Flow<List<LocalAccount>> = accountDao.observeByBook(bookId)
+    fun observeAccounts(bookId: Long): Flow<List<LocalAccount>> =
+        accountDao.observeActiveByBook(bookId)
 
     /**
      * 把本地账本的账户与分类对齐到服务端。
@@ -75,6 +89,8 @@ class LedgerRepository @Inject constructor(
 
         val remoteAccounts = api.accounts(bookId).data.orEmpty().toMutableList()
         val keptLocalIds = mutableSetOf<Long>()
+        // 服务端 id → 本地那一行：整表替换时靠它把 note / archived 这些本机字段贴回去
+        val localExtras = mutableMapOf<Long, LocalAccount>()
         var created = 0
 
         localAccounts.forEach { account ->
@@ -82,6 +98,7 @@ class LedgerRepository @Inject constructor(
                 it.type == account.type && it.name.trim().equals(account.name.trim(), ignoreCase = true)
             }
             if (matched != null) {
+                localExtras[matched.id] = account
                 remapAccount(account.id, matched.id)
                 return@forEach
             }
@@ -102,13 +119,14 @@ class LedgerRepository @Inject constructor(
             }
             created++
             remoteAccounts += createdAccount
+            localExtras[createdAccount.id] = account
             remapAccount(account.id, createdAccount.id)
         }
 
         // 本地账户缓存整体换成服务端数据，保证 id 与服务端一致（拉取时才不会错位）
         val keptRows = localAccounts.filter { it.id in keptLocalIds }
         accountDao.deleteByBook(bookId)
-        accountDao.upsertAll(remoteAccounts.map { it.toLocal() } + keptRows)
+        accountDao.upsertAll(remoteAccounts.map { it.toLocal(localExtras[it.id]) } + keptRows)
         return created
     }
 
@@ -169,7 +187,10 @@ class LedgerRepository @Inject constructor(
         }
 
         if (data.accounts.isNotEmpty()) {
-            accountDao.upsertAll(data.accounts.map { it.toLocal() })
+            // note / archived 是本机字段，服务端不认识：按 id 把本地值贴回去，
+            // 否则用户的备注和归档状态每次同步都会被服务端数据抹掉
+            val existing = accountDao.listByBook(bookId).associateBy { it.id }
+            accountDao.upsertAll(data.accounts.map { it.toLocal(existing[it.id]) })
         }
         if (data.deletedAccountIds.isNotEmpty()) {
             accountDao.deleteByIds(data.deletedAccountIds)

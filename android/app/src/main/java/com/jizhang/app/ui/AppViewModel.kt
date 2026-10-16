@@ -50,10 +50,12 @@ class AppViewModel @Inject constructor(
         val budgetAlertEnabled: Boolean = true,
         /** 记账数字键盘的震动反馈开关 */
         val hapticEnabled: Boolean = true,
-        /** 记账页模板：1 经典 / 2 极简速记 / 3 详情备注 */
+        /** 记账页模板：1 经典键盘 / 2 极简速记 / 3 备注工作台 / 4 网格速记 / 5 再来一笔 */
         val recordTemplate: Int = 1,
         /** 账单页模板：1 清爽列表 / 2 信息卡片 / 3 紧凑单行 */
         val billTemplate: Int = 1,
+        /** 金额隐私模式：资产金额显示成 ****（只影响展示） */
+        val hideAmounts: Boolean = false,
         /** 登录后是否需要提示用户已迁移数据 */
         val loginTip: String? = null,
         /** 一次性提示（切账本、同步结果等） */
@@ -95,6 +97,12 @@ class AppViewModel @Inject constructor(
         viewModelScope.launch {
             settingsStore.billTemplateFlow.collect { value ->
                 _state.update { it.copy(billTemplate = value) }
+            }
+        }
+
+        viewModelScope.launch {
+            settingsStore.hideAmountsFlow.collect { hidden ->
+                _state.update { it.copy(hideAmounts = hidden) }
             }
         }
 
@@ -160,6 +168,16 @@ class AppViewModel @Inject constructor(
 
     fun setHapticEnabled(enabled: Boolean) {
         viewModelScope.launch { settingsStore.setHaptic(enabled) }
+    }
+
+    /** 金额隐私模式开关 */
+    fun setHideAmounts(hidden: Boolean) {
+        viewModelScope.launch { settingsStore.setHideAmounts(hidden) }
+    }
+
+    /** 从账户管理页右上角的眼睛图标切换（等价于设置里的开关） */
+    fun toggleHideAmounts() {
+        setHideAmounts(!_state.value.hideAmounts)
     }
 
     fun setRecordTemplate(value: Int) {

@@ -36,7 +36,9 @@ import com.jizhang.app.data.local.entity.LocalTransaction
     // v6：新增 local_book（多账本 / 家庭共享账本）
     // v7：新增 local_recurring_expense（固定支出，只参与预算预留，不自动记账）
     // v8：local_recurring_expense 增加 pendingSync（固定支出参与多端同步）
-    version = 8,
+    // v9：local_account 增加 note / archived（账户备注与归档停用）
+    // v10：local_budget / local_recurring_expense 增加 pendingDelete（离线删除的墓碑）
+    version = 10,
     exportSchema = false
 )
 abstract class JizhangDatabase : RoomDatabase() {
@@ -202,6 +204,38 @@ abstract class JizhangDatabase : RoomDatabase() {
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS `index_local_recurring_expense_pendingSync` " +
                         "ON `local_recurring_expense` (`pendingSync`)"
+                )
+            }
+        }
+
+        /**
+         * 8 -> 9：local_account 增加 note / archived。
+         * <p>
+         * 两个都是可空 / 带默认值的列，既有账户自动落到「无备注、未归档」，不影响任何数据。
+         * 服务端没有对应字段，因此这两个值只在本机生效（账户同步时不会被覆盖，见 AccountRepository）。
+         */
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `local_account` ADD COLUMN `note` TEXT")
+                db.execSQL(
+                    "ALTER TABLE `local_account` ADD COLUMN `archived` INTEGER NOT NULL DEFAULT 0"
+                )
+            }
+        }
+
+        /**
+         * 9 -> 10：预算 / 固定支出增加 pendingDelete（离线删除的墓碑）。
+         * <p>
+         * 都是带默认值的布尔列，既有记录自动落到「未删除」，不影响任何数据。
+         */
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `local_budget` ADD COLUMN `pendingDelete` INTEGER NOT NULL DEFAULT 0"
+                )
+                db.execSQL(
+                    "ALTER TABLE `local_recurring_expense` " +
+                        "ADD COLUMN `pendingDelete` INTEGER NOT NULL DEFAULT 0"
                 )
             }
         }

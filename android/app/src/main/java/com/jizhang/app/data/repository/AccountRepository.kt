@@ -9,18 +9,24 @@ import com.jizhang.app.data.remote.dto.AccountSaveDto
 import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.math.abs
 
 /**
  * 账户管理。
  * <p>
  * 未登录时纯本地读写；已登录时调用服务端接口并把结果回写到本地缓存，
  * 保证账户 ID 与服务端一致（交易推送时要用到）。
+ * <p>
+ * 例外是 [LocalAccount.note] / [LocalAccount.archived]：服务端没有这两列，
+ * 一律只改本地（同步拉取时也会把本地值贴回去，见 Mappers 里的 `toLocal(existing)`）。
  */
 @Singleton
 class AccountRepository @Inject constructor(
     private val accountDao: AccountDao,
     private val tokenStore: TokenStore,
-    private val api: ApiService
+    private val api: ApiService,
+    private val categoryRepository: CategoryRepository,
+    private val transactionRepository: TransactionRepository
 ) {
 
     fun observeAccounts(bookId: Long): Flow<List<AccountWithBalance>> =
@@ -33,8 +39,11 @@ class AccountRepository @Inject constructor(
         bookId: Long,
         name: String,
         type: Int,
-        initialBalance: Long
+        initialBalance: Long,
+        icon: String? = null,
+        note: String? = null
     ): Result<Unit> = runCatching {
+        val sort = accountDao.countByBook(bookId)
         if (isLoggedIn()) {
             val dto = api.createAccount(
                 AccountSaveDto(
@@ -42,10 +51,13 @@ class AccountRepository @Inject constructor(
                     name = name,
                     type = type,
                     initialBalance = initialBalance,
-                    sort = accountDao.countByBook(bookId)
+                    icon = icon,
+                    sort = sort
                 )
             ).data ?: error("创建账户失败")
-            accountDao.upsert(dto.toLocal())
+            // note / archived 服务端没有，必须自己贴到本地缓存上，
+            // 否则「新建时就填的备注」会被服务端返回体覆盖掉
+            accountDao.upsert(dto.toLocal().copy(note = note))
         } else {
             accountDao.upsert(
                 LocalAccount(
@@ -54,32 +66,109 @@ class AccountRepository @Inject constructor(
                     name = name,
                     type = type,
                     initialBalance = initialBalance,
-                    sort = accountDao.countByBook(bookId)
+                    icon = icon,
+                    sort = sort,
+                    note = note
                 )
             )
         }
     }
 
+    /**
+     * 修改账户。
+     *
+     * @param archived 归档状态：本机字段，只改本地（服务端没有这个概念）
+     */
     suspend fun update(
         id: Long,
         bookId: Long,
         name: String,
         type: Int,
-        initialBalance: Long
+        initialBalance: Long,
+        icon: String? = null,
+        note: String? = null,
+        archived: Boolean = false
     ): Result<Unit> = runCatching {
+        val existing = accountDao.findById(id) ?: error("账户不存在")
         if (isLoggedIn()) {
             val dto = api.updateAccount(
                 id,
-                AccountSaveDto(bookId = bookId, name = name, type = type, initialBalance = initialBalance)
+                AccountSaveDto(
+                    bookId = bookId,
+                    name = name,
+                    type = type,
+                    initialBalance = initialBalance,
+                    icon = icon,
+                    sort = existing.sort
+                )
             ).data ?: error("修改账户失败")
-            accountDao.upsert(dto.toLocal())
-        } else {
-            val existing = accountDao.findById(id) ?: error("账户不存在")
             accountDao.upsert(
-                existing.copy(name = name, type = type, initialBalance = initialBalance)
+                dto.toLocal().copy(note = note, archived = archived, sort = existing.sort)
+            )
+        } else {
+            accountDao.upsert(
+                existing.copy(
+                    name = name,
+                    type = type,
+                    initialBalance = initialBalance,
+                    icon = icon,
+                    note = note,
+                    archived = archived
+                )
             )
         }
     }
+
+    /** 归档 / 取消归档：纯本地状态，不动服务端 */
+    suspend fun setArchived(id: Long, archived: Boolean): Result<Unit> = runCatching {
+        val existing = accountDao.findById(id) ?: error("账户不存在")
+        accountDao.upsert(existing.copy(archived = archived))
+    }
+
+    /**
+     * 重排账户顺序（账户管理页拖拽 / 上下移）。
+     *
+     * @param orderedIds **整本账本**的账户顺序，不是某一组：sort 列是全局序号，
+     *                   只提交组内顺序会和其它组的序号打架
+     */
+    suspend fun reorder(orderedIds: List<Long>): Result<Unit> = runCatching {
+        orderedIds.forEachIndexed { index, id -> accountDao.updateSort(id, index) }
+    }
+
+    /**
+     * 余额校准：把账户余额对到 [targetBalance]（分），差额记成一笔「余额调整」账单。
+     * <p>
+     * 为什么记账单而不是直接改 initialBalance：改初始余额是「静默改写历史」，用户既看不见也撤不回；
+     * 记一笔调整账单则留在流水里可追溯（分类固定为「余额调整」，想筛掉也筛得掉）。
+     * 差额为 0 时什么都不做。
+     *
+     * @return 实际调整的金额（分，带正负）；0 表示本来就是对得上的
+     */
+    suspend fun adjustBalance(bookId: Long, accountId: Long, targetBalance: Long): Result<Long> =
+        runCatching {
+            val current = accountDao.listWithBalance(bookId).firstOrNull { it.id == accountId }
+                ?: error("账户不存在")
+            val diff = targetBalance - current.balance
+            if (diff == 0L) {
+                return@runCatching 0L
+            }
+            // 差额为正说明钱变多了 → 记「收入」；为负 → 记「支出」
+            val type = if (diff > 0) 2 else 1
+            val category = categoryRepository
+                .findOrCreate(bookId, ADJUST_CATEGORY_NAME, type, icon = "category")
+                .getOrThrow()
+            transactionRepository.addLocal(
+                bookId = bookId,
+                type = type,
+                amount = abs(diff),
+                accountId = accountId,
+                categoryId = category.id,
+                tradeTime = System.currentTimeMillis(),
+                remark = "余额校准",
+                tags = null
+            )
+            diff
+        }
 
     suspend fun delete(id: Long): Result<Unit> = runCatching {
         if (isLoggedIn()) {
@@ -92,4 +181,9 @@ class AccountRepository @Inject constructor(
     }
 
     private suspend fun isLoggedIn(): Boolean = !tokenStore.accessToken().isNullOrBlank()
+
+    companion object {
+        /** 余额校准生成的调整账单统一挂在这个分类下，便于筛选 / 排除 */
+        const val ADJUST_CATEGORY_NAME = "余额调整"
+    }
 }

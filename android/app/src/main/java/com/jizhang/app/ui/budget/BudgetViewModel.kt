@@ -188,10 +188,12 @@ class BudgetViewModel @Inject constructor(
         val cents = amount.movePointRight(2).setScale(0, RoundingMode.HALF_UP).toLong()
 
         viewModelScope.launch {
+            // 离线优先：本地写完就成功，服务端由后续同步补推（所以这里不再拿网络错误打扰用户）
             budgetRepository.save(current.bookId, categoryId, current.period, cents)
                 .onSuccess {
                     onDone(null)
                     load()
+                    _state.update { it.copy(message = "预算已保存") }
                 }
                 .onFailure { onDone(it.message ?: "保存失败") }
         }

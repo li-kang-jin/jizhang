@@ -21,6 +21,7 @@ private val KEY_BUDGET_ALERT = booleanPreferencesKey("budget_alert_enabled")
 private val KEY_HAPTIC = booleanPreferencesKey("haptic_enabled")
 private val KEY_RECORD_TEMPLATE = intPreferencesKey("record_template")
 private val KEY_BILL_TEMPLATE = intPreferencesKey("bill_template")
+private val KEY_HIDE_AMOUNTS = booleanPreferencesKey("hide_amounts")
 
 /**
  * 应用外观设置。
@@ -61,12 +62,23 @@ class SettingsStore @Inject constructor(
         context.settingsDataStore.edit { it[KEY_HAPTIC] = enabled }
     }
 
-    /** 记账页模板：1=经典 2=极简速记 3=详情备注 */
+    /** 记账页模板：1=经典键盘 2=极简速记 3=备注工作台 4=网格速记 5=再来一笔 */
     val recordTemplateFlow: Flow<Int> =
         context.settingsDataStore.data.map { it[KEY_RECORD_TEMPLATE] ?: 1 }
 
     suspend fun setRecordTemplate(value: Int) {
         context.settingsDataStore.edit { it[KEY_RECORD_TEMPLATE] = value }
+    }
+
+    /**
+     * 金额隐私模式：打开后账户管理、账户详情与统计页的资产金额显示成 `****`。
+     * <p>默认关闭；开关只影响展示，不改任何数据。
+     */
+    val hideAmountsFlow: Flow<Boolean> =
+        context.settingsDataStore.data.map { it[KEY_HIDE_AMOUNTS] ?: false }
+
+    suspend fun setHideAmounts(hidden: Boolean) {
+        context.settingsDataStore.edit { it[KEY_HIDE_AMOUNTS] = hidden }
     }
 
     /** 账单页模板：1=清爽列表 2=信息卡片 3=紧凑单行 */

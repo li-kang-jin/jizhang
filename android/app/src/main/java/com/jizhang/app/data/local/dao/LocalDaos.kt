@@ -53,6 +53,49 @@ interface TransactionDao {
     )
     suspend fun listByBook(bookId: Long): List<LocalTransaction>
 
+    /**
+     * 最近若干条账单的标签原文（逗号分隔），供记账页提取「常用标签」。
+     * <p>
+     * 只取有标签的行：绝大多数账单没有标签，限定在最近 N 条里才能保证候选有代表性。
+     */
+    @Query(
+        "SELECT tags FROM local_transaction WHERE bookId = :bookId AND pendingDelete = 0 " +
+            "AND tags IS NOT NULL AND tags != '' ORDER BY tradeTime DESC LIMIT :limit"
+    )
+    suspend fun recentTags(bookId: Long, limit: Int): List<String>
+
+    /**
+     * 最近记过的几笔账（最新在前），供记账页「再来一笔」照抄。
+     * <p>
+     * 与 [recentTags] 同理：同一笔账经常反复发生（早餐、打车），直接照抄比重新填一遍快得多。
+     */
+    @Query(
+        "SELECT * FROM local_transaction WHERE bookId = :bookId AND pendingDelete = 0 " +
+            "ORDER BY tradeTime DESC, id DESC LIMIT :limit"
+    )
+    suspend fun recentTransactions(bookId: Long, limit: Int): List<LocalTransaction>
+
+    /**
+     * 某个账户的流水（转出或转入都算），账户详情页用。
+     * <p>
+     * 转账的转入方也是「这个账户发生的事」，所以 toAccountId 命中的记录同样要列出来。
+     */
+    @Query(
+        "SELECT * FROM local_transaction WHERE pendingDelete = 0 " +
+            "AND (accountId = :accountId OR toAccountId = :accountId) " +
+            "ORDER BY tradeTime DESC, id DESC LIMIT :limit"
+    )
+    suspend fun listByAccount(accountId: Long, limit: Int): List<LocalTransaction>
+
+    /** 某账户在区间内的收支汇总（不含转账：转账在转出/转入两边都不是收支） */
+    @Query(
+        "SELECT COALESCE(SUM(CASE WHEN type = 2 THEN amount ELSE 0 END), 0) AS income, " +
+            "COALESCE(SUM(CASE WHEN type = 1 THEN amount ELSE 0 END), 0) AS expense " +
+            "FROM local_transaction WHERE pendingDelete = 0 AND type != 3 AND accountId = :accountId " +
+            "AND tradeTime >= :start AND tradeTime < :end"
+    )
+    suspend fun sumByAccount(accountId: Long, start: Long, end: Long): SumAmountRow
+
     /** 待推送的新增 / 修改（不含待删除） */
     @Query(
         "SELECT * FROM local_transaction WHERE bookId = :bookId AND pendingSync = 1 AND pendingDelete = 0"
@@ -223,16 +266,20 @@ interface AccountDao {
 
     /** 余额计算：初始余额 + 本账户流出净额 + 作为转入方的净额 */
     private companion object {
-        const val BALANCE_SQL =
+        /** 带余额的账户投影，后面按「是否排除归档」拼 WHERE */
+        const val BALANCE_SELECT =
             "SELECT a.id AS id, a.bookId AS bookId, a.name AS name, a.type AS type, " +
                 "a.initialBalance AS initialBalance, a.icon AS icon, a.sort AS sort, " +
+                "a.note AS note, a.archived AS archived, " +
                 "(COALESCE(a.initialBalance, 0) " +
                 " + COALESCE((SELECT SUM(CASE WHEN t.type = 2 THEN t.amount ELSE -t.amount END) " +
                 "   FROM local_transaction t WHERE t.accountId = a.id AND t.pendingDelete = 0), 0) " +
                 " + COALESCE((SELECT SUM(t.amount) FROM local_transaction t " +
                 "   WHERE t.toAccountId = a.id AND t.type = 3 AND t.pendingDelete = 0), 0)" +
                 ") AS balance " +
-                "FROM local_account a WHERE a.bookId = :bookId ORDER BY a.sort, a.id"
+                "FROM local_account a "
+
+        const val BALANCE_SQL = BALANCE_SELECT + "WHERE a.bookId = :bookId ORDER BY a.sort, a.id"
     }
 
     @Query(BALANCE_SQL)
@@ -241,12 +288,27 @@ interface AccountDao {
     @Query(BALANCE_SQL)
     suspend fun listWithBalance(bookId: Long): List<AccountWithBalance>
 
+    /** 未归档账户（记账页选择、账单页筛选用）：归档过的账户不再参与新记账 */
+    @Query(
+        "SELECT * FROM local_account WHERE bookId = :bookId AND archived = 0 ORDER BY sort, id"
+    )
+    suspend fun listActiveByBook(bookId: Long): List<LocalAccount>
+
+    @Query(
+        "SELECT * FROM local_account WHERE bookId = :bookId AND archived = 0 ORDER BY sort, id"
+    )
+    fun observeActiveByBook(bookId: Long): Flow<List<LocalAccount>>
+
     @Query("SELECT * FROM local_account WHERE bookId = :bookId ORDER BY sort, id")
     suspend fun listByBook(bookId: Long): List<LocalAccount>
 
     /** 账单页筛选项、记账页账户选择用：账户变化后要能实时反映 */
     @Query("SELECT * FROM local_account WHERE bookId = :bookId ORDER BY sort, id")
     fun observeByBook(bookId: Long): Flow<List<LocalAccount>>
+
+    /** 调整账户排序（账户管理页拖拽/上下移用） */
+    @Query("UPDATE local_account SET sort = :sort WHERE id = :id")
+    suspend fun updateSort(id: Long, sort: Int)
 
     @Query("SELECT * FROM local_account WHERE id = :id")
     suspend fun findById(id: Long): LocalAccount?

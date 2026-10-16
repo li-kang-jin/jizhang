@@ -33,7 +33,9 @@ object DatabaseModule {
                 JizhangDatabase.MIGRATION_4_5,
                 JizhangDatabase.MIGRATION_5_6,
                 JizhangDatabase.MIGRATION_6_7,
-                JizhangDatabase.MIGRATION_7_8
+                JizhangDatabase.MIGRATION_7_8,
+                JizhangDatabase.MIGRATION_8_9,
+                JizhangDatabase.MIGRATION_9_10
             )
             .fallbackToDestructiveMigration()
             .build()

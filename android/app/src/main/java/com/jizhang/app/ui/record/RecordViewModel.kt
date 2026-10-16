@@ -53,7 +53,11 @@ class RecordViewModel @Inject constructor(
         /** 非空表示正在改这笔账单（保存时走更新而不是新增） */
         val editing: LocalTransaction? = null,
         /** 最近用过的分类（最新在前），经典模板把它做成「常用」快捷行 */
-        val recentCategoryIds: List<Long> = emptyList()
+        val recentCategoryIds: List<Long> = emptyList(),
+        /** 标签的快捷候选：历史高频标签在前，后面跟几个内置兜底 */
+        val tagSuggestions: List<String> = emptyList(),
+        /** 最近记过的账（最新在前），「再来一笔」模板用它做照抄 */
+        val recentTransactions: List<LocalTransaction> = emptyList()
     ) {
         val expressionText: String get() = CalcEngine.expressionText(tokens)
         val resultYuan: BigDecimal? get() = CalcEngine.evaluate(tokens)
@@ -73,7 +77,19 @@ class RecordViewModel @Inject constructor(
     private companion object {
         /** 「常用」快捷行最多展示几个分类 */
         const val RECENT_CATEGORY_LIMIT = 4
+
+        /** 计算「常用标签」时回看多少条带标签的历史账单 */
+        const val TAG_HISTORY_LIMIT = 200
+
+        /** 快捷标签最多给几个（含内置兜底） */
+        const val TAG_SUGGESTION_LIMIT = 8
+
+        /** 「再来一笔」列几笔最近账目 */
+        const val RECENT_TRANSACTION_LIMIT = 3
     }
+
+    /** 历史标签还不够用时的兜底候选，保证新用户第一次进来也有得点 */
+    private val defaultTags = listOf("午餐", "晚餐", "早餐", "饮料", "打车", "超市")
 
     /**
      * 打开记账页时加载账户与分类。
@@ -107,6 +123,7 @@ class RecordViewModel @Inject constructor(
                         ?: categories.firstOrNull()?.id
                 )
             }
+            loadQuickPicks(bookId)
         }
     }
 
@@ -138,7 +155,8 @@ class RecordViewModel @Inject constructor(
         }
 
         viewModelScope.launch {
-            val accounts = ledgerRepository.cachedAccounts(bookId)
+            // 带上归档账户：这笔账可能就记在已归档的账户上，过滤掉会在保存时被悄悄改成别的账户
+            val accounts = ledgerRepository.cachedAccounts(bookId, includeArchived = true)
             val categories = ledgerRepository.cachedCategories(bookId, transaction.type)
             _state.update { current ->
                 current.copy(
@@ -152,12 +170,95 @@ class RecordViewModel @Inject constructor(
                         ?: categories.firstOrNull()?.id
                 )
             }
+            // 编辑态同样要刷新：用户可能刚在账单页改过标签、或新记了一笔
+            loadQuickPicks(bookId)
+        }
+    }
+
+    /**
+     * 「再来一笔」：把某笔历史账单照抄进表单。
+     * <p>
+     * 带走的是「内容」——类型、金额、账户、分类、备注、标签；**不带走时间**（日期固定为今天），
+     * 也不带走 [UiState.editing]（否则按下保存会去改原账单，而不是新记一笔）。
+     * <p>
+     * 分类列表是按收支类型缓存的，照抄可能顺手把类型也换掉，所以要重查一次列表再把原分类选回来。
+     */
+    fun reuseRecent(transaction: LocalTransaction) {
+        val bookId = _state.value.bookId
+        _state.update { current ->
+            current.copy(
+                type = transaction.type,
+                editing = null,
+                tokens = listOf(CalcNum(yuanPlainText(transaction.amount))),
+                // 账户可能已被删：无效就沿用当前选择，别把表单弄成「选了不存在的账户」
+                selectedAccountId = transaction.accountId
+                    .takeIf { id -> current.accounts.any { it.id == id } }
+                    ?: current.selectedAccountId,
+                selectedToAccountId = transaction.toAccountId
+                    ?.takeIf { id -> current.accounts.any { it.id == id } },
+                selectedCategoryId = transaction.categoryId,
+                remark = transaction.remark.orEmpty(),
+                tags = transaction.tags.orEmpty(),
+                tradeDate = LocalDate.now()
+            )
+        }
+
+        if (bookId <= 0L || transaction.type == 3) {
+            return
+        }
+        viewModelScope.launch {
+            val categories = ledgerRepository.cachedCategories(bookId, transaction.type)
+            _state.update { current ->
+                current.copy(
+                    categories = categories,
+                    selectedCategoryId = current.selectedCategoryId
+                        ?.takeIf { id -> categories.any { it.id == id } }
+                        ?: categories.firstOrNull()?.id
+                )
+            }
         }
     }
 
     /** 「分」→ 计算器输入用的「元」文本（去掉多余的零，2500 而不是 2500.00） */
     private fun yuanPlainText(fen: Long): String =
         BigDecimal.valueOf(fen, 2).stripTrailingZeros().toPlainString()
+
+    /**
+     * 计算标签的快捷候选：历史高频标签优先，不足时用内置候选补齐。
+     * <p>
+     * 记账是高频动作，「少打几个字」比「标签体系更规范」更重要，所以这里直接对最近若干条
+     * 带标签的账单做词频统计，而不是让用户先维护一套标签字典。
+     */
+    /**
+     * 刷新页面上的「顺手选项」：常用标签候选 + 最近记过的账。
+     *
+     * 这两份数据随时可能被别处改掉（账单页删一笔、导入、换账本），所以打开页面与每次保存后
+     * 都重新拉一遍，不做缓存。
+     */
+    private suspend fun loadQuickPicks(bookId: Long) {
+        loadTagSuggestions(bookId)
+        loadRecentTransactions(bookId)
+    }
+
+    /** 最近记过的几笔账（最新在前），「再来一笔」模板照抄用 */
+    private suspend fun loadRecentTransactions(bookId: Long) {
+        val recent = runCatching { transactionRepository.recentTransactions(bookId, RECENT_TRANSACTION_LIMIT) }
+            .getOrDefault(emptyList())
+        _state.update { it.copy(recentTransactions = recent) }
+    }
+
+    private suspend fun loadTagSuggestions(bookId: Long) {
+        val history = runCatching { transactionRepository.recentTags(bookId, TAG_HISTORY_LIMIT) }
+            .getOrDefault(emptyList())
+            .flatMap { parseTags(it) }
+            .groupingBy { it }
+            .eachCount()
+            .entries
+            .sortedByDescending { it.value }
+            .map { it.key }
+
+        _state.update { it.copy(tagSuggestions = (history + defaultTags).distinct().take(TAG_SUGGESTION_LIMIT)) }
+    }
 
     private suspend fun loadCategories(bookId: Long, type: Int) {
         val categories = ledgerRepository.cachedCategories(bookId, type)
@@ -217,6 +318,17 @@ class RecordViewModel @Inject constructor(
 
     fun setTags(text: String) {
         _state.update { it.copy(tags = text) }
+    }
+
+    /**
+     * 快捷标签：点一下加上、再点一下去掉。
+     * <p>
+     * 表单里的标签就是一段逗号分隔的文本，所以这里直接按文本增删，不再引一份「已选集合」状态
+     * —— 否则用户手动改过标签文本之后，点选状态会和实际内容对不上。
+     * 文本增删的具体规则与页面里的标签弹窗共用（[toggleTagText]）。
+     */
+    fun toggleTag(tag: String) {
+        _state.update { it.copy(tags = toggleTagText(it.tags, tag)) }
     }
 
     /** 保存到本地（离线可用），返回错误信息或 null（成功） */
@@ -299,6 +411,8 @@ class RecordViewModel @Inject constructor(
             }
             rememberCategory(current.type, current.selectedCategoryId)
             _state.update { it.copy(saving = false) }
+            // 刚记完的这笔立刻进「常用标签 / 最近记过」：连着记下一笔时不用重新打
+            loadQuickPicks(current.bookId)
             onDone(null)
         }
     }
@@ -383,4 +497,27 @@ class RecordViewModel @Inject constructor(
             }
         }
     }
+}
+
+/* -------------------- 标签文本 ⇄ 标签列表 -------------------- */
+
+/** 标签文本的分隔符：中英文逗号 / 分号 / 顿号 / 竖线（与导入解析 `BillCsvParser` 口径一致） */
+internal val TAG_SEPARATOR = Regex("[,，;；、|/]+")
+
+/**
+ * 「逗号分隔的标签文本」→ 标签列表。
+ *
+ * 表单里的标签从来不是一份独立数据结构，就是一段文本；所以「这个标签有没有选」一律按这段
+ * 文本现算。记账页（快捷标签芯片）与 [RecordViewModel] 共用同一套切分规则。
+ */
+internal fun parseTags(raw: String): List<String> =
+    raw.split(TAG_SEPARATOR).map { it.trim() }.filter { it.isNotEmpty() }
+
+/** 快捷标签点选：文本里已有就删掉，没有就追加到末尾，返回新的标签文本 */
+internal fun toggleTagText(raw: String, tag: String): String {
+    val picked = parseTags(raw).toMutableList()
+    if (!picked.remove(tag)) {
+        picked.add(tag)
+    }
+    return picked.joinToString(",")
 }

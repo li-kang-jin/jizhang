@@ -1,14 +1,18 @@
 package com.jizhang.app.ui.common
 
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountBalance
+import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.CardGiftcard
 import androidx.compose.material.icons.filled.Category
+import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.DirectionsBus
 import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LocalHospital
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.PhoneIphone
+import androidx.compose.material.icons.filled.QrCode
 import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.ShoppingCart
@@ -38,8 +42,45 @@ fun categoryIconOf(key: String?): ImageVector = when (key) {
     else -> Icons.Filled.Category
 }
 
+/**
+ * 账户图标映射。
+ * <p>
+ * 与分类图标同一套约定：库里存短标识，客户端负责翻译成 Material 图标，
+ * 服务端不需要知道我们用什么图标库。
+ */
+fun accountIconOf(key: String?): ImageVector = when (key) {
+    "wallet" -> Icons.Filled.AccountBalanceWallet
+    "cash" -> Icons.Filled.Payments
+    "card" -> Icons.Filled.CreditCard
+    "bank" -> Icons.Filled.AccountBalance
+    "online" -> Icons.Filled.QrCode
+    "invest" -> Icons.Filled.TrendingUp
+    else -> Icons.Filled.Category
+}
+
 /** 一个可选的分类图标 */
 data class CategoryIconOption(val key: String, val label: String)
+
+/** 新建 / 编辑账户时可挑的图标，key 必须与 [accountIconOf] 的分支对应 */
+val ACCOUNT_ICON_OPTIONS: List<CategoryIconOption> = listOf(
+    CategoryIconOption("wallet", "钱包"),
+    CategoryIconOption("cash", "现金"),
+    CategoryIconOption("card", "储蓄卡"),
+    CategoryIconOption("bank", "银行"),
+    CategoryIconOption("online", "网络支付"),
+    CategoryIconOption("invest", "投资"),
+    CategoryIconOption("other", "其他")
+)
+
+/** 账户类型 → 默认图标（新建账户时按类型预选一个） */
+fun defaultAccountIconOf(type: Int): String = when (type) {
+    1 -> "cash"
+    2 -> "card"
+    3 -> "card"
+    4, 5 -> "online"
+    6 -> "invest"
+    else -> "wallet"
+}
 
 /**
  * 新建 / 编辑分类时可挑的图标。

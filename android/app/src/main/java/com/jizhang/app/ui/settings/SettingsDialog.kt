@@ -262,13 +262,38 @@ fun SettingsDialog(
                         }
 
                         Spacer(Modifier.height(16.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("金额隐私", style = MaterialTheme.typography.bodyMedium)
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    text = "账户管理与统计页的资产金额显示成 ****，只影响展示",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = appState.hideAmounts,
+                                onCheckedChange = appViewModel::setHideAmounts
+                            )
+                        }
+
+                        Spacer(Modifier.height(16.dp))
                         TemplatePicker(
                             title = "记账页模板",
-                            options = listOf(1 to "经典键盘", 2 to "极简速记", 3 to "备注工作台"),
+                            options = listOf(
+                                1 to "经典键盘",
+                                2 to "极简速记",
+                                3 to "备注工作台",
+                                4 to "网格速记",
+                                5 to "再来一笔"
+                            ),
                             descriptions = mapOf(
                                 1 to "金额大字 + 分类九宫格 + 常驻数字键盘，信息最全",
                                 2 to "金额收进顶栏、分类横滑、键盘铺满，3 秒记一笔",
-                                3 to "卡片表单，备注标签直接展开，键盘按需弹出"
+                                3 to "卡片表单，备注标签直接展开，键盘按需弹出",
+                                4 to "分类九宫格占主屏，账户/备注/标签收进键盘上方底栏",
+                                5 to "列出最近记过的账，点一下照抄内容，改个金额就能存"
                             ),
                             current = appState.recordTemplate,
                             onSelect = appViewModel::setRecordTemplate

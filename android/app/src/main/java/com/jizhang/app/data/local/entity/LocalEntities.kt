@@ -78,7 +78,20 @@ data class LocalAccount(
     /** 初始余额（分） */
     val initialBalance: Long = 0,
     val icon: String? = null,
-    val sort: Int = 0
+    val sort: Int = 0,
+    /**
+     * 备注（卡号后四位、额度提醒之类）。
+     * <p>仅本地字段，服务端没有对应列，不同步。
+     */
+    val note: String? = null,
+    /**
+     * 已归档（停用）。
+     * <p>
+     * 与「删除」的区别：归档后不再出现在记账页的账户选择与账单页筛选里，但历史账单、
+     * 余额统计照旧（钱不会凭空消失）。注销的卡、不再用的账户应该归档而不是删除。
+     * 同样仅本地字段。
+     */
+    val archived: Boolean = false
 )
 
 /**
@@ -103,6 +116,14 @@ data class LocalBudget(
     val remark: String? = null,
     /** 是否待同步到服务端 */
     val pendingSync: Boolean = true,
+    /**
+     * 已删除但还没推送到服务端（墓碑）。
+     * <p>
+     * 断网时删掉一条已经同步过的预算，如果直接物理删除，下次同步拉取会把它「复活」；
+     * 所以本地先打上墓碑（界面立刻不可见），由 [com.jizhang.app.data.repository.BudgetRepository.pushPending]
+     * 删完服务端再物理删掉。
+     */
+    val pendingDelete: Boolean = false,
     /** 本地最后修改时间（epoch millis） */
     val clientUpdatedAt: Long = System.currentTimeMillis()
 )
@@ -144,7 +165,9 @@ data class LocalRecurringExpense(
     val enabled: Boolean = true,
     val remark: String? = null,
     /** 是否待同步到服务端 */
-    val pendingSync: Boolean = true
+    val pendingSync: Boolean = true,
+    /** 已删除但还没推送到服务端（墓碑），语义同 [LocalBudget.pendingDelete] */
+    val pendingDelete: Boolean = false
 ) {
     companion object {
         const val FREQ_WEEKLY = 1
@@ -166,5 +189,7 @@ data class AccountWithBalance(
     val initialBalance: Long,
     val icon: String?,
     val sort: Int,
-    val balance: Long
+    val balance: Long,
+    val note: String? = null,
+    val archived: Boolean = false
 )

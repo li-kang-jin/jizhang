@@ -1,6 +1,7 @@
 package com.jizhang.app.data.repository
 
 import com.jizhang.app.data.local.JizhangDatabase
+import com.jizhang.app.data.local.dao.SumAmountRow
 import com.jizhang.app.data.local.dao.TransactionDao
 import com.jizhang.app.data.local.entity.LocalTransaction
 import com.jizhang.app.data.local.newClientId
@@ -107,6 +108,22 @@ class TransactionRepository @Inject constructor(
         )
         return true
     }
+
+    /** 最近若干条带标签的账单的标签原文，记账页用它算「常用标签」 */
+    suspend fun recentTags(bookId: Long, limit: Int): List<String> =
+        transactionDao.recentTags(bookId, limit)
+
+    /** 最近记过的若干笔账，记账页「再来一笔」模板用它做照抄 */
+    suspend fun recentTransactions(bookId: Long, limit: Int): List<LocalTransaction> =
+        transactionDao.recentTransactions(bookId, limit)
+
+    /** 某个账户的流水（转出 / 转入都算），账户详情页用 */
+    suspend fun listByAccount(accountId: Long, limit: Int): List<LocalTransaction> =
+        transactionDao.listByAccount(accountId, limit)
+
+    /** 某账户区间内的收支汇总（不含转账） */
+    suspend fun sumByAccount(accountId: Long, start: Long, end: Long): SumAmountRow =
+        transactionDao.sumByAccount(accountId, start, end)
 
     /**
      * 删除记账。

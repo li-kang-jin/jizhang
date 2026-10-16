@@ -46,6 +46,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jizhang.app.data.local.entity.LocalTransaction
 import com.jizhang.app.ui.AppViewModel
+import com.jizhang.app.ui.account.AccountDetailDialog
 import com.jizhang.app.ui.account.AccountListDialog
 import com.jizhang.app.ui.bill.BillScreen
 import com.jizhang.app.ui.book.BookListDialog
@@ -80,6 +81,8 @@ fun MainScreen(appViewModel: AppViewModel) {
     var showImport by remember { mutableStateOf(false) }
     var showBooks by remember { mutableStateOf(false) }
     var showRecurring by remember { mutableStateOf(false) }
+    // 非空表示账户详情覆盖层打开着（账户管理页点某一行进来）
+    var detailAccountId by remember { mutableStateOf<Long?>(null) }
     // 非空表示记账页以「编辑这笔账单」的方式打开（账单页点条目进来）
     var editingTransaction by remember { mutableStateOf<LocalTransaction?>(null) }
     // 导入完成后 +1，用来通知「我的」页刷新本地统计
@@ -197,7 +200,9 @@ fun MainScreen(appViewModel: AppViewModel) {
 
                 1 -> ReportScreen(
                     bookId = state.bookId,
-                    shared = state.currentBook?.shared == true
+                    shared = state.currentBook?.shared == true,
+                    hideAmounts = state.hideAmounts,
+                    onOpenAccounts = { showAccounts = true }
                 )
 
                 2 -> BudgetScreen(
@@ -243,7 +248,23 @@ fun MainScreen(appViewModel: AppViewModel) {
     }
 
     if (showAccounts) {
-        AccountListDialog(bookId = state.bookId, onDismiss = { showAccounts = false })
+        AccountListDialog(
+            bookId = state.bookId,
+            hideAmounts = state.hideAmounts,
+            onToggleHideAmounts = appViewModel::toggleHideAmounts,
+            onOpenDetail = { detailAccountId = it.id },
+            onDismiss = { showAccounts = false }
+        )
+    }
+
+    // 账户详情同样挂在页面根部：它是全屏覆盖层，塞进账户管理页里会拿不到正确的 insets
+    detailAccountId?.let { accountId ->
+        AccountDetailDialog(
+            bookId = state.bookId,
+            accountId = accountId,
+            hideAmounts = state.hideAmounts,
+            onDismiss = { detailAccountId = null }
+        )
     }
 
     if (showCategories) {

@@ -72,6 +72,22 @@ class CategoryRepository @Inject constructor(
         }
     }
 
+    /**
+     * 按名称找分类，没有就新建一个。
+     * <p>
+     * 给「余额校准」这类系统动作准备一个稳定分类用：既不该让用户先手工建好，
+     * 也不能每次校准都新建一个重名分类。
+     */
+    suspend fun findOrCreate(
+        bookId: Long,
+        name: String,
+        type: Int,
+        icon: String? = null
+    ): Result<LocalCategory> = runCatching {
+        categoryDao.listByBookAndType(bookId, type).firstOrNull { it.name == name }
+            ?: create(bookId, name, type, icon).getOrThrow()
+    }
+
     suspend fun update(
         id: Long,
         bookId: Long,

@@ -29,6 +29,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -73,6 +74,10 @@ import kotlin.math.roundToInt
 fun ReportScreen(
     bookId: Long,
     shared: Boolean = false,
+    /** 金额隐私模式：资产金额显示成 ****（设置里的开关） */
+    hideAmounts: Boolean = false,
+    /** 「资产管理」入口：统计页的资产卡片上给一个跳到账户管理的口子 */
+    onOpenAccounts: (() -> Unit)? = null,
     viewModel: ReportViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -103,7 +108,7 @@ fun ReportScreen(
             item { BudgetCard(state.budget, onEdit = { showBudgetDialog = true }) }
             item { CategoryCard(state, onSwitch = viewModel::switchCategoryType) }
             item { TrendCard(state.trend) }
-            item { AssetCard(state) }
+            item { AssetCard(state, hideAmounts, onOpenAccounts) }
         }
 
         SnackbarHost(
@@ -701,12 +706,22 @@ private fun TrendCard(trend: List<TrendItemDto>) {
 }
 
 @Composable
-private fun AssetCard(state: ReportViewModel.UiState) {
+private fun AssetCard(
+    state: ReportViewModel.UiState,
+    hideAmounts: Boolean = false,
+    onManage: (() -> Unit)? = null
+) {
     CardBox {
-        Text("资产分布", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("资产分布", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            if (onManage != null) {
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = onManage) { Text("资产管理") }
+            }
+        }
         Spacer(Modifier.height(6.dp))
         Text(
-            text = "总资产 ¥${formatAmount(state.totalAssets)}",
+            text = if (hideAmounts) "总资产 ¥ ****" else "总资产 ¥${formatAmount(state.totalAssets)}",
             style = MaterialTheme.typography.titleMedium,
             color = MaterialTheme.colorScheme.primary,
             fontWeight = FontWeight.Bold
@@ -729,7 +744,7 @@ private fun AssetCard(state: ReportViewModel.UiState) {
                     Text(account.name, style = MaterialTheme.typography.bodyMedium)
                     Spacer(Modifier.weight(1f))
                     Text(
-                        text = formatAmount(account.balance),
+                        text = if (hideAmounts) "****" else formatAmount(account.balance),
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium
                     )
