@@ -37,6 +37,52 @@ data class MemberAmountRow(
     val txCount: Long
 )
 
+/**
+ * 区间总览：收支 + 笔数 + 转账 + 记账天数。
+ * <p>
+ * 一次查询拿全，省得为了「日均、笔数、转账」再跑好几趟库；转账单独列出来，
+ * 不混进收支口径（转账只是钱在账户之间挪，不是花掉）。
+ */
+data class RangeSummaryRow(
+    val income: Long,
+    val expense: Long,
+    val incomeCount: Long,
+    val expenseCount: Long,
+    val transferCount: Long,
+    val transferAmount: Long,
+    /** 有记账的天数（不含只有转账的天） */
+    val activeDays: Long
+)
+
+/** 按账户聚合的收支（不含转账：转账在转出/转入两边都不是收支） */
+data class AccountAmountRow(
+    val accountId: Long,
+    val income: Long,
+    val expense: Long,
+    val txCount: Long
+)
+
+/** 按星期聚合（0=周日 … 6=周六），不含转账 */
+data class WeekdayAmountRow(
+    val weekday: Int,
+    val expense: Long,
+    val txCount: Long
+)
+
+/** 标签原文 + 金额：标签是逗号分隔的单列，拆分成多标签统计放在内存里做 */
+data class TagAmountRow(
+    val tags: String,
+    /** 1=支出 2=收入 */
+    val type: Int,
+    val amount: Long
+)
+
+/** 区间内首笔 / 末笔的记账时刻 */
+data class TimeBoundRow(
+    val firstTime: Long?,
+    val lastTime: Long?
+)
+
 @Dao
 interface TransactionDao {
 
@@ -196,17 +242,92 @@ interface TransactionDao {
     )
     suspend fun sumByDay(bookId: Long, start: Long, end: Long): List<PeriodAmountRow>
 
-    /** 按记账人聚合收支（家庭账本「谁花了多少」） */
+    /** 按记账人聚合收支（家庭账本「谁花了多少」）；笔数不含转账 */
     @Query(
         "SELECT createdBy AS createdBy, " +
             "COALESCE(SUM(CASE WHEN type = 2 THEN amount ELSE 0 END), 0) AS income, " +
             "COALESCE(SUM(CASE WHEN type = 1 THEN amount ELSE 0 END), 0) AS expense, " +
-            "COUNT(*) AS txCount " +
+            "COALESCE(SUM(CASE WHEN type != 3 THEN 1 ELSE 0 END), 0) AS txCount " +
             "FROM local_transaction WHERE bookId = :bookId AND pendingDelete = 0 " +
             "AND tradeTime >= :start AND tradeTime < :end " +
             "GROUP BY createdBy ORDER BY expense DESC"
     )
     suspend fun sumByMember(bookId: Long, start: Long, end: Long): List<MemberAmountRow>
+
+    /* ---------------- 统计页增强（日 / 月 / 年 + 多维度） ---------------- */
+
+    /** 区间总览：收支 / 笔数 / 转账 / 记账天数，一次查全 */
+    @Query(
+        "SELECT COALESCE(SUM(CASE WHEN type = 2 THEN amount ELSE 0 END), 0) AS income, " +
+            "COALESCE(SUM(CASE WHEN type = 1 THEN amount ELSE 0 END), 0) AS expense, " +
+            "COALESCE(SUM(CASE WHEN type = 2 THEN 1 ELSE 0 END), 0) AS incomeCount, " +
+            "COALESCE(SUM(CASE WHEN type = 1 THEN 1 ELSE 0 END), 0) AS expenseCount, " +
+            "COALESCE(SUM(CASE WHEN type = 3 THEN 1 ELSE 0 END), 0) AS transferCount, " +
+            "COALESCE(SUM(CASE WHEN type = 3 THEN amount ELSE 0 END), 0) AS transferAmount, " +
+            "COUNT(DISTINCT CASE WHEN type != 3 THEN " +
+            "  strftime('%Y-%m-%d', tradeTime / 1000, 'unixepoch', 'localtime') END) AS activeDays " +
+            "FROM local_transaction WHERE bookId = :bookId AND pendingDelete = 0 " +
+            "AND tradeTime >= :start AND tradeTime < :end"
+    )
+    suspend fun rangeSummary(bookId: Long, start: Long, end: Long): RangeSummaryRow
+
+    /** 按自然月聚合（年视图的 12 根柱），period 为 yyyy-MM */
+    @Query(
+        "SELECT strftime('%Y-%m', tradeTime / 1000, 'unixepoch', 'localtime') AS period, " +
+            "COALESCE(SUM(CASE WHEN type = 2 THEN amount ELSE 0 END), 0) AS income, " +
+            "COALESCE(SUM(CASE WHEN type = 1 THEN amount ELSE 0 END), 0) AS expense " +
+            "FROM local_transaction WHERE bookId = :bookId AND pendingDelete = 0 " +
+            "AND tradeTime >= :start AND tradeTime < :end GROUP BY period ORDER BY period"
+    )
+    suspend fun sumByMonth(bookId: Long, start: Long, end: Long): List<PeriodAmountRow>
+
+    /** 按小时聚合（日视图的 24 根柱），period 为 00-23 */
+    @Query(
+        "SELECT strftime('%H', tradeTime / 1000, 'unixepoch', 'localtime') AS period, " +
+            "COALESCE(SUM(CASE WHEN type = 2 THEN amount ELSE 0 END), 0) AS income, " +
+            "COALESCE(SUM(CASE WHEN type = 1 THEN amount ELSE 0 END), 0) AS expense " +
+            "FROM local_transaction WHERE bookId = :bookId AND pendingDelete = 0 " +
+            "AND tradeTime >= :start AND tradeTime < :end GROUP BY period ORDER BY period"
+    )
+    suspend fun sumByHour(bookId: Long, start: Long, end: Long): List<PeriodAmountRow>
+
+    /** 按星期几聚合（记账习惯：哪天最爱花钱） */
+    @Query(
+        "SELECT CAST(strftime('%w', tradeTime / 1000, 'unixepoch', 'localtime') AS INTEGER) AS weekday, " +
+            "COALESCE(SUM(CASE WHEN type = 1 THEN amount ELSE 0 END), 0) AS expense, " +
+            "COUNT(*) AS txCount " +
+            "FROM local_transaction WHERE bookId = :bookId AND pendingDelete = 0 AND type != 3 " +
+            "AND tradeTime >= :start AND tradeTime < :end GROUP BY weekday ORDER BY weekday"
+    )
+    suspend fun sumByWeekday(bookId: Long, start: Long, end: Long): List<WeekdayAmountRow>
+
+    /** 按账户聚合的收支排行（不含转账） */
+    @Query(
+        "SELECT accountId AS accountId, " +
+            "COALESCE(SUM(CASE WHEN type = 2 THEN amount ELSE 0 END), 0) AS income, " +
+            "COALESCE(SUM(CASE WHEN type = 1 THEN amount ELSE 0 END), 0) AS expense, " +
+            "COUNT(*) AS txCount " +
+            "FROM local_transaction WHERE bookId = :bookId AND pendingDelete = 0 AND type != 3 " +
+            "AND tradeTime >= :start AND tradeTime < :end GROUP BY accountId"
+    )
+    suspend fun sumByAccountGroup(bookId: Long, start: Long, end: Long): List<AccountAmountRow>
+
+    /** 区间内带标签的账单（标签原文 + 金额）；逗号串的拆分统计在内存里做 */
+    @Query(
+        "SELECT tags AS tags, type AS type, amount AS amount FROM local_transaction " +
+            "WHERE bookId = :bookId AND pendingDelete = 0 AND type != 3 " +
+            "AND tags IS NOT NULL AND tags != '' " +
+            "AND tradeTime >= :start AND tradeTime < :end"
+    )
+    suspend fun listTagAmounts(bookId: Long, start: Long, end: Long): List<TagAmountRow>
+
+    /** 区间内首笔 / 末笔记账时刻 */
+    @Query(
+        "SELECT MIN(tradeTime) AS firstTime, MAX(tradeTime) AS lastTime FROM local_transaction " +
+            "WHERE bookId = :bookId AND pendingDelete = 0 AND type != 3 " +
+            "AND tradeTime >= :start AND tradeTime < :end"
+    )
+    suspend fun timeBounds(bookId: Long, start: Long, end: Long): TimeBoundRow
 
     /** 账户作为主账户的净流入（支出/转账为负，收入为正） */
     @Query(
@@ -270,7 +391,7 @@ interface AccountDao {
         const val BALANCE_SELECT =
             "SELECT a.id AS id, a.bookId AS bookId, a.name AS name, a.type AS type, " +
                 "a.initialBalance AS initialBalance, a.icon AS icon, a.sort AS sort, " +
-                "a.note AS note, a.archived AS archived, " +
+                "a.note AS note, a.archived AS archived, a.includeInTotal AS includeInTotal, " +
                 "(COALESCE(a.initialBalance, 0) " +
                 " + COALESCE((SELECT SUM(CASE WHEN t.type = 2 THEN t.amount ELSE -t.amount END) " +
                 "   FROM local_transaction t WHERE t.accountId = a.id AND t.pendingDelete = 0), 0) " +

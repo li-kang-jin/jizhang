@@ -48,6 +48,7 @@ import com.jizhang.app.data.local.entity.LocalTransaction
 import com.jizhang.app.ui.AppViewModel
 import com.jizhang.app.ui.account.AccountDetailDialog
 import com.jizhang.app.ui.account.AccountListDialog
+import com.jizhang.app.ui.bill.BillPreset
 import com.jizhang.app.ui.bill.BillScreen
 import com.jizhang.app.ui.book.BookListDialog
 import com.jizhang.app.ui.book.BookMemberDialog
@@ -87,6 +88,10 @@ fun MainScreen(appViewModel: AppViewModel) {
     var editingTransaction by remember { mutableStateOf<LocalTransaction?>(null) }
     // 导入完成后 +1，用来通知「我的」页刷新本地统计
     var importDone by remember { mutableIntStateOf(0) }
+
+    // 统计页点分类 / 账户 / 标签 → 切到账单页并带上筛选条件。
+    // 状态放在这里（而不是统计页内部）：切 Tab 后统计页会被销毁，预设得由存活的父级保管
+    var pendingBillPreset by remember { mutableStateOf<BillPreset?>(null) }
 
     // 账本管理只在 MainScreen 根部持有，列表 / 成员两个覆盖层共用同一份状态
     val bookViewModel: BookViewModel = hiltViewModel()
@@ -195,14 +200,20 @@ fun MainScreen(appViewModel: AppViewModel) {
                     onEdit = {
                         editingTransaction = it
                         showRecord = true
-                    }
+                    },
+                    preset = pendingBillPreset,
+                    onPresetConsumed = { pendingBillPreset = null }
                 )
 
                 1 -> ReportScreen(
                     bookId = state.bookId,
                     shared = state.currentBook?.shared == true,
                     hideAmounts = state.hideAmounts,
-                    onOpenAccounts = { showAccounts = true }
+                    onOpenAccounts = { showAccounts = true },
+                    onOpenBills = { preset ->
+                        pendingBillPreset = preset
+                        tab = 0
+                    }
                 )
 
                 2 -> BudgetScreen(

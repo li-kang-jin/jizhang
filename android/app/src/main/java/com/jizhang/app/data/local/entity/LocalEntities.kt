@@ -91,7 +91,14 @@ data class LocalAccount(
      * 余额统计照旧（钱不会凭空消失）。注销的卡、不再用的账户应该归档而不是删除。
      * 同样仅本地字段。
      */
-    val archived: Boolean = false
+    val archived: Boolean = false,
+    /**
+     * 是否计入总资产：0=否 1=是。
+     * <p>
+     * 服务端有这个字段并在账户接口里下发（`AccountVO.includeInTotal`），本地必须存下来：
+     * 否则统计页算总资产时会把「不计入」的账户（只用来走账的中间卡）也算进去。
+     */
+    val includeInTotal: Int = 1
 )
 
 /**
@@ -191,5 +198,6 @@ data class AccountWithBalance(
     val sort: Int,
     val balance: Long,
     val note: String? = null,
-    val archived: Boolean = false
+    val archived: Boolean = false,
+    val includeInTotal: Int = 1
 )

@@ -75,7 +75,8 @@ fun AccountDto.toLocal(): LocalAccount = LocalAccount(
     type = type,
     initialBalance = initialBalance,
     icon = icon,
-    sort = sort
+    sort = sort,
+    includeInTotal = includeInTotal
 )
 
 /**
@@ -83,6 +84,9 @@ fun AccountDto.toLocal(): LocalAccount = LocalAccount(
  *
  * 服务端没有 note / archived 两列，同步拉取时若直接用 DTO 覆盖本地，
  * 用户写的备注与「已归档」会在每次同步后被抹掉。
+ *
+ * `includeInTotal` 相反：它是服务端字段，必须由服务端版本覆盖本地，
+ * 否则管理后台改过的「不计入总资产」永远同步不下来。
  *
  * @param existing 本地已有的同 id 账户（没有就是服务端新增的）
  */

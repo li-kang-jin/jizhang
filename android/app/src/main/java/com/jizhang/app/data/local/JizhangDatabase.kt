@@ -38,7 +38,8 @@ import com.jizhang.app.data.local.entity.LocalTransaction
     // v8：local_recurring_expense 增加 pendingSync（固定支出参与多端同步）
     // v9：local_account 增加 note / archived（账户备注与归档停用）
     // v10：local_budget / local_recurring_expense 增加 pendingDelete（离线删除的墓碑）
-    version = 10,
+    // v11：local_account 增加 includeInTotal（是否计入总资产，统计页资产口径要用）
+    version = 11,
     exportSchema = false
 )
 abstract class JizhangDatabase : RoomDatabase() {
@@ -236,6 +237,20 @@ abstract class JizhangDatabase : RoomDatabase() {
                 db.execSQL(
                     "ALTER TABLE `local_recurring_expense` " +
                         "ADD COLUMN `pendingDelete` INTEGER NOT NULL DEFAULT 0"
+                )
+            }
+        }
+
+        /**
+         * 10 -> 11：local_account 增加 includeInTotal（是否计入总资产）。
+         * <p>
+         * 带默认值的列，既有账户自动落到「计入总资产」——与服务端默认值一致，
+         * 不影响任何既有数据；服务端下次同步会把用户真正的选择带下来。
+         */
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `local_account` ADD COLUMN `includeInTotal` INTEGER NOT NULL DEFAULT 1"
                 )
             }
         }

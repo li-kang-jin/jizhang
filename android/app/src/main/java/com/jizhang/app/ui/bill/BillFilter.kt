@@ -25,6 +25,24 @@ enum class BillSort(val label: String) {
 }
 
 /**
+ * 从别的页面跳进账单页时携带的筛选预设。
+ *
+ * 典型场景：统计页点「餐饮」分类 / 某个账户 / 某个标签，直接跳到账单页看到对应的那批账单，
+ * 并且把时间范围限定成统计页正在看的那个周期（否则点进去是「本月」，跟看到的数字对不上）。
+ * <p>
+ * 字段全部可空：只填需要的，其余保持账单页默认。
+ */
+data class BillPreset(
+    val type: Int? = null,
+    val categoryId: Long? = null,
+    val accountId: Long? = null,
+    val keyword: String? = null,
+    /** 左闭右闭的毫秒区间（与统计页周期对齐） */
+    val startMillis: Long? = null,
+    val endMillis: Long? = null
+)
+
+/**
  * 账单筛选条件。
  *
  * 全部在内存里对已加载的账单做过滤 —— 单账本数据量小，没必要为筛选再改 Room 查询，

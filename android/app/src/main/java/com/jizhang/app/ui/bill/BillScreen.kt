@@ -112,6 +112,9 @@ fun BillScreen(
     onOpenCategories: () -> Unit,
     /** 点条目进「编辑账单」；记账页由 MainScreen 以编辑模式打开 */
     onEdit: (LocalTransaction) -> Unit,
+    /** 从统计页等地方跳进来时带的筛选预设（用完即弃） */
+    preset: BillPreset? = null,
+    onPresetConsumed: () -> Unit = {},
     viewModel: BillViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -123,6 +126,17 @@ fun BillScreen(
 
     // 账本变化（登录 / 退出）时重新绑定数据源
     LaunchedEffect(bookId) { viewModel.bind(bookId) }
+
+    // 统计页跳过来：带上分类 / 账户 / 标签与时间范围，搜索框自动展开好让用户看见筛选条件
+    LaunchedEffect(preset) {
+        preset?.let {
+            if (!it.keyword.isNullOrBlank()) {
+                searchExpanded = true
+            }
+            viewModel.applyPreset(it)
+            onPresetConsumed()
+        }
+    }
 
     LaunchedEffect(state.message) {
         state.message?.let {

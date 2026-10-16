@@ -167,6 +167,29 @@ class BillViewModel @Inject constructor(
 
     fun clearFilter() = applyFilter { BillFilter() }
 
+    /**
+     * 应用外部传入的筛选预设（统计页点分类 / 账户 / 标签跳过来）。
+     * <p>
+     * 与 [applyFilter] 的区别：这里是**整份替换**而不是叠加 —— 用户从统计页带着明确意图过来，
+     * 上一次遗留的筛选条件只会让结果对不上，所以先清空再套用。
+     */
+    fun applyPreset(preset: BillPreset) {
+        _state.update { current ->
+            val hasRange = preset.startMillis != null && preset.endMillis != null
+            current.copy(
+                filter = BillFilter(
+                    range = if (hasRange) BillDateRange.CUSTOM else current.filter.range,
+                    customStart = preset.startMillis,
+                    customEnd = preset.endMillis,
+                    type = preset.type ?: 0,
+                    accountId = preset.accountId,
+                    categoryIds = preset.categoryId?.let { setOf(it) } ?: emptySet(),
+                    keyword = preset.keyword.orEmpty()
+                )
+            ).withDerived()
+        }
+    }
+
     /* ---------------- 派生数据 ---------------- */
 
     /**

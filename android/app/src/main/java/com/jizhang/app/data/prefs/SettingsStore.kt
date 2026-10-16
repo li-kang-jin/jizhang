@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.jizhang.app.data.repository.ReportGranularity
 import com.jizhang.app.ui.theme.AppTheme
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
@@ -22,6 +23,7 @@ private val KEY_HAPTIC = booleanPreferencesKey("haptic_enabled")
 private val KEY_RECORD_TEMPLATE = intPreferencesKey("record_template")
 private val KEY_BILL_TEMPLATE = intPreferencesKey("bill_template")
 private val KEY_HIDE_AMOUNTS = booleanPreferencesKey("hide_amounts")
+private val KEY_REPORT_GRANULARITY = stringPreferencesKey("report_granularity")
 
 /**
  * 应用外观设置。
@@ -87,5 +89,18 @@ class SettingsStore @Inject constructor(
 
     suspend fun setBillTemplate(value: Int) {
         context.settingsDataStore.edit { it[KEY_BILL_TEMPLATE] = value }
+    }
+
+    /**
+     * 统计页上次看的时间粒度（日 / 月 / 年）。
+     * 记住它，用户上次按「年」看，下次进来就不用再切一遍。
+     */
+    suspend fun reportGranularity(): ReportGranularity {
+        val key = context.settingsDataStore.data.first()[KEY_REPORT_GRANULARITY]
+        return ReportGranularity.entries.firstOrNull { it.name == key } ?: ReportGranularity.MONTH
+    }
+
+    suspend fun setReportGranularity(granularity: ReportGranularity) {
+        context.settingsDataStore.edit { it[KEY_REPORT_GRANULARITY] = granularity.name }
     }
 }
