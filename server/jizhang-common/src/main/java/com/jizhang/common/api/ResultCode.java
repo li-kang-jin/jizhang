@@ -31,6 +31,7 @@ public enum ResultCode {
     /* 账户 3xxx */
     ACCOUNT_NOT_FOUND(3001, "账户不存在"),
     ACCOUNT_BALANCE_NOT_ENOUGH(3002, "账户余额不足"),
+    ACCOUNT_IN_USE(3003, "账户下还有交易流水，无法删除"),
 
     /* 分类 4xxx */
     CATEGORY_NOT_FOUND(4001, "分类不存在"),

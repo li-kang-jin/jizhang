@@ -496,12 +496,18 @@
 | GET | `/admin/users` | 用户列表（分页、搜索） |
 | PUT | `/admin/users/{id}/status` | 启用/禁用用户 |
 | GET | `/admin/books` | 账本列表 |
-| GET | `/admin/transactions` | 交易列表 |
+| GET | `/admin/accounts` | 账户列表（分页，可按账本 / 所有者 / 类型 / 名称筛选，带账本名与所有者） |
+| POST | `/admin/accounts` | 创建账户（请求体同 `/app/accounts` 的创建） |
+| PUT | `/admin/accounts/{id}` | 修改账户（不允许改动所属账本，`bookId` 被忽略） |
+| DELETE | `/admin/accounts/{id}` | 删除账户（账户下仍有流水时拒绝，code=3003） |
+| GET | `/admin/transactions` | 交易列表（可传 `accountId` 只看某账户的流水，转出/转入都算） |
 | GET | `/admin/statistics/overview` | 平台总览（用户数、活跃数、交易量） |
 | GET | `/admin/statistics/trend` | 平台增长趋势 |
 
 > 管理后台接口需要管理员角色（`role = ADMIN`），与 C 端 Token 隔离。
-> 它是**运营后台**（管用户 / 账本 / 交易 / 平台指标），不承载预算、固定支出这类业务功能。
+> 它是**运营后台**（管用户 / 账本 / 账户 / 交易 / 平台指标），不承载预算、固定支出这类业务功能。
+> 账户列表与交易列表会额外返回 `bookName`、`ownerUsername`、`accountName`、`toAccountName`、
+> `categoryName` 这些展示名（App 端接口不填，保持只返回 ID）。
 
 ---
 
@@ -517,7 +523,8 @@
    交易带 `createdBy`；`/app/reports/member` 按成员统计「谁花了多少」
 6. **预算与固定支出**：月 / 周 / 年总预算与分类预算、执行进度与每日预测；
    固定支出规则（房租 / 房贷 / 会员费）随同步下发给多设备与家庭成员
-7. 管理后台：管理员登录、用户查询与启用/禁用、账本查询、交易查询、平台总览与增长趋势
+7. 管理后台：管理员登录、用户查询与启用/禁用、账本查询、账户增删改查与账户流水、交易查询、
+   平台总览与增长趋势
 8. SpringDoc 在线接口文档（`/swagger-ui.html`）
 
 ### 待实现（阶段二）

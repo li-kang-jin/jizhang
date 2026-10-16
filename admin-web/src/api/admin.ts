@@ -1,5 +1,6 @@
-import { get, post, put } from './request'
+import { del, get, post, put } from './request'
 import type {
+  AccountInfo,
   BookInfo,
   LoginPayload,
   PageResult,
@@ -73,6 +74,8 @@ export interface TransactionQuery {
   page?: number
   size?: number
   bookId?: string
+  /** 按账户过滤：转出或转入命中该账户的流水都会返回 */
+  accountId?: string
   userId?: string
   type?: number | undefined
   keyword?: string
@@ -82,4 +85,44 @@ export interface TransactionQuery {
 
 export function fetchTransactions(params: TransactionQuery): Promise<PageResult<TransactionInfo>> {
   return get<PageResult<TransactionInfo>>('/admin/transactions', params as Record<string, unknown>)
+}
+
+/* ---------------- 账户 ---------------- */
+
+export interface AccountQuery {
+  page?: number
+  size?: number
+  keyword?: string
+  bookId?: string
+  userId?: string
+  type?: number | undefined
+}
+
+/** 新增 / 修改账户的请求体；金额单位为「分」 */
+export interface AccountPayload {
+  bookId: string
+  name: string
+  type: number
+  initialBalance?: number
+  currency?: string
+  icon?: string
+  sort?: number
+  includeInTotal?: number
+}
+
+export function fetchAccounts(params: AccountQuery): Promise<PageResult<AccountInfo>> {
+  return get<PageResult<AccountInfo>>('/admin/accounts', params as Record<string, unknown>)
+}
+
+export function createAccount(payload: AccountPayload): Promise<AccountInfo> {
+  return post<AccountInfo>('/admin/accounts', payload)
+}
+
+/** 修改账户；bookId 会被后端忽略（不允许跨账本搬家） */
+export function updateAccount(id: string, payload: AccountPayload): Promise<AccountInfo> {
+  return put<AccountInfo>(`/admin/accounts/${id}`, payload)
+}
+
+export function deleteAccount(id: string): Promise<void> {
+  return del<void>(`/admin/accounts/${id}`)
 }

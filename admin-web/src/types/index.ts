@@ -79,6 +79,33 @@ export interface TransactionInfo {
   remark?: string
   source?: number
   updatedAt?: string
+  /** 以下名称字段由后端管理端接口补齐，缺失时前端回落到展示 ID */
+  bookName?: string
+  accountName?: string
+  toAccountName?: string
+  categoryName?: string
+}
+
+export interface AccountInfo {
+  id: string
+  bookId: string
+  /** 所属账本名称（账本被删除时为空） */
+  bookName?: string
+  ownerId?: string
+  ownerUsername?: string
+  name: string
+  type: number
+  /** 当前余额（分），由交易流水维护 */
+  balance: number
+  /** 初始余额（分） */
+  initialBalance: number
+  currency: string
+  icon?: string
+  sort: number
+  /** 是否计入总资产：0=否 1=是 */
+  includeInTotal: number
+  createdAt?: string
+  updatedAt?: string
 }
 
 /** 交易类型 1=支出 2=收入 3=转账 */

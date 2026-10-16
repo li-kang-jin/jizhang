@@ -42,6 +42,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '账本管理', icon: 'Notebook' }
       },
       {
+        path: 'accounts',
+        name: 'accounts',
+        component: () => import('@/views/AccountsView.vue'),
+        meta: { title: '账户管理', icon: 'CreditCard' }
+      },
+      {
         path: 'transactions',
         name: 'transactions',
         component: () => import('@/views/TransactionsView.vue'),

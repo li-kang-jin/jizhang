@@ -13,6 +13,7 @@ const query = reactive({
   page: 1,
   size: 20,
   bookId: '',
+  accountId: '',
   type: undefined as number | undefined,
   keyword: ''
 })
@@ -24,6 +25,7 @@ async function loadData() {
       page: query.page,
       size: query.size,
       bookId: query.bookId || undefined,
+      accountId: query.accountId || undefined,
       type: query.type,
       keyword: query.keyword || undefined,
       startTime: timeRange.value?.[0],
@@ -43,6 +45,7 @@ function handleSearch() {
 
 function handleReset() {
   query.bookId = ''
+  query.accountId = ''
   query.type = undefined
   query.keyword = ''
   timeRange.value = null
@@ -89,6 +92,7 @@ onMounted(loadData)
     <el-card shadow="never">
       <div class="page-toolbar">
         <el-input v-model="query.bookId" placeholder="账本 ID" clearable @keyup.enter="handleSearch" />
+        <el-input v-model="query.accountId" placeholder="账户 ID" clearable @keyup.enter="handleSearch" />
         <el-select v-model="query.type" placeholder="交易类型" clearable style="width: 150px">
           <el-option v-for="item in TRANSACTION_TYPES" :key="item.value" :label="item.label" :value="item.value" />
         </el-select>
@@ -113,7 +117,12 @@ onMounted(loadData)
 
       <el-table :data="list" v-loading="loading" stripe border>
         <el-table-column prop="id" label="交易 ID" width="200" />
-        <el-table-column prop="bookId" label="账本 ID" width="200" />
+        <el-table-column label="账本" min-width="160">
+          <template #default="{ row }">
+            <div>{{ row.bookName || '（账本已删除）' }}</div>
+            <div class="muted">{{ row.bookId }}</div>
+          </template>
+        </el-table-column>
         <el-table-column label="类型" width="90">
           <template #default="{ row }">
             <el-tag size="small" :type="typeMeta(row.type).tag">{{ typeMeta(row.type).label }}</el-tag>
@@ -124,8 +133,14 @@ onMounted(loadData)
             <span :class="amountClass(row.type)">{{ amountPrefix(row.type) }}{{ formatAmount(row.amount) }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="categoryId" label="分类 ID" width="200">
-          <template #default="{ row }">{{ row.categoryId || '-' }}</template>
+        <el-table-column label="账户" min-width="160">
+          <template #default="{ row }">
+            <span v-if="row.type === 3">{{ row.accountName || row.accountId }} → {{ row.toAccountName || row.toAccountId }}</span>
+            <span v-else>{{ row.accountName || row.accountId }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="分类" min-width="130">
+          <template #default="{ row }">{{ row.categoryName || row.categoryId || '-' }}</template>
         </el-table-column>
         <el-table-column prop="remark" label="备注" min-width="160">
           <template #default="{ row }">{{ row.remark || '-' }}</template>
@@ -154,6 +169,11 @@ onMounted(loadData)
 .total-text {
   color: #909399;
   font-size: 13px;
+}
+
+.muted {
+  color: #909399;
+  font-size: 12px;
 }
 
 .amount-expense {

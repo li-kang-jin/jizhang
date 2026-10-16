@@ -78,4 +78,8 @@ export function put<T>(url: string, data?: unknown, params?: Record<string, unkn
   return unwrap(service.put<ApiResult<T>>(url, data, { params }))
 }
 
+export function del<T>(url: string, params?: Record<string, unknown>): Promise<T> {
+  return unwrap(service.delete<ApiResult<T>>(url, { params }))
+}
+
 export default service

@@ -15,6 +15,9 @@ public class AdminTransactionQueryRequest {
 
     private Long bookId;
 
+    /** 按账户过滤：转出或转入命中该账户的流水都会返回 */
+    private Long accountId;
+
     /** 按账本所有者过滤 */
     private Long userId;
 

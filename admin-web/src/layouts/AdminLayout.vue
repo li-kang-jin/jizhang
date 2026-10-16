@@ -17,6 +17,7 @@ const menus = [
   { path: '/dashboard', title: '数据看板', icon: 'DataLine' },
   { path: '/users', title: '用户管理', icon: 'User' },
   { path: '/books', title: '账本管理', icon: 'Notebook' },
+  { path: '/accounts', title: '账户管理', icon: 'CreditCard' },
   { path: '/transactions', title: '交易流水', icon: 'Tickets' }
 ]
 

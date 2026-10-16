@@ -53,6 +53,23 @@ public class TransactionVO {
 
     private OffsetDateTime updatedAt;
 
+    /*
+     * 以下展示字段只由管理后台接口补齐（见 AdminServiceImpl#fillDisplayNames）：
+     * App 端只认 ID，不需要额外的联表查询，保持为空即可。
+     */
+
+    /** 所属账本名称 */
+    private String bookName;
+
+    /** 转出账户名称 */
+    private String accountName;
+
+    /** 转入账户名称（仅转账有值） */
+    private String toAccountName;
+
+    /** 分类名称 */
+    private String categoryName;
+
     public static TransactionVO from(TransactionEntity entity) {
         if (entity == null) {
             return null;

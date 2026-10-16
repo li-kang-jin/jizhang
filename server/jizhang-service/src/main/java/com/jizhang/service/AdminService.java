@@ -1,11 +1,14 @@
 package com.jizhang.service;
 
 import com.jizhang.common.api.PageResult;
+import com.jizhang.service.dto.AccountSaveRequest;
+import com.jizhang.service.dto.AdminAccountQueryRequest;
 import com.jizhang.service.dto.AdminBookQueryRequest;
 import com.jizhang.service.dto.AdminTransactionQueryRequest;
 import com.jizhang.service.dto.AdminUserQueryRequest;
 import com.jizhang.service.dto.ChangePasswordRequest;
 import com.jizhang.service.dto.LoginRequest;
+import com.jizhang.service.vo.AdminAccountVO;
 import com.jizhang.service.vo.BookVO;
 import com.jizhang.service.vo.PlatformOverviewVO;
 import com.jizhang.service.vo.TokenVO;
@@ -34,6 +37,18 @@ public interface AdminService {
     PageResult<BookVO> pageBooks(AdminBookQueryRequest request);
 
     PageResult<TransactionVO> pageTransactions(AdminTransactionQueryRequest request);
+
+    /** 全平台账户列表（带所属账本与所有者） */
+    PageResult<AdminAccountVO> pageAccounts(AdminAccountQueryRequest request);
+
+    /** 代用户创建账户（bookId 必填且账本需存在） */
+    AdminAccountVO createAccount(AccountSaveRequest request);
+
+    /** 修改账户；不允许改动所属账本 */
+    AdminAccountVO updateAccount(Long accountId, AccountSaveRequest request);
+
+    /** 删除账户；账户下仍有交易流水时拒绝 */
+    void deleteAccount(Long accountId);
 
     /** 平台运营总览 */
     PlatformOverviewVO overview();
