@@ -30,6 +30,9 @@ class LedgerRepository @Inject constructor(
     suspend fun cachedCategories(bookId: Long, type: Int): List<LocalCategory> =
         categoryDao.listByBookAndType(bookId, type)
 
+    /** 全部分类（支出 + 收入），导出账单时用来把 categoryId 翻成名字并还原父子层级 */
+    suspend fun allCategories(bookId: Long): List<LocalCategory> = categoryDao.listByBook(bookId)
+
     /**
      * 记账页可选的账户。
      *
@@ -56,6 +59,15 @@ class LedgerRepository @Inject constructor(
      */
     fun observeAccounts(bookId: Long): Flow<List<LocalAccount>> =
         accountDao.observeActiveByBook(bookId)
+
+    /**
+     * 含归档账户的变化流。
+     * <p>
+     * 账单列表要给每一笔标出「从哪个账户出的」，那笔账可能记在后来被归档的账户上 ——
+     * 用 [observeAccounts]（只有未归档）会把它显示成「没有账户」，所以这里取全量。
+     */
+    fun observeAllAccounts(bookId: Long): Flow<List<LocalAccount>> =
+        accountDao.observeByBook(bookId)
 
     /**
      * 把本地账本的账户与分类对齐到服务端。
@@ -164,6 +176,115 @@ class LedgerRepository @Inject constructor(
     }
 
     /**
+     * 账户引用自愈：把「账单挂着的账户已经不存在」的记录改指到兜底账户。
+     * <p>
+     * 两种来源：别的设备删了账户、本机同步时跟着删了本地行；或者本机删账户时，
+     * 那些还没推上去的账单服务端看不见。悬空引用的账单会让同步推送被服务端整批拒绝
+     * （「账户不存在」），表现就是「怎么点同步都失败」。
+     * <p>
+     * 处理办法：建一个兜底账户「已删除的账户」接收它们 —— 账单数据不丢，
+     * 用户在账单页能把它们改到正确的账户上。每次拉取之后都会跑一遍，
+     * 所以别处再删账户也不会把同步卡死。
+     *
+     * @return 被改写的账户 id 个数（0 表示没有悬空引用）
+     */
+    suspend fun repairDanglingAccountRefs(bookId: Long): Int {
+        // 并发同步（进应用时的全量同步 + 账单页自己的同步）可能各建了一个兜底账户，先合并
+        mergeFallbackAccounts(bookId)
+
+        val dangling = (
+            transactionDao.listDanglingAccountIds(bookId) +
+                transactionDao.listDanglingToAccountIds(bookId)
+            ).filterNotNull().distinct()
+        if (dangling.isEmpty()) {
+            return 0
+        }
+
+        val fallbackId = ensureFallbackAccount(bookId)
+        dangling.forEach { brokenId ->
+            if (brokenId == fallbackId) {
+                return@forEach
+            }
+            // 只改引用、不动 pendingSync：待推送的账单自然会把新账户带上服务端，
+            // 已经同步过的历史账单就留在本地（重推反而会和服务端版本打架）
+            remapAccount(brokenId, fallbackId)
+        }
+        return dangling.size
+    }
+
+    /**
+     * 取兜底账户，没有就建一个。
+     * <p>
+     * 服务端账本要在服务端也建出来：只建本地的话，改指过去的账单推送时依然「账户不存在」。
+     * 建失败（离线 / 权限）就先用本地 id，下次同步 [reconcileAccounts] 会把它补到服务端并改回 id。
+     */
+    private suspend fun ensureFallbackAccount(bookId: Long): Long {
+        accountDao.listByBook(bookId)
+            .firstOrNull { it.name == DANGLING_ACCOUNT_NAME }
+            ?.let { return it.id }
+
+        val sort = accountDao.countByBook(bookId)
+        if (bookId != JizhangDatabase.LOCAL_BOOK_ID && !tokenStore.accessToken().isNullOrBlank()) {
+            val created = runCatching {
+                api.createAccount(
+                    AccountSaveDto(
+                        bookId = bookId,
+                        name = DANGLING_ACCOUNT_NAME,
+                        type = 7,
+                        initialBalance = 0L,
+                        icon = null,
+                        sort = sort
+                    )
+                ).data
+            }.getOrNull()
+            if (created != null) {
+                accountDao.upsert(created.toLocal())
+                return created.id
+            }
+        }
+
+        val localId = accountDao.maxId() + 1
+        accountDao.upsert(
+            LocalAccount(
+                id = localId,
+                bookId = bookId,
+                name = DANGLING_ACCOUNT_NAME,
+                type = 7,
+                sort = sort
+            )
+        )
+        return localId
+    }
+
+    /**
+     * 合并重复的兜底账户：并发修复曾各建一个，留着会让用户看到好几个「已删除的账户」。
+     * <p>
+     * 留挂着账单的那个（其余都是空的），先把引用改指过去再删掉。
+     * 服务端那份删不掉时只留本地不删 —— 宁可多一个空账户，也不能让本地交易又挂到不存在的账户上。
+     */
+    private suspend fun mergeFallbackAccounts(bookId: Long) {
+        val fallbacks = accountDao.listByBook(bookId).filter { it.name == DANGLING_ACCOUNT_NAME }
+        if (fallbacks.size <= 1) {
+            return
+        }
+
+        val keep = fallbacks.firstOrNull { transactionDao.countByAccount(it.id) > 0 } ?: fallbacks.first()
+        val canReachServer = bookId != JizhangDatabase.LOCAL_BOOK_ID &&
+            !tokenStore.accessToken().isNullOrBlank()
+        fallbacks.filter { it.id != keep.id }.forEach { extra ->
+            remapAccount(extra.id, keep.id)
+            val goneOnServer = if (canReachServer) {
+                runCatching { api.deleteAccount(extra.id).isSuccess }.getOrDefault(false)
+            } else {
+                true
+            }
+            if (goneOnServer) {
+                accountDao.deleteById(extra.id)
+            }
+        }
+    }
+
+    /**
      * 增量拉取服务端变更并落库。
      *
      * @return 本次写入本地的交易条数
@@ -210,6 +331,11 @@ class LedgerRepository @Inject constructor(
             transactionDao.deleteByIds(data.deletedTransactionIds)
         }
 
+        // 账户被删掉之后，本地可能留下「账单挂着一个不存在的账户」的悬空引用：
+        // 推送时服务端会整批拒绝（账户不存在），表现成「怎么点同步都失败」。
+        // 每轮拉取后自愈一次，顺手合并并发修复留下的重复兜底账户
+        repairDanglingAccountRefs(bookId)
+
         // 预算额度跨设备 / 家庭成员全靠这里带回（同步推送协议里没有预算字段）
         if (data.budgets.isNotEmpty() || data.deletedBudgetIds.isNotEmpty()) {
             budgetRepository.mergeFromServer(bookId, data.budgets, data.deletedBudgetIds)
@@ -236,5 +362,15 @@ class LedgerRepository @Inject constructor(
     suspend fun fullPull(bookId: Long): Int {
         tokenStore.saveLastSyncAt(bookId, "")
         return pull(bookId)
+    }
+
+    companion object {
+        /**
+         * 兜底账户名。
+         * <p>
+         * 悬空引用的账单会挂到它名下 —— 名字已经无从得知（账户行被删了），
+         * 只能靠用户自己认出「这笔应该记在哪个账户」再改回去。
+         */
+        const val DANGLING_ACCOUNT_NAME = "已删除的账户"
     }
 }

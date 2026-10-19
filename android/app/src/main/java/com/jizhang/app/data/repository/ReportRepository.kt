@@ -2,6 +2,7 @@ package com.jizhang.app.data.repository
 
 import com.jizhang.app.data.local.dao.AccountAmountRow
 import com.jizhang.app.data.local.dao.AccountDao
+import com.jizhang.app.data.local.entity.AccountWithBalance
 import com.jizhang.app.data.local.dao.BookMemberDao
 import com.jizhang.app.data.local.dao.CategoryDao
 import com.jizhang.app.data.local.dao.TagAmountRow
@@ -102,6 +103,7 @@ class ReportRepository @Inject constructor(
 
     /**
      * 收支趋势，横轴随粒度变化：
+     * - 周 → 本周 7 天（横轴写星期，比「14 日」好认）
      * - 日 → 24 小时（几点花的钱）
      * - 月 → 当月每天
      * - 年 → 12 个月
@@ -109,6 +111,7 @@ class ReportRepository @Inject constructor(
      * 缺失的时间点补 0，保证折线不断、柱子等高。
      */
     suspend fun trend(bookId: Long, period: ReportPeriod): List<TrendItemDto> = when (period.granularity) {
+        ReportGranularity.WEEK -> dailyTrend(bookId, period, weekdayLabels = true)
         ReportGranularity.DAY -> hourlyTrend(bookId, period)
         ReportGranularity.MONTH -> dailyTrend(bookId, period)
         ReportGranularity.YEAR -> monthlyTrend(bookId, period)
@@ -129,7 +132,17 @@ class ReportRepository @Inject constructor(
         }
     }
 
-    private suspend fun dailyTrend(bookId: Long, period: ReportPeriod): List<TrendItemDto> {
+    /**
+     * 按天分桶（周 / 月共用）。
+     *
+     * @param weekdayLabels 横轴写成「周一」而不是「14 日」：周视图里 7 根柱子按星期读更顺，
+     *                      跨月的那一周也不会出现「30 日 / 1 日」这种跳月的割裂感
+     */
+    private suspend fun dailyTrend(
+        bookId: Long,
+        period: ReportPeriod,
+        weekdayLabels: Boolean = false
+    ): List<TrendItemDto> {
         // 当月只画到今天，历史月画整月：未来日期拉一排 0 会把图压扁
         val today = LocalDate.now()
         val last = when {
@@ -150,7 +163,7 @@ class ReportRepository @Inject constructor(
             val income = row?.income ?: 0L
             val expense = row?.expense ?: 0L
             TrendItemDto(
-                period = "${date.dayOfMonth} 日",
+                period = if (weekdayLabels) ReportPeriod.weekdayText(date) else "${date.dayOfMonth} 日",
                 income = income,
                 expense = expense,
                 balance = income - expense
@@ -458,6 +471,45 @@ class ReportRepository @Inject constructor(
             netAssets = totalAssets - totalLiabilities,
             accounts = items
         )
+    }
+
+    /**
+     * 某个时间点的净资产，口径与 [assets] 完全一致：
+     * 只有 `includeInTotal = 1` 的账户参与，信用卡按欠款计入负债。
+     */
+    suspend fun netAssetsAt(bookId: Long, before: Long): Long =
+        netOf(accountDao.listWithBalanceBefore(bookId, before))
+
+    /**
+     * 期末净资产的逐格序列：与 [trend] 等长、同桶对齐，用于趋势图下方的净值线。
+     * <p>
+     * 净值是**存量**指标：第 i 格 = 期初净值 + 第 0..i 格的 (收入 - 支出) 之和。
+     * 转账在整本账里天然抵消，所以只累加收支增量；某一格没有流水时增量为 0，
+     * 线保持水平而不会掉到 0（存量画成 0 是错的）。
+     */
+    suspend fun assetTrend(bookId: Long, period: ReportPeriod): List<Long> {
+        val buckets = trend(bookId, period)
+        if (buckets.isEmpty()) {
+            return emptyList()
+        }
+        var net = netAssetsAt(bookId, period.startMillis)
+        return buckets.map { bucket ->
+            net += bucket.income - bucket.expense
+            net
+        }
+    }
+
+    /** 净资产：资产合计 - 负债合计（信用卡余额为负时翻正计入负债） */
+    private fun netOf(accounts: List<AccountWithBalance>): Long {
+        val counted = accounts.filter { it.includeInTotal == 1 }
+        val totalAssets = counted
+            .filter { it.type != AssetSummary.CREDIT_CARD_TYPE }
+            .sumOf { it.balance }
+        val totalLiabilities = counted
+            .filter { it.type == AssetSummary.CREDIT_CARD_TYPE }
+            .sumOf { -it.balance }
+            .coerceAtLeast(0L)
+        return totalAssets - totalLiabilities
     }
 
     /* ==================== 工具 ==================== */

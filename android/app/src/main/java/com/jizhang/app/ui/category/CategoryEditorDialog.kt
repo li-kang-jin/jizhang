@@ -17,7 +17,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -35,12 +34,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.jizhang.app.data.local.entity.LocalCategory
+import com.jizhang.app.ui.common.AppChip
 import com.jizhang.app.ui.common.CATEGORY_ICON_OPTIONS
 import com.jizhang.app.ui.common.CategoryIconOption
+import com.jizhang.app.ui.common.categoryColorOf
+import com.jizhang.app.ui.common.categoryContentOn
 import com.jizhang.app.ui.common.categoryIconOf
+import com.jizhang.app.ui.common.categoryKeyOf
+import com.jizhang.app.ui.common.categoryTintOn
+import com.jizhang.app.ui.theme.AppColors
 
-/** 图标清单里「其他」那一项，也是未知图标的兜底 */
-private const val FALLBACK_ICON = "category"
+/** 图标清单里「其他」那一项，也是未知图标的兜底（与 VISUALS 的 key 一致） */
+private const val FALLBACK_ICON = "other"
 
 /**
  * 分类的新建 / 编辑弹窗。
@@ -67,8 +72,9 @@ fun CategoryEditorDialog(
     var name by remember { mutableStateOf(category?.name.orEmpty()) }
     var type by remember { mutableStateOf(category?.type ?: defaultType) }
     var icon by remember {
-        // 老数据里「其他」存的是 "more"，与 "category" 是同一个图标，统一成清单里的 key
-        val initial = category?.icon
+        // 老数据里「其他」存 more、「交通」存 directions_bus，先归一化再对清单，
+        // 否则编辑已有分类时图标会被重置成兜底那一个
+        val initial = categoryKeyOf(category?.icon, category?.name)
         mutableStateOf(CATEGORY_ICON_OPTIONS.firstOrNull { it.key == initial }?.key ?: FALLBACK_ICON)
     }
     var error by remember { mutableStateOf<String?>(null) }
@@ -83,11 +89,13 @@ fun CategoryEditorDialog(
             )
         },
         text = {
+            // 顺序不能反：heightIn 必须在外层限定「视口高度」，verticalScroll 在内层才能
+            // 拿到无限高约束、进而产生滚动余量。写成 verticalScroll().heightIn() 的话，
+            // 视口会被内容高度撑满，等于没有可滚的余量 —— 手势划不动就是这个原因。
             Column(
                 modifier = Modifier
+                    .heightIn(max = 420.dp)
                     .verticalScroll(rememberScrollState())
-                    // 图标有 13 个，弹窗内容必须能滚，否则小屏上「保存」会被顶出去
-                    .heightIn(max = 380.dp)
             ) {
                 OutlinedTextField(
                     value = name,
@@ -120,15 +128,17 @@ fun CategoryEditorDialog(
                     )
                 } else {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilterChip(
+                        AppChip(
+                            label = "支出",
                             selected = type == 1,
                             onClick = { type = 1 },
-                            label = { Text("支出") }
+                            tint = AppColors.expense
                         )
-                        FilterChip(
+                        AppChip(
+                            label = "收入",
                             selected = type == 2,
                             onClick = { type = 2 },
-                            label = { Text("收入") }
+                            tint = AppColors.income
                         )
                     }
                 }
@@ -193,15 +203,17 @@ private fun IconChoice(
             .padding(vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        // 选择器里就用分类的真实配色预览：选完回到网格，颜色和这里看到的一致
+        val optionColor = categoryColorOf(null, option.key)
         Box(
             modifier = Modifier
                 .size(36.dp)
                 .clip(CircleShape)
                 .background(
                     if (selected) {
-                        MaterialTheme.colorScheme.primary
+                        optionColor
                     } else {
-                        MaterialTheme.colorScheme.surfaceVariant
+                        optionColor.copy(alpha = 0.13f)
                     }
                 ),
             contentAlignment = Alignment.Center
@@ -210,9 +222,9 @@ private fun IconChoice(
                 imageVector = categoryIconOf(option.key),
                 contentDescription = option.label,
                 tint = if (selected) {
-                    MaterialTheme.colorScheme.onPrimary
+                    categoryContentOn(optionColor)
                 } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
+                    categoryTintOn(optionColor)
                 },
                 modifier = Modifier.size(18.dp)
             )

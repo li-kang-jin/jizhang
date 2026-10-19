@@ -12,7 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -33,10 +33,10 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -59,6 +59,8 @@ import com.jizhang.app.data.repository.FixedReservation
 import com.jizhang.app.data.repository.FixedReservationItem
 import com.jizhang.app.data.repository.RecurringExpenses
 import com.jizhang.app.ui.common.AppFullScreenDialog
+import com.jizhang.app.ui.common.AppChip
+import com.jizhang.app.ui.common.categoryColorOf
 import com.jizhang.app.ui.common.formatAmount
 import com.jizhang.app.ui.common.safeDialogContent
 import com.jizhang.app.ui.theme.AppColors
@@ -307,14 +309,66 @@ private fun RecurringExpenseEditorDialog(
     var showDatePicker by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (item == null) "新增固定支出" else "编辑固定支出", fontWeight = FontWeight.SemiBold) },
-        text = {
+    // 保存逻辑抽成局部函数：底部按钮行要用，校验失败的错误也显示在金额框下方
+    fun submit() {
+        val trimmedName = name.trim()
+        if (trimmedName.isEmpty()) {
+            error = "请输入名称"
+            return
+        }
+        val yuan = amountText.trim().toBigDecimalOrNull()
+        if (yuan == null || yuan.signum() <= 0) {
+            error = "请输入大于 0 的金额"
+            return
+        }
+        val cents = yuan.movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).toLong()
+        onSave(
+            LocalRecurringExpense(
+                id = item?.id ?: 0L,
+                bookId = item?.bookId?.takeIf { it > 0L } ?: bookId,
+                name = trimmedName,
+                categoryId = categoryId,
+                freq = freq,
+                dayOfWeek = dayOfWeek,
+                dayOfMonth = dayOfMonth.toIntOrNull()?.coerceIn(1, 31) ?: 1,
+                monthOfYear = monthOfYear.toIntOrNull()?.coerceIn(1, 12) ?: 1,
+                amount = cents,
+                startDate = startDate.atStartOfDay(ZoneId.systemDefault())
+                    .toInstant().toEpochMilli(),
+                endDate = item?.endDate,
+                enabled = enabled,
+                remark = item?.remark
+            )
+        )
+    }
+
+    /*
+     * 用整屏覆盖层而不是 AlertDialog：这些字段（名称 / 金额 / 频率 / 具体日期 / 生效日 / 分类 / 启用中）
+     * 在 Android 15+ 上会被弹窗窗口裁掉一截 —— 底部「启用中」和按钮直接看不见，
+     * 中间也不一定能滚。整屏后：顶栏 + 可滚动表单 + 底部固定按钮，键盘弹出也不会盖住输入框。
+     */
+    AppFullScreenDialog(onDismissRequest = onDismiss) {
+        Column(modifier = Modifier.fillMaxSize().imePadding()) {
+            TopAppBar(
+                title = {
+                    Text(
+                        text = if (item == null) "新增固定支出" else "编辑固定支出",
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                navigationIcon = {
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                    }
+                }
+            )
+
             Column(
                 modifier = Modifier
+                    .weight(1f)
                     .verticalScroll(rememberScrollState())
-                    .heightIn(max = 420.dp)
+                    .padding(horizontal = 16.dp)
+                    .padding(top = 4.dp, bottom = 8.dp)
             ) {
                 OutlinedTextField(
                     value = name,
@@ -357,10 +411,10 @@ private fun RecurringExpenseEditorDialog(
                         LocalRecurringExpense.FREQ_MONTHLY,
                         LocalRecurringExpense.FREQ_YEARLY
                     ).forEach { value ->
-                        FilterChip(
+                        AppChip(
+                            label = RecurringExpenses.freqLabel(value),
                             selected = freq == value,
-                            onClick = { freq = value },
-                            label = { Text(RecurringExpenses.freqLabel(value)) }
+                            onClick = { freq = value }
                         )
                     }
                 }
@@ -369,30 +423,27 @@ private fun RecurringExpenseEditorDialog(
                 when (freq) {
                     LocalRecurringExpense.FREQ_WEEKLY -> {
                         Text("每周几", style = MaterialTheme.typography.labelMedium)
-                        Spacer(Modifier.height(4.dp))
+                        Spacer(Modifier.height(6.dp))
+                        // 七个等宽格子：原来 7 个 FilterChip 横着排会溢出，还得左右划才能看到周日
                         Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
+                            modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             (1..7).forEach { day ->
-                                FilterChip(
+                                AppChip(
+                                    label = when (day) {
+                                        1 -> "一"
+                                        2 -> "二"
+                                        3 -> "三"
+                                        4 -> "四"
+                                        5 -> "五"
+                                        6 -> "六"
+                                        else -> "日"
+                                    },
                                     selected = dayOfWeek == day,
                                     onClick = { dayOfWeek = day },
-                                    label = {
-                                        Text(
-                                            when (day) {
-                                                1 -> "一"
-                                                2 -> "二"
-                                                3 -> "三"
-                                                4 -> "四"
-                                                5 -> "五"
-                                                6 -> "六"
-                                                else -> "日"
-                                            }
-                                        )
-                                    }
+                                    compact = true,
+                                    modifier = Modifier.weight(1f)
                                 )
                             }
                         }
@@ -459,16 +510,19 @@ private fun RecurringExpenseEditorDialog(
                             .horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        FilterChip(
+                        AppChip(
+                            label = "不指定",
                             selected = categoryId == 0L,
                             onClick = { categoryId = 0L },
-                            label = { Text("不指定") }
+                            compact = true
                         )
                         expenseCategories.forEach { category ->
-                            FilterChip(
+                            AppChip(
+                                label = category.categoryName,
                                 selected = categoryId == category.categoryId,
                                 onClick = { categoryId = category.categoryId ?: 0L },
-                                label = { Text(category.categoryName) }
+                                tint = categoryColorOf(null, null, category.categoryName),
+                                compact = true
                             )
                         }
                     }
@@ -481,45 +535,29 @@ private fun RecurringExpenseEditorDialog(
                     Switch(checked = enabled, onCheckedChange = { enabled = it })
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                val trimmedName = name.trim()
-                if (trimmedName.isEmpty()) {
-                    error = "请输入名称"
-                    return@TextButton
-                }
-                val yuan = amountText.trim().toBigDecimalOrNull()
-                if (yuan == null || yuan.signum() <= 0) {
-                    error = "请输入大于 0 的金额"
-                    return@TextButton
-                }
-                val cents = yuan.movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).toLong()
 
-                onSave(
-                    LocalRecurringExpense(
-                        id = item?.id ?: 0L,
-                        bookId = item?.bookId?.takeIf { it > 0L } ?: bookId,
-                        name = trimmedName,
-                        categoryId = categoryId,
-                        freq = freq,
-                        dayOfWeek = dayOfWeek,
-                        dayOfMonth = dayOfMonth.toIntOrNull()?.coerceIn(1, 31) ?: 1,
-                        monthOfYear = monthOfYear.toIntOrNull()?.coerceIn(1, 12) ?: 1,
-                        amount = cents,
-                        startDate = startDate.atStartOfDay(ZoneId.systemDefault())
-                            .toInstant().toEpochMilli(),
-                        endDate = item?.endDate,
-                        enabled = enabled,
-                        remark = item?.remark
-                    )
-                )
-            }) { Text("保存") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            // 底部固定操作区：先铺背景再补安全区，否则手势条下面会露出一条空白
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface)
+                    .safeDialogContent()
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onDismiss,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.weight(1f)
+                ) { Text("取消") }
+                Button(
+                    onClick = { submit() },
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.weight(1f)
+                ) { Text("保存") }
+            }
         }
-    )
+    }
 
     if (showDatePicker) {
         val pickerState = rememberDatePickerState(

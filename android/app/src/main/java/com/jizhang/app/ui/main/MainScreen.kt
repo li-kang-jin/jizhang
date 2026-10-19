@@ -12,6 +12,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Person
@@ -45,6 +46,9 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jizhang.app.data.local.entity.LocalTransaction
+import com.jizhang.app.data.repository.BudgetCycle
+import com.jizhang.app.data.repository.BudgetPeriods
+import com.jizhang.app.data.repository.uncoveredFixedTotal
 import com.jizhang.app.ui.AppViewModel
 import com.jizhang.app.ui.account.AccountDetailDialog
 import com.jizhang.app.ui.account.AccountListDialog
@@ -56,12 +60,16 @@ import com.jizhang.app.ui.book.BookViewModel
 import com.jizhang.app.ui.budget.BudgetScreen
 import com.jizhang.app.ui.budget.BudgetViewModel
 import com.jizhang.app.ui.budget.RecurringExpenseDialog
+import com.jizhang.app.ui.calendar.CalendarScreen
 import com.jizhang.app.ui.category.CategoryListDialog
 import com.jizhang.app.ui.importer.ImportDialog
 import com.jizhang.app.ui.mine.MineScreen
 import com.jizhang.app.ui.record.RecordScreen
+import com.jizhang.app.ui.report.BudgetDialog
 import com.jizhang.app.ui.report.ReportScreen
+import com.jizhang.app.ui.report.ReportViewModel
 import com.jizhang.app.ui.settings.SettingsDialog
+import java.time.LocalDate
 
 /**
  * 主界面。
@@ -86,8 +94,15 @@ fun MainScreen(appViewModel: AppViewModel) {
     var detailAccountId by remember { mutableStateOf<Long?>(null) }
     // 非空表示记账页以「编辑这笔账单」的方式打开（账单页点条目进来）
     var editingTransaction by remember { mutableStateOf<LocalTransaction?>(null) }
+    // 非空表示记账页以「补记某一天」的方式打开（日历页点「这天记一笔」进来）
+    var recordDate by remember { mutableStateOf<LocalDate?>(null) }
     // 导入完成后 +1，用来通知「我的」页刷新本地统计
     var importDone by remember { mutableIntStateOf(0) }
+
+    // 「设置预算」覆盖层。两个入口的数据源不同（预算页按周期、统计页按月），各存一份状态：
+    // 非空表示打开，值为默认选中的预算范围（0 = 总预算）
+    var budgetEditorCategoryId by remember { mutableStateOf<Long?>(null) }
+    var showReportBudgetEditor by remember { mutableStateOf(false) }
 
     // 统计页点分类 / 账户 / 标签 → 切到账单页并带上筛选条件。
     // 状态放在这里（而不是统计页内部）：切 Tab 后统计页会被销毁，预设得由存活的父级保管
@@ -103,6 +118,10 @@ fun MainScreen(appViewModel: AppViewModel) {
     // hiltViewModel() 在同一个 ViewModelStoreOwner 下拿到的是同一实例，与预算页共享状态
     val budgetViewModel: BudgetViewModel = hiltViewModel()
     val budgetState by budgetViewModel.state.collectAsStateWithLifecycle()
+
+    // 同上：统计页的设置预算覆盖层也要挂在根部，所以这里拿同一份 ViewModel 实例（同一 Activity 级 owner）
+    val reportViewModel: ReportViewModel = hiltViewModel()
+    val reportState by reportViewModel.state.collectAsStateWithLifecycle()
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -153,21 +172,28 @@ fun MainScreen(appViewModel: AppViewModel) {
                     icon = { Icon(Icons.AutoMirrored.Filled.ReceiptLong, contentDescription = "账单") },
                     label = { Text("账单") }
                 )
+                // 日历紧挨账单：它解决的就是「按天翻账」这件事
                 NavigationBarItem(
                     selected = tab == 1,
                     onClick = { tab = 1 },
-                    icon = { Icon(Icons.Filled.PieChart, contentDescription = "统计") },
-                    label = { Text("统计") }
+                    icon = { Icon(Icons.Filled.CalendarMonth, contentDescription = "日历") },
+                    label = { Text("日历") }
                 )
                 NavigationBarItem(
                     selected = tab == 2,
                     onClick = { tab = 2 },
-                    icon = { Icon(Icons.Filled.Savings, contentDescription = "预算") },
-                    label = { Text("预算") }
+                    icon = { Icon(Icons.Filled.PieChart, contentDescription = "统计") },
+                    label = { Text("统计") }
                 )
                 NavigationBarItem(
                     selected = tab == 3,
                     onClick = { tab = 3 },
+                    icon = { Icon(Icons.Filled.Savings, contentDescription = "预算") },
+                    label = { Text("预算") }
+                )
+                NavigationBarItem(
+                    selected = tab == 4,
+                    onClick = { tab = 4 },
                     icon = { Icon(Icons.Filled.Person, contentDescription = "我的") },
                     label = { Text("我的") }
                 )
@@ -176,9 +202,10 @@ fun MainScreen(appViewModel: AppViewModel) {
         floatingActionButton = {
             if (tab == 0) {
                 ExtendedFloatingActionButton(
-                    // 从悬浮按钮进来一定是新增，得先清掉上一轮可能残留的编辑目标
+                    // 从悬浮按钮进来一定是新增，得先清掉上一轮可能残留的编辑目标与补记日期
                     onClick = {
                         editingTransaction = null
+                        recordDate = null
                         showRecord = true
                     },
                     containerColor = MaterialTheme.colorScheme.primary,
@@ -195,36 +222,70 @@ fun MainScreen(appViewModel: AppViewModel) {
                     bookId = state.bookId,
                     shared = state.currentBook?.shared == true,
                     billTemplate = state.billTemplate,
+                    // 导入 / 清空数据后顶部卡片要重算（详见 BillScreen 里的 dataVersion）
+                    dataVersion = importDone,
                     onOpenAccounts = { showAccounts = true },
                     onOpenCategories = { showCategories = true },
                     onEdit = {
                         editingTransaction = it
+                        recordDate = null
                         showRecord = true
                     },
                     preset = pendingBillPreset,
                     onPresetConsumed = { pendingBillPreset = null }
                 )
 
-                1 -> ReportScreen(
+                1 -> CalendarScreen(
+                    bookId = state.bookId,
+                    hideAmounts = state.hideAmounts,
+                    // 「在账单页看这一天」与统计页共用同一套预设：切 Tab 后账单页自己消费掉
+                    onOpenBills = { preset ->
+                        pendingBillPreset = preset
+                        tab = 0
+                    },
+                    // 点当天某一笔 → 编辑它（日期从这笔账本身回填）
+                    onEdit = {
+                        editingTransaction = it
+                        recordDate = null
+                        showRecord = true
+                    },
+                    // 「这天记一笔」：新增，且表单里的日期预填成点中的那天
+                    onAddBill = { date ->
+                        editingTransaction = null
+                        recordDate = date
+                        showRecord = true
+                    }
+                )
+
+                2 -> ReportScreen(
                     bookId = state.bookId,
                     shared = state.currentBook?.shared == true,
                     hideAmounts = state.hideAmounts,
+                    // 导入 / 清空数据后所有聚合要重算（详见 ReportScreen 里的 dataVersion）
+                    dataVersion = importDone,
                     onOpenAccounts = { showAccounts = true },
                     onOpenBills = { preset ->
                         pendingBillPreset = preset
                         tab = 0
-                    }
+                    },
+                    // 统计页的日历卡片只是当期概览，按月翻账去日历页
+                    onOpenCalendar = { tab = 1 },
+                    onOpenBudgetEditor = { showReportBudgetEditor = true }
                 )
 
-                2 -> BudgetScreen(
+                3 -> BudgetScreen(
                     bookId = state.bookId,
                     onOpenRecurring = { showRecurring = true },
+                    onOpenBudgetEditor = { budgetEditorCategoryId = it },
+                    // 导入 / 清空数据后「已花 / 剩余」要重算
+                    dataVersion = importDone,
                     viewModel = budgetViewModel
                 )
 
                 else -> MineScreen(
                     bookId = state.bookId,
                     loggedIn = state.loggedIn,
+                    offlineMode = state.offlineMode,
                     currentBookName = state.currentBook?.name,
                     currentBookShared = state.currentBook?.shared == true,
                     onOpenSettings = { showSettings = true },
@@ -245,15 +306,18 @@ fun MainScreen(appViewModel: AppViewModel) {
         RecordScreen(
             bookId = state.bookId,
             hapticEnabled = state.hapticEnabled,
-            recordTemplate = state.recordTemplate,
             editTransaction = editingTransaction,
+            // 补记某天：把日历里点中的那天预填进表单
+            initialDate = recordDate,
             onDismiss = {
                 showRecord = false
                 editingTransaction = null
+                recordDate = null
             },
             onSaved = {
                 showRecord = false
                 editingTransaction = null
+                recordDate = null
             }
         )
     }
@@ -292,6 +356,43 @@ fun MainScreen(appViewModel: AppViewModel) {
             onDismiss = { showImport = false },
             onImported = { importDone++ },
             onBillsCleared = { importDone++ }
+        )
+    }
+
+    // 设置预算（预算页入口）：全屏覆盖层，同样必须与 Scaffold 同级
+    budgetEditorCategoryId?.let { categoryId ->
+        BudgetDialog(
+            periodLabel = budgetState.periodLabel,
+            initialCategoryId = categoryId,
+            expenseCategories = budgetState.expenseCategories,
+            budget = budgetState.overview,
+            // 建议总预算 = 分类预算合计 + 固定支出。房租这类两边都登记的钱要去重，
+            // 否则同一笔 760 会被算两遍
+            uncoveredFixed = uncoveredFixedTotal(
+                budgetState.overview?.items.orEmpty(),
+                budgetState.reservation
+            ),
+            onInherit = budgetViewModel::inheritPrevious,
+            onSave = { categoryIdToSave, amount, onResult ->
+                budgetViewModel.saveBudget(categoryIdToSave, amount, onResult)
+            },
+            onDelete = budgetViewModel::deleteBudget,
+            onDismiss = { budgetEditorCategoryId = null }
+        )
+    }
+
+    // 设置预算（统计页入口）：统计页的周期可以是任意月份，这里按「当期所在月」取标签
+    if (showReportBudgetEditor) {
+        BudgetDialog(
+            periodLabel = BudgetPeriods.label(
+                BudgetPeriods.of(BudgetCycle.MONTH, reportState.period.anchor)
+            ),
+            expenseCategories = reportState.expenseCategories,
+            budget = reportState.budget,
+            uncoveredFixed = reportState.uncoveredFixed,
+            onSave = reportViewModel::saveBudget,
+            onDelete = reportViewModel::deleteBudget,
+            onDismiss = { showReportBudgetEditor = false }
         )
     }
 

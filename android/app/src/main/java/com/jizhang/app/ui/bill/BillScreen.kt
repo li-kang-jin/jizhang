@@ -37,12 +37,9 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DatePickerDialog
-import androidx.compose.material3.DateRangePicker
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -53,7 +50,6 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -73,11 +69,19 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jizhang.app.data.local.entity.LocalCategory
 import com.jizhang.app.data.local.entity.LocalTransaction
+import com.jizhang.app.ui.common.AppChip
+import com.jizhang.app.ui.common.CategoryBadge
+import com.jizhang.app.ui.common.DateRangeDialog
+import com.jizhang.app.ui.common.TagChips
 import com.jizhang.app.ui.common.categoryIconOf
 import com.jizhang.app.ui.common.formatAmount
 import com.jizhang.app.ui.common.formatDateTime
 import com.jizhang.app.ui.common.formatSignedAmount
+import com.jizhang.app.ui.common.inlineTags
+import com.jizhang.app.ui.common.parseTagList
+import com.jizhang.app.ui.common.quoteOfDay
 import com.jizhang.app.ui.common.transactionTypeLabel
+import com.jizhang.app.ui.common.typeColor
 import com.jizhang.app.ui.pet.PetAvatar
 import com.jizhang.app.ui.pet.PetMood
 import com.jizhang.app.ui.pet.PetState
@@ -87,7 +91,6 @@ import com.jizhang.app.ui.theme.JizhangTheme
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
-import java.time.ZoneOffset
 import java.util.Locale
 
 /**
@@ -108,6 +111,14 @@ fun BillScreen(
     shared: Boolean = false,
     /** 账单模板：1 清爽列表 / 2 信息卡片 / 3 紧凑单行 */
     billTemplate: Int = 1,
+    /**
+     * 外部数据版本号：导入 / 清空账单后由 MainScreen +1。
+     * <p>
+     * 列表本身是 Room Flow，会自己更新；但顶部卡片的「本月收支」是查一次的聚合，
+     * 而本页 ViewModel 挂在 Activity 上、切 Tab 回来时 `bind()` 会早退，
+     * 所以这里显式重算一次，不依赖失效通知的时序。
+     */
+    dataVersion: Int = 0,
     onOpenAccounts: () -> Unit,
     onOpenCategories: () -> Unit,
     /** 点条目进「编辑账单」；记账页由 MainScreen 以编辑模式打开 */
@@ -126,6 +137,14 @@ fun BillScreen(
 
     // 账本变化（登录 / 退出）时重新绑定数据源
     LaunchedEffect(bookId) { viewModel.bind(bookId) }
+
+    // 导入 / 清空数据后重算顶部卡片（本月收入 / 支出 / 结余）。
+    // 放在 bind 之后：首次组合时 bookId 已就位，refresh() 不会查到空账本。
+    LaunchedEffect(dataVersion) {
+        if (dataVersion > 0) {
+            viewModel.refresh()
+        }
+    }
 
     // 统计页跳过来：带上分类 / 账户 / 标签与时间范围，搜索框自动展开好让用户看见筛选条件
     LaunchedEffect(preset) {
@@ -222,6 +241,8 @@ fun BillScreen(
                                     } else {
                                         item.createdBy?.let { state.memberLabels[it] } ?: "我"
                                     },
+                                    // 「这笔钱从哪个账户出的」：转账显示「转出 → 转入」
+                                    accountName = accountText(item, state.accountLabels),
                                     onDelete = { deleting = item },
                                     onEdit = { onEdit(item) }
                                 )
@@ -239,7 +260,10 @@ fun BillScreen(
     }
 
     if (showCustomRange) {
-        CustomRangeDialog(
+        DateRangeDialog(
+            // 二次打开时把当前自定义区间预选上；customEnd 存的是右开边界，减 1 毫秒还原成用户眼里的止日
+            initialStartMillis = state.filter.takeIf { it.range.isCustom }?.customStart,
+            initialEndMillis = state.filter.takeIf { it.range.isCustom }?.customEnd?.minus(1),
             onConfirm = { start, end ->
                 viewModel.setCustomRange(start, end)
                 showCustomRange = false
@@ -395,7 +419,7 @@ private fun BillFilterBar(
                                 text = { Text(category.name) },
                                 leadingIcon = {
                                     Icon(
-                                        categoryIconOf(category.icon),
+                                        categoryIconOf(category.icon, category.name),
                                         contentDescription = null,
                                         modifier = Modifier.size(18.dp),
                                         tint = MaterialTheme.colorScheme.onSurfaceVariant
@@ -507,58 +531,18 @@ private fun FilterMenuChip(
     var expanded by remember { mutableStateOf(false) }
 
     Box {
-        FilterChip(
+        AppChip(
+            label = label,
             selected = active,
             onClick = { expanded = true },
-            label = { Text(label) },
-            trailingIcon = {
-                Icon(Icons.Filled.ArrowDropDown, contentDescription = null, modifier = Modifier.size(18.dp))
-            }
+            compact = true,
+            trailingIcon = Icons.Filled.ArrowDropDown
         )
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             menu { if (dismissOnClick) expanded = false }
         }
     }
 }
-
-/** 自定义时间范围：Material3 的日期区间选择器 */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun CustomRangeDialog(
-    onConfirm: (Long, Long) -> Unit,
-    onDismiss: () -> Unit
-) {
-    val pickerState = rememberDateRangePickerState()
-    DatePickerDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = {
-            TextButton(onClick = {
-                val start = pickerState.selectedStartDateMillis
-                val end = pickerState.selectedEndDateMillis ?: start
-                if (start != null && end != null) {
-                    onConfirm(utcMillisToLocalStartOfDay(start), utcMillisToLocalStartOfDay(end))
-                }
-            }) { Text("确定") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
-        }
-    ) {
-        DateRangePicker(state = pickerState)
-    }
-}
-
-/**
- * `DateRangePicker` 给的是「所选日期 UTC 0 点」的 millis，
- * 直接当本地时间用会整体偏一天（东八区会漏掉开始日 0~8 点）。这里换算成本地当天 0 点。
- */
-private fun utcMillisToLocalStartOfDay(millis: Long): Long =
-    Instant.ofEpochMilli(millis)
-        .atZone(ZoneOffset.UTC)
-        .toLocalDate()
-        .atStartOfDay(ZoneId.systemDefault())
-        .toInstant()
-        .toEpochMilli()
 
 /* ==================== 顶部卡片 ==================== */
 
@@ -575,6 +559,7 @@ private fun PetCard(
     onOpenAccounts: () -> Unit,
     onOpenCategories: () -> Unit
 ) {
+    val quote = quoteOfDay()
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),
@@ -623,6 +608,16 @@ private fun PetCard(
                     }
                 }
             }
+
+            // 每天一句：卡片本来就是记账的情绪入口，一行短句比再堆一行数字轻松
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = "「${quote.text}」 — ${quote.author}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
 
             Spacer(Modifier.height(14.dp))
             HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
@@ -823,7 +818,7 @@ private fun BillChartCard(chart: BillChart) {
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
-                                    imageVector = categoryIconOf(slice.icon),
+                                    imageVector = categoryIconOf(slice.icon, slice.name),
                                     contentDescription = null,
                                     tint = accent,
                                     modifier = Modifier.size(14.dp)
@@ -954,41 +949,34 @@ private fun TransactionRow(
     shared: Boolean,
     template: Int = 1,
     creatorName: String?,
+    /** 这一笔的账户展示文本（转账为「转出 → 转入」）；查不到名字时为 null */
+    accountName: String? = null,
     onDelete: () -> Unit,
     onEdit: () -> Unit
 ) {
     when (template) {
-        2 -> InfoCardRow(item, category, shared, creatorName, onDelete, onEdit)
-        3 -> CompactRow(item, category, shared, creatorName, onDelete, onEdit)
-        else -> ListRow(item, category, shared, creatorName, onDelete, onEdit)
+        2 -> InfoCardRow(item, category, shared, creatorName, accountName, onDelete, onEdit)
+        3 -> CompactRow(item, category, shared, creatorName, accountName, onDelete, onEdit)
+        else -> ListRow(item, category, shared, creatorName, accountName, onDelete, onEdit)
     }
 }
 
-/** 账单条目用的类型色（支出红 / 收入绿 / 转账灰） */
-@Composable
-private fun typeColor(type: Int): Color = when (type) {
-    1 -> AppColors.expense
-    2 -> AppColors.income
-    else -> MaterialTheme.colorScheme.onSurface
-}
-
-/** 分类图标徽标：有分类时用分类图标，没有就退回类型图标 */
-@Composable
-private fun CategoryBadge(type: Int, icon: String?, size: Dp) {
-    val color = typeColor(type)
-    Box(
-        modifier = Modifier
-            .size(size)
-            .clip(CircleShape)
-            .background(color.copy(alpha = 0.12f)),
-        contentAlignment = Alignment.Center
-    ) {
-        Icon(
-            imageVector = categoryIconOf(icon),
-            contentDescription = null,
-            tint = color,
-            modifier = Modifier.size(size * 0.5f)
-        )
+/**
+ * 这一笔的账户展示文本。
+ * <p>
+ * 转账要写成「转出账户 → 转入账户」：只看一个名字会误以为钱只从那里出去了。
+ * 账户名查不到（账户已被删除）时返回 null，调用方照旧不显示这一段。
+ */
+private fun accountText(item: LocalTransaction, labels: Map<Long, String>): String? {
+    val from = labels[item.accountId]
+    // type = 3 是转账（全工程统一口径，见 RecordViewModel / AccountDetailDialog）
+    if (item.type != 3) {
+        return from
+    }
+    val to = item.toAccountId?.let { labels[it] }
+    return when {
+        from != null && to != null -> "$from → $to"
+        else -> from
     }
 }
 
@@ -1008,10 +996,24 @@ private fun TypeTag(type: Int) {
     )
 }
 
-/** 条目副标题：时间 / 记账人 / 待同步 */
-private fun subtitle(item: LocalTransaction, shared: Boolean, creatorName: String?): String =
+/**
+ * 条目副标题：分类 / 时间 / 账户 / 记账人 / 待同步。
+ * <p>
+ * 分类放最前面：有备注时标题是备注，不把分类补在这里，等于这条账看不到类别。
+ * 主标题本身就是分类名时跳过，避免「餐饮 · … · 餐饮」。
+ */
+private fun subtitle(
+    item: LocalTransaction,
+    title: String,
+    categoryName: String?,
+    accountName: String?,
+    shared: Boolean,
+    creatorName: String?
+): String =
     buildString {
+        categoryName?.takeIf { it.isNotBlank() && it != title }?.let { append("$it · ") }
         append(formatDateTime(item.tradeTime))
+        accountName?.takeIf { it.isNotBlank() }?.let { append(" · $it") }
         if (shared && !creatorName.isNullOrBlank()) append(" · $creatorName 记的")
         if (item.pendingSync) append(" · 待同步")
     }
@@ -1023,6 +1025,7 @@ private fun InfoCardRow(
     category: LocalCategory?,
     shared: Boolean,
     creatorName: String?,
+    accountName: String?,
     onDelete: () -> Unit,
     onEdit: () -> Unit
 ) {
@@ -1036,7 +1039,7 @@ private fun InfoCardRow(
     ) {
         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                CategoryBadge(type = item.type, icon = category?.icon, size = 34.dp)
+                CategoryBadge(type = item.type, category = category, size = 34.dp)
                 Spacer(Modifier.width(10.dp))
                 TypeTag(item.type)
                 Spacer(Modifier.size(8.dp))
@@ -1058,7 +1061,15 @@ private fun InfoCardRow(
             Spacer(Modifier.height(6.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = subtitle(item, shared, creatorName),
+                    text = subtitle(
+                        item = item,
+                        title = item.remark?.takeIf { it.isNotBlank() } ?: category?.name
+                        ?: transactionTypeLabel(item.type),
+                        categoryName = category?.name,
+                        accountName = accountName,
+                        shared = shared,
+                        creatorName = creatorName
+                    ),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -1074,6 +1085,11 @@ private fun InfoCardRow(
                     )
                 }
             }
+            val cardTags = parseTagList(item.tags)
+            if (cardTags.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                TagChips(cardTags)
+            }
         }
     }
 }
@@ -1085,6 +1101,7 @@ private fun CompactRow(
     category: LocalCategory?,
     shared: Boolean,
     creatorName: String?,
+    accountName: String?,
     onDelete: () -> Unit,
     onEdit: () -> Unit
 ) {
@@ -1095,7 +1112,7 @@ private fun CompactRow(
             .padding(horizontal = 4.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        CategoryBadge(type = item.type, icon = category?.icon, size = 26.dp)
+        CategoryBadge(type = item.type, category = category, size = 26.dp)
         Spacer(Modifier.size(8.dp))
         Text(
             text = formatDateTime(item.tradeTime),
@@ -1109,6 +1126,12 @@ private fun CompactRow(
                     item.remark?.takeIf { it.isNotBlank() } ?: category?.name
                     ?: transactionTypeLabel(item.type)
                 )
+                // 紧凑模板只有一行：分类和标签都压进这行文本里
+                category?.name?.takeIf { it.isNotBlank() && it != item.remark }?.let {
+                    append(" · $it")
+                }
+                inlineTags(item.tags)?.let { append(" · $it") }
+                accountName?.takeIf { it.isNotBlank() }?.let { append(" · $it") }
                 if (shared && !creatorName.isNullOrBlank()) append(" · $creatorName")
                 if (item.pendingSync) append(" · 待同步")
             },
@@ -1141,6 +1164,7 @@ private fun ListRow(
     category: LocalCategory?,
     shared: Boolean,
     creatorName: String?,
+    accountName: String?,
     onDelete: () -> Unit,
     onEdit: () -> Unit
 ) {
@@ -1160,24 +1184,37 @@ private fun ListRow(
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            CategoryBadge(type = item.type, icon = category?.icon, size = 38.dp)
+            CategoryBadge(type = item.type, category = category, size = 38.dp)
             Spacer(Modifier.width(12.dp))
+            val title = item.remark?.takeIf { it.isNotBlank() } ?: category?.name
+            ?: transactionTypeLabel(item.type)
+            val tags = parseTagList(item.tags)
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = item.remark?.takeIf { it.isNotBlank() } ?: category?.name
-                    ?: transactionTypeLabel(item.type),
+                    text = title,
                     style = MaterialTheme.typography.bodyLarge,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    text = subtitle(item, shared, creatorName),
+                    text = subtitle(
+                        item = item,
+                        title = title,
+                        categoryName = category?.name,
+                        accountName = accountName,
+                        shared = shared,
+                        creatorName = creatorName
+                    ),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                if (tags.isNotEmpty()) {
+                    Spacer(Modifier.height(4.dp))
+                    TagChips(tags)
+                }
             }
             Text(
                 text = formatSignedAmount(item.type, item.amount),

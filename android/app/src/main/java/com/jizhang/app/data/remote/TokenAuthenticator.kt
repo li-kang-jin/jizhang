@@ -1,6 +1,7 @@
 package com.jizhang.app.data.remote
 
 import com.jizhang.app.BuildConfig
+import com.jizhang.app.data.prefs.SettingsStore
 import com.jizhang.app.data.prefs.TokenStore
 import com.jizhang.app.data.remote.dto.RefreshTokenRequest
 import kotlinx.coroutines.runBlocking
@@ -24,7 +25,8 @@ import javax.inject.Singleton
 @Singleton
 class TokenAuthenticator @Inject constructor(
     private val tokenStore: TokenStore,
-    private val json: Json
+    private val json: Json,
+    private val settingsStore: SettingsStore
 ) : Authenticator {
 
     /** 独立的 Retrofit（不带本 Authenticator），避免刷新失败时无限递归 */
@@ -38,6 +40,12 @@ class TokenAuthenticator @Inject constructor(
     }
 
     override fun authenticate(route: Route?, response: Response): Request? {
+        // 离线模式：不续期、更不能清登录态。
+        // 这里的 refreshApi 是独立 Retrofit（绕过主 client 的离线拦截器），所以必须单独挡住；
+        // 下面每条失败分支都会 clear() 登录态，离线时误清一次就得重新登录。
+        if (settingsStore.offlineModeBlocking()) {
+            return null
+        }
         // 原请求本来就没带令牌（例如登录接口），不处理
         if (response.request.header(HEADER) == null) {
             return null

@@ -30,6 +30,25 @@ class TransactionRepository @Inject constructor(
 
     suspend fun listLocal(bookId: Long): List<LocalTransaction> = transactionDao.listByBook(bookId)
 
+    /**
+     * 某账户名下还有多少笔账单（转出 / 转入都算）。
+     * <p>
+     * 删除账户前要先问一句：账户一旦消失，挂在上面的账单就失去了依据
+     * （同步推送时服务端会整批拒绝），所以有引用就该拦下来。
+     */
+    suspend fun countByAccount(accountId: Long): Int = transactionDao.countByAccount(accountId)
+
+    /**
+     * 区间内的账单明细（左闭右开）。
+     * <p>
+     * 给日历模块按月取数用：一次取整月，点某天就不必再查库。
+     */
+    suspend fun listBetween(bookId: Long, start: Long, end: Long): List<LocalTransaction> =
+        transactionDao.listBetween(bookId, start, end)
+
+    /** 最早一笔账单的时刻（日历的下界）；一笔都没有时为 null */
+    suspend fun minTradeTime(bookId: Long): Long? = transactionDao.minTradeTime(bookId)
+
     /** 本地可见账单数（不含已标记删除的） */
     suspend fun countLocal(bookId: Long): Int = transactionDao.countByBook(bookId)
 
@@ -113,6 +132,14 @@ class TransactionRepository @Inject constructor(
     suspend fun recentTags(bookId: Long, limit: Int): List<String> =
         transactionDao.recentTags(bookId, limit)
 
+    /** 某个分类下最近若干条带标签账单的标签原文，记账页用它算「这个分类的常用标签」 */
+    suspend fun recentTagsByCategory(bookId: Long, categoryId: Long, limit: Int): List<String> =
+        transactionDao.recentTagsByCategory(bookId, categoryId, limit)
+
+    /** 每个账户被用过的次数（含转账的转入方），记账页据此只铺三个常用账户 */
+    suspend fun accountUsage(bookId: Long): Map<Long, Long> =
+        transactionDao.accountUsage(bookId).associate { it.accountId to it.cnt }
+
     /** 最近记过的若干笔账，记账页「再来一笔」模板用它做照抄 */
     suspend fun recentTransactions(bookId: Long, limit: Int): List<LocalTransaction> =
         transactionDao.recentTransactions(bookId, limit)
@@ -187,11 +214,35 @@ class TransactionRepository @Inject constructor(
         if (data.successIds.isNotEmpty()) {
             transactionDao.markSynced(data.successIds)
         }
+        // 冲突：服务端版本比本地新（last-write-wins），这类记录服务端**不会**放进 successIds。
+        // 早先这里完全忽略 conflicts，导致冲突的那条永远 pendingSync=1、每次同步重复推、
+        // 界面却显示「上传 0 条」的正常结果。现在按服务端给的版本覆盖本地并清掉待同步标记。
+        val conflictIds = deleteIds.toSet()
+        val conflicts = data.conflicts.filter { it.bookId == bookId && it.id !in conflictIds }
+        if (conflicts.isNotEmpty()) {
+            transactionDao.upsertAll(conflicts.map { it.toLocal() })
+            // toLocal 已把 pendingSync 置 false，这里再标一次，防 upsert 被同 id 的旧行覆盖
+            transactionDao.markSynced(conflicts.map { it.id })
+        }
         // 服务端删除是幂等的，请求成功即可安全清理本地记录
         if (deleteIds.isNotEmpty()) {
             transactionDao.deleteByIds(deleteIds)
         }
-        return PushResult(data.successIds.size, deleteIds.size)
+
+        // 推了东西却一条都没被接收（既没成功也没冲突）：说明服务端静默丢包，
+        // 本地记录原样留着并按失败上报，避免又变成「同步完成，上传 0 条」
+        if (pending.isNotEmpty() && data.successIds.isEmpty() && conflicts.isEmpty()) {
+            return PushResult(
+                updated = 0,
+                deleted = deleteIds.size,
+                error = "服务端未接收这 ${pending.size} 条记录，请稍后重试"
+            )
+        }
+        return PushResult(
+            updated = data.successIds.size,
+            deleted = deleteIds.size,
+            conflicted = conflicts.size
+        )
     }
 
     /** 在线新增（不走本地队列，主要用于调试） */
@@ -212,6 +263,8 @@ data class PushResult(
     val updated: Int,
     /** 推送成功的删除条数 */
     val deleted: Int,
+    /** 服务端版本更新、已按服务端覆盖本地的条数 */
+    val conflicted: Int = 0,
     /** 服务端拒绝时返回的业务错误信息（为空表示推送成功） */
     val error: String? = null
 ) {

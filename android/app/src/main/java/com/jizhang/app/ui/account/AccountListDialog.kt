@@ -1,15 +1,19 @@
 package com.jizhang.app.ui.account
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -37,7 +41,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -76,10 +79,14 @@ import com.jizhang.app.data.local.entity.AccountWithBalance
 import com.jizhang.app.data.repository.AccountRepository
 import com.jizhang.app.ui.common.ACCOUNT_ICON_OPTIONS
 import com.jizhang.app.ui.common.AppFullScreenDialog
+import com.jizhang.app.ui.common.accountColorOf
 import com.jizhang.app.ui.common.accountIconOf
 import com.jizhang.app.ui.common.accountTypeLabel
+import com.jizhang.app.ui.common.categoryContentOn
+import com.jizhang.app.ui.common.categoryTintOn
 import com.jizhang.app.ui.common.defaultAccountIconOf
 import com.jizhang.app.ui.common.formatAmount
+import com.jizhang.app.ui.common.formatAmountInput
 import com.jizhang.app.ui.common.safeDialogContent
 import com.jizhang.app.ui.theme.AppColors
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -322,22 +329,28 @@ fun AccountListDialog(
                     )
                 }
 
-                Spacer(Modifier.height(12.dp))
-                Button(
-                    onClick = {
-                        editing = null
-                        showEditor = true
-                    },
-                    shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(50.dp)
-                ) {
-                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.size(6.dp))
-                    Text("新建账户")
-                }
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(8.dp))
+            }
+
+            // 主操作固定在底部：账户多了以后不该为了新建一个账户先滚到列表末尾
+            Button(
+                onClick = {
+                    editing = null
+                    showEditor = true
+                },
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 10.dp)
+                    .height(50.dp)
+            ) {
+                Icon(
+                    Icons.Filled.Add,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.size(6.dp))
+                Text("新建账户")
             }
         }
     }
@@ -590,13 +603,16 @@ private fun AccountRow(
             .padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // 图标按账户语义着色：现金绿 / 储蓄卡蓝 / 信用卡紫 / 微信绿 / 投资橙，
+        // 一列扫下来颜色本身就是「资产还是负债」的信号，比全用主题蓝更有信息量
+        val accColor = accountColorOf(account.icon, account.type)
         Box(
             modifier = Modifier
                 .size(34.dp)
                 .clip(CircleShape)
                 .background(
                     if (account.archived) MaterialTheme.colorScheme.surfaceVariant
-                    else MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                    else accColor.copy(alpha = 0.14f)
                 ),
             contentAlignment = Alignment.Center
         ) {
@@ -606,7 +622,7 @@ private fun AccountRow(
                 tint = if (account.archived) {
                     MaterialTheme.colorScheme.onSurfaceVariant
                 } else {
-                    MaterialTheme.colorScheme.primary
+                    categoryTintOn(accColor)
                 },
                 modifier = Modifier.size(18.dp)
             )
@@ -703,6 +719,7 @@ private fun AccountMenuItem(
 
 /* ==================== 新建 / 编辑账户 ==================== */
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AccountEditor(
     account: AccountWithBalance?,
@@ -712,7 +729,8 @@ private fun AccountEditor(
     var name by remember { mutableStateOf(account?.name.orEmpty()) }
     var type by remember { mutableStateOf(account?.type ?: 1) }
     var initialText by remember {
-        mutableStateOf(account?.let { formatAmount(it.initialBalance) } ?: "0.00")
+        // 输入框回填不能用带千分位的展示格式，否则 `toDoubleOrNull()` 解析不出来
+        mutableStateOf(account?.let { formatAmountInput(it.initialBalance) } ?: "0.00")
     }
     var icon by remember {
         mutableStateOf(account?.icon ?: defaultAccountIconOf(account?.type ?: 1))
@@ -724,11 +742,18 @@ private fun AccountEditor(
         onDismissRequest = onDismiss,
         title = { Text(if (account == null) "新建账户" else "编辑账户") },
         text = {
-            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+            // heightIn 放在 verticalScroll 外层：先把视口限高，滚动才有多余量。
+            // 只写 verticalScroll 时视口会被内容撑满，表单一旦比弹窗高就划不动。
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 460.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
                     label = { Text("账户名称") },
+                    placeholder = { Text("例如：招商银行") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -736,12 +761,33 @@ private fun AccountEditor(
                 OutlinedTextField(
                     value = initialText,
                     onValueChange = { initialText = it.filter { c -> c.isDigit() || c == '.' || c == '-' } },
-                    label = { Text("初始余额（元）") },
+                    label = { Text("初始余额") },
+                    prefix = { Text("¥") },
                     supportingText = { Text("信用卡填欠款的负数，例如 -1200") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     modifier = Modifier.fillMaxWidth()
                 )
+
+                // 初始余额是「建账起点」：改它等于把所有历史余额整体平移。
+                // 直接把算完的结果显示出来，省得用户自己拿现有流水去加。
+                val typedInitial = initialText.toDoubleOrNull()?.let { (it * 100).roundToInt().toLong() }
+                val flow = account?.let { it.balance - it.initialBalance }
+                if (account != null && typedInitial != null && flow != null) {
+                    Text(
+                        text = "保存后当前余额约 ${formatAmount(typedInitial + flow)} 元" +
+                            "（现有流水 ${formatAmount(flow)} 元不变）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = "只想把余额对到真实值？用账户详情里的「余额校准」，别改初始余额",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+
                 Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
                     value = note,
@@ -755,53 +801,55 @@ private fun AccountEditor(
                 Spacer(Modifier.height(12.dp))
                 Text("账户类型", style = MaterialTheme.typography.labelMedium)
                 Spacer(Modifier.height(6.dp))
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf(listOf(1, 2, 3, 4), listOf(5, 6, 7)).forEach { row ->
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            row.forEach { value ->
-                                FilterChip(
-                                    selected = type == value,
-                                    onClick = { type = value },
-                                    label = { Text(accountTypeLabel(value)) }
-                                )
-                            }
-                        }
+                // FlowRow 而不是写死的两行 Row：原来第一行塞 4 个 FilterChip 会超出宽度，
+                // 「支付宝」被压成竖排三个字——这是截图里最难看的那个位置
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    (1..7).forEach { value ->
+                        AccountTypeChip(
+                            label = accountTypeLabel(value),
+                            selected = type == value,
+                            color = accountColorOf(defaultAccountIconOf(value), value),
+                            onClick = { type = value }
+                        )
                     }
                 }
 
                 Spacer(Modifier.height(12.dp))
                 Text("图标", style = MaterialTheme.typography.labelMedium)
-                Spacer(Modifier.height(6.dp))
-                ACCOUNT_ICON_OPTIONS.chunked(4).forEach { row ->
-                    Row(
-                        modifier = Modifier.padding(bottom = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        row.forEach { option ->
-                            val selected = icon == option.key
-                            Box(
-                                modifier = Modifier
-                                    .size(40.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        if (selected) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.surfaceVariant
-                                    )
-                                    .clickable { icon = option.key },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = accountIconOf(option.key),
-                                    contentDescription = option.label,
-                                    tint = if (selected) {
-                                        MaterialTheme.colorScheme.onPrimary
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    },
-                                    modifier = Modifier.size(20.dp)
+                Spacer(Modifier.height(8.dp))
+                // 图标按自身语义取色（钱包蓝 / 现金绿 / 投资橙），与列表里的观感一致
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    ACCOUNT_ICON_OPTIONS.forEach { option ->
+                        val selected = icon == option.key
+                        val optionColor = accountColorOf(option.key, 0)
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (selected) optionColor else optionColor.copy(alpha = 0.13f)
                                 )
-                            }
+                                .clickable { icon = option.key },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = accountIconOf(option.key),
+                                contentDescription = option.label,
+                                tint = if (selected) {
+                                    categoryContentOn(optionColor)
+                                } else {
+                                    categoryTintOn(optionColor)
+                                },
+                                modifier = Modifier.size(21.dp)
+                            )
                         }
                     }
                 }
@@ -846,6 +894,39 @@ private fun AccountEditor(
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("取消") }
         }
+    )
+}
+
+/**
+ * 账户类型选项：淡色胶囊 + 类型色选中。
+ *
+ * 不用 M3 FilterChip：它带 1dp 灰边、且宽度不可控，7 个并排时会被压成竖排文字。
+ */
+@Composable
+private fun AccountTypeChip(
+    label: String,
+    selected: Boolean,
+    color: Color,
+    onClick: () -> Unit
+) {
+    val shape = RoundedCornerShape(10.dp)
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+        color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
+        modifier = Modifier
+            .clip(shape)
+            .background(
+                if (selected) color.copy(alpha = 0.16f)
+                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+            )
+            .then(
+                if (selected) Modifier.border(1.dp, color.copy(alpha = 0.55f), shape) else Modifier
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 8.dp)
     )
 }
 

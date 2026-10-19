@@ -482,6 +482,67 @@ class BudgetRepository @Inject constructor(
         return FixedReservation(total = total, items = items.sortedBy { it.nextDate })
     }
 
+    /* ---------------- 预算趋势预测 ---------------- */
+
+    /**
+     * 取预测用的日支出样本：前 [historyPeriods] 个周期 + 本期到今天，**空白日补 0**。
+     * <p>
+     * 必须补 0：不补的话「有支出的天数 / 总天数」会被算成 100%，超支概率会被显著低估。
+     */
+    suspend fun dailySpends(
+        bookId: Long,
+        period: String,
+        historyPeriods: Int = 2,
+        today: LocalDate = LocalDate.now()
+    ): List<DailySpend> {
+        val from = BudgetPeriods.startDate(BudgetPeriods.plus(period, -historyPeriods.toLong()))
+        val periodEnd = BudgetPeriods.endDate(period)
+        val until = if (today.isBefore(periodEnd)) today.plusDays(1) else periodEnd
+        if (!until.isAfter(from)) return emptyList()
+
+        val zone = ZoneId.systemDefault()
+        // 同样要剔掉「余额调整」：一笔 4500 的校准单会把日均和波动顶到天上，
+        // 让预测得出「必超支」这种和实际消费无关的结论
+        val adjustId = categoryDao.listByBook(bookId)
+            .firstOrNull { it.name == AccountRepository.ADJUST_CATEGORY_NAME }?.id ?: 0L
+        val rows = transactionDao.sumByDayExcluding(
+            bookId,
+            from.atStartOfDay(zone).toInstant().toEpochMilli(),
+            until.atStartOfDay(zone).toInstant().toEpochMilli(),
+            adjustId
+        ).associate { it.period to it.expense }
+
+        val result = ArrayList<DailySpend>()
+        var date = from
+        while (date.isBefore(until)) {
+            result += DailySpend(date, rows[date.toString()] ?: 0L)
+            date = date.plusDays(1)
+        }
+        return result
+    }
+
+    /**
+     * 预算趋势预测：超支概率、期末分位、每日建议额度。
+     * 没设总预算时返回 null（没有额度就无从谈概率）。
+     */
+    suspend fun forecast(
+        bookId: Long,
+        period: String,
+        overview: BudgetOverviewDto,
+        reservation: FixedReservation,
+        today: LocalDate = LocalDate.now()
+    ): BudgetForecast? {
+        if (!overview.hasBudget || overview.totalBudget <= 0L) return null
+        return BudgetForecaster.forecast(
+            period = period,
+            totalBudget = overview.totalBudget,
+            spentSoFar = overview.totalUsed,
+            fixed = reservation,
+            dailySpends = dailySpends(bookId, period, today = today),
+            today = today
+        )
+    }
+
     /* ---------------- 内部方法 ---------------- */
 
     private suspend fun buildOverview(
@@ -496,10 +557,13 @@ class BudgetRepository @Inject constructor(
         val daysLeft = BudgetPeriods.daysLeft(period, today)
         val elapsedDays = elapsedDays(period, today, daysTotal)
 
-        val sum = transactionDao.sumBetween(bookId, start, end)
-        val periodExpense = sum.expense
-
         val categoryMap = categoryDao.listByBook(bookId).associateBy { it.id }
+        // 余额校准记的调整单不是消费：算进预算会让当月凭空多出几千块支出
+        val adjustId = categoryMap.values
+            .firstOrNull { it.name == AccountRepository.ADJUST_CATEGORY_NAME }?.id ?: 0L
+
+        val sum = transactionDao.sumBetweenExcluding(bookId, start, end, adjustId)
+        val periodExpense = sum.expense
         val usedMap = transactionDao.sumByCategory(bookId, typeExpense, start, end)
             .filter { it.categoryId != null }
             .associate { it.categoryId!! to it.total }
@@ -549,7 +613,7 @@ class BudgetRepository @Inject constructor(
             elapsedDays = elapsedDays,
             dailyAvailable = if (spendable > 0 && daysLeft > 0) spendable / daysLeft else 0L,
             suggestDaily = if (totalAmount == 0L) 0L else totalAmount / daysTotal,
-            todayExpense = todayExpense(bookId, today),
+            todayExpense = todayExpense(bookId, today, adjustId),
             burnRate = burnRate,
             forecastExpense = forecast,
             status = status(totalAmount, periodExpense, forecast, reservation.total),
@@ -594,12 +658,12 @@ class BudgetRepository @Inject constructor(
         }
     }
 
-    private suspend fun todayExpense(bookId: Long, today: LocalDate): Long {
+    private suspend fun todayExpense(bookId: Long, today: LocalDate, adjustCategoryId: Long): Long {
         val zone = ZoneId.systemDefault()
         val start = today.atStartOfDay(zone).toInstant().toEpochMilli()
         // 用次日 0 点做右开边界，而不是「今天 0 点 + 24h」：夏令时切换那天不是 24 小时
         val end = today.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
-        return transactionDao.sumBetween(bookId, start, end).expense
+        return transactionDao.sumBetweenExcluding(bookId, start, end, adjustCategoryId).expense
     }
 
     private fun status(totalAmount: Long, used: Long, forecast: Long?, reserved: Long): String = when {
@@ -632,3 +696,34 @@ data class FixedReservationItem(
     /** 预留金额（分） */
     val amount: Long
 )
+
+/**
+ * 固定支出里**没有被分类预算覆盖**的部分。
+ * <p>
+ * 房租这类钱很容易两个地方都登记一遍：分类预算里给「房租」设 760，固定支出里又登记 760。
+ * 它们其实是同一笔钱 —— 算「建议总预算 = 分类预算合计 + 固定支出」时必须去重，
+ * 否则同一笔房租会被加两次，用户看到的总预算建议虚高。
+ * <p>
+ * 去重规则：按固定支出所属分类聚合，与该分类的预算额度取较小值作为「已覆盖」，
+ * 超出部分才算未覆盖（分类预算 500、固定支出 760 → 只补 260）。没有分类的固定支出全额计入。
+ */
+fun uncoveredFixedTotal(
+    budgetItems: List<BudgetDto>,
+    reservation: FixedReservation
+): Long {
+    if (reservation.total <= 0L) return 0L
+    val budgetByCategory = budgetItems
+        .filter { it.categoryId != 0L }
+        .associate { it.categoryId to it.amount }
+
+    var covered = 0L
+    reservation.items
+        .groupBy { it.expense.categoryId }
+        .forEach { (categoryId, list) ->
+            if (categoryId <= 0L) return@forEach
+            val reserved = list.sumOf { it.amount }
+            val budget = budgetByCategory[categoryId] ?: 0L
+            covered += minOf(reserved, budget)
+        }
+    return (reservation.total - covered).coerceAtLeast(0L)
+}

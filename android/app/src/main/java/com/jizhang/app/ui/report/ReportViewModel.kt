@@ -11,6 +11,7 @@ import com.jizhang.app.data.repository.AssetSummary
 import com.jizhang.app.data.repository.BudgetCycle
 import com.jizhang.app.data.repository.BudgetPeriods
 import com.jizhang.app.data.repository.BudgetRepository
+import com.jizhang.app.data.repository.uncoveredFixedTotal
 import com.jizhang.app.data.repository.CategorySlice
 import com.jizhang.app.data.repository.DayAmount
 import com.jizhang.app.data.repository.DayDetail
@@ -20,6 +21,7 @@ import com.jizhang.app.data.repository.ReportGranularity
 import com.jizhang.app.data.repository.ReportOverview
 import com.jizhang.app.data.repository.ReportPeriod
 import com.jizhang.app.data.repository.ReportRepository
+import com.jizhang.app.data.repository.TransactionRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -28,12 +30,21 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.LocalDate
 import javax.inject.Inject
+
+/**
+ * 可以折叠的卡片：这些都是「看趋势用」的次要内容，默认展开，但允许收起以减少滚动长度。
+ */
+enum class ReportFoldableCard {
+    HABIT,
+    MEMBERS
+}
 
 /**
  * 统计页状态。
@@ -45,6 +56,7 @@ import javax.inject.Inject
 class ReportViewModel @Inject constructor(
     private val reportRepository: ReportRepository,
     private val budgetRepository: BudgetRepository,
+    private val transactionRepository: TransactionRepository,
     private val settings: SettingsStore
 ) : ViewModel() {
 
@@ -61,6 +73,8 @@ class ReportViewModel @Inject constructor(
         val loaded: Boolean = false,
         val overview: ReportOverview? = null,
         val trend: List<TrendItemDto> = emptyList(),
+        /** 期末净资产序列：与 [trend] 等长、同桶对齐（存量，不是增量） */
+        val netAssetTrend: List<Long> = emptyList(),
         /** 分类构成：1=支出 2=收入 */
         val categoryType: Int = 1,
         val categories: List<CategorySlice> = emptyList(),
@@ -83,6 +97,21 @@ class ReportViewModel @Inject constructor(
         val assets: AssetSummary = AssetSummary.EMPTY,
         /** 支出分类，供预算设置选择范围 */
         val expenseCategories: List<CategoryStatDto> = emptyList(),
+        /**
+         * 预算所属月份里**还没到期**的固定支出合计（分）。
+         * <p>
+         * 设置总预算时「建议值 = 分类预算合计 + 固定支出」要用到它：
+         * 固定支出不会自动记账，光看分类额度会把总预算设小。
+         */
+        val fixedReserved: Long = 0L,
+        /** 固定支出里没被分类预算覆盖的部分（设置总预算时用它算建议值，避免房租被算两遍） */
+        val uncoveredFixed: Long = 0L,
+        /**
+         * 已折叠的卡片。
+         * 放在 ViewModel 里而不是 `remember`：切到别的 Tab 再回来时 Compose 状态会丢，
+         * 用户得重新滚到底再点开一次。
+         */
+        val foldedCards: Set<ReportFoldableCard> = emptySet(),
         val message: String? = null
     ) {
         /** 时间轴条能不能往后翻（不允许看未来） */
@@ -103,6 +132,7 @@ class ReportViewModel @Inject constructor(
     private var bound = -1L
     private var loadJob: Job? = null
     private var dayJob: Job? = null
+    private var dataWatchJob: Job? = null
     private var granularityRestored = false
 
     fun bind(bookId: Long, shared: Boolean) {
@@ -115,6 +145,18 @@ class ReportViewModel @Inject constructor(
         bound = bookId
         _state.update {
             it.copy(bookId = bookId, shared = shared, period = ReportPeriod.current(it.period.granularity))
+        }
+        dataWatchJob?.cancel()
+        dataWatchJob = viewModelScope.launch {
+            /*
+             * 账单数据变了（记一笔 / 清理数据 / 导入 / 同步）就静默重取一遍。
+             * 账单页的列表是 Room Flow，自己会更新；这里的数字全是「查一次」的聚合，
+             * 没人盯着就只能关掉应用重开才同步（用户报过这个）。
+             * drop(1) 跳过订阅时的那次首帧：那份数据 bind() 里刚加载过。
+             */
+            transactionRepository.observeTransactions(bookId).drop(1).collect {
+                reload()
+            }
         }
         viewModelScope.launch {
             // 粒度记忆：上次看的是「年」，进来还是「年」
@@ -166,6 +208,7 @@ class ReportViewModel @Inject constructor(
                     // 十来次本地聚合，并发跑完通常在一次帧渲染内，翻页不会有明显等待
                     val overview = async { reportRepository.overview(bookId, period) }
                     val trend = async { reportRepository.trend(bookId, period) }
+                    val netAssetTrend = async { reportRepository.assetTrend(bookId, period) }
                     val category = async {
                         reportRepository.category(bookId, categoryType, period, grouped)
                     }
@@ -179,12 +222,19 @@ class ReportViewModel @Inject constructor(
                     val budget = async { budgetRepository.overview(bookId, budgetPeriod) }
                     val assets = async { reportRepository.assets(bookId) }
                     val expenseCategories = async { reportRepository.expenseCategories(bookId) }
+                    // 预算卡片的月份可能不是本月：过去的月份没有「还没到期」的固定支出，这里自然返回 0
+                    val reservation = async {
+                        budgetRepository.reservedFixed(bookId, budgetPeriod)
+                    }
 
                     val breakdown = category.await()
+                    val budgetDto = budget.await()
+                    val reserved = reservation.await()
                     _state.update {
                         it.copy(
                             overview = overview.await(),
                             trend = trend.await(),
+                            netAssetTrend = netAssetTrend.await(),
                             categories = breakdown.items,
                             categoryTotal = breakdown.total,
                             calendar = calendar.await(),
@@ -192,9 +242,14 @@ class ReportViewModel @Inject constructor(
                             accountRanks = accountRanks.await(),
                             tagRanks = tagRanks.await(),
                             members = members.await(),
-                            budget = budget.await(),
+                            budget = budgetDto,
                             assets = assets.await(),
-                            expenseCategories = expenseCategories.await()
+                            expenseCategories = expenseCategories.await(),
+                            fixedReserved = reserved.total,
+                            uncoveredFixed = uncoveredFixedTotal(
+                                budgetDto?.items.orEmpty(),
+                                reserved
+                            )
                         )
                     }
                 }
@@ -231,6 +286,19 @@ class ReportViewModel @Inject constructor(
     }
 
     /** 直接跳到某一天（选择器、日历热力图点击都会走这里） */
+    /** 折叠 / 展开一张卡片（状态存在页面状态里，切 Tab 回来仍然保持） */
+    fun toggleCard(card: ReportFoldableCard) {
+        _state.update { state ->
+            state.copy(
+                foldedCards = if (card in state.foldedCards) {
+                    state.foldedCards - card
+                } else {
+                    state.foldedCards + card
+                }
+            )
+        }
+    }
+
     fun selectDate(date: LocalDate, granularity: ReportGranularity? = null) {
         val target = granularity ?: _state.value.period.granularity
         val next = ReportPeriod(target, date).let { if (it.future) it.previous() else it }

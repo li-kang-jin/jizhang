@@ -1,6 +1,8 @@
 package com.jizhang.app.data.repository
 
 import com.jizhang.app.data.local.dao.BookDao
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -21,6 +23,14 @@ class SyncManager @Inject constructor(
     private val bookDao: BookDao
 ) {
 
+    /**
+     * 同步串行化。
+     * <p>
+     * 「进应用时的全量同步」和「账单页自己的同步」会几乎同时触发，两条线跑同一个账本
+     * 会重复推送、重复跑自愈（曾因此各建出一个兜底账户），所以统一排队执行。
+     */
+    private val syncLock = Mutex()
+
     /** 执行单个账本的完整同步。 */
     suspend fun sync(bookId: Long): Result<SyncOutcome> = runCatching { doSync(bookId) }
 
@@ -29,7 +39,12 @@ class SyncManager @Inject constructor(
         val push = pushWithRepair(bookId)
         pushPendingExtras(bookId)
         val pulled = ledgerRepository.fullPull(bookId)
-        SyncOutcome(pushed = push.updated, deleted = push.deleted, pulled = pulled)
+        SyncOutcome(
+            pushed = push.updated,
+            deleted = push.deleted,
+            pulled = pulled,
+            conflicts = push.conflicted
+        )
     }
 
     /**
@@ -53,6 +68,7 @@ class SyncManager @Inject constructor(
         var pushed = 0
         var deleted = 0
         var pulled = 0
+        var conflicts = 0
         val failed = mutableListOf<String>()
 
         for (book in books) {
@@ -61,29 +77,45 @@ class SyncManager @Inject constructor(
                     pushed += it.pushed
                     deleted += it.deleted
                     pulled += it.pulled
+                    conflicts += it.conflicts
                 }
-                .onFailure { failed += "$book.name（${it.message ?: "未知错误"}）" }
+                // 注意要用 ${book.name}：写成 "$book.name" 会把整个数据类 toString 出来再接上 ".name"
+                .onFailure { failed += "${book.name}（${it.message ?: "未知错误"}）" }
         }
-        SyncSummary(pushed = pushed, deleted = deleted, pulled = pulled, failedBooks = failed)
+        SyncSummary(
+            pushed = pushed,
+            deleted = deleted,
+            pulled = pulled,
+            conflicts = conflicts,
+            failedBooks = failed
+        )
     }
 
     /**
      * 推送本地变更；被服务端整批拒绝时自动修复一次再重试。
      * <p>
-     * 最常见的拒绝原因：导入账单时自动新建的账户只存在于本地，
-     * 服务端校验不过（「账户不存在」）导致整批回滚。
-     * 这里先把账户对齐到服务端（缺的建出来、本地引用改写），再重试一次。
+     * 服务端推送是整批事务，一条不过就全批回滚，所以两种「账户对不上」的脏数据必须先在本地修好：
+     * 1. 导入账单时自动新建的账户只存在于本地 —— [LedgerRepository.reconcileLedger] 把它们建到服务端并改写引用；
+     * 2. 账单挂着的账户已经被删掉了（本地只剩一个对不上号的 id）——
+     *    [LedgerRepository.repairDanglingAccountRefs] 把引用改指到兜底账户。
+     * 修完重试一次；仍旧失败才把服务端给的原因抛给上层。
      */
     private suspend fun pushWithRepair(bookId: Long): PushResult {
         var push = transactionRepository.pushPending(bookId)
         if (push.failed) {
             ledgerRepository.reconcileLedger(bookId)
+            ledgerRepository.repairDanglingAccountRefs(bookId)
             push = transactionRepository.pushPending(bookId)
         }
         return push
     }
 
-    private suspend fun doSync(bookId: Long): SyncOutcome {
+    /** 排队执行，避免两条同步线同时跑同一个账本（见 [syncLock]） */
+    private suspend fun doSync(bookId: Long): SyncOutcome = syncLock.withLock {
+        runSync(bookId)
+    }
+
+    private suspend fun runSync(bookId: Long): SyncOutcome {
         val push = pushWithRepair(bookId)
         // 修复后仍被拒绝：本地记录原样留着，把服务端返回的原因抛给上层展示，
         // 不要报告成「上传 0 条」这种看起来正常的结果
@@ -92,7 +124,12 @@ class SyncManager @Inject constructor(
         }
         pushPendingExtras(bookId)
         val pulled = ledgerRepository.pull(bookId)
-        return SyncOutcome(pushed = push.updated, deleted = push.deleted, pulled = pulled)
+        return SyncOutcome(
+            pushed = push.updated,
+            deleted = push.deleted,
+            pulled = pulled,
+            conflicts = push.conflicted
+        )
     }
 }
 
@@ -102,7 +139,9 @@ data class SyncOutcome(
     /** 推送成功的删除条数 */
     val deleted: Int,
     /** 拉取到的交易条数 */
-    val pulled: Int
+    val pulled: Int,
+    /** 服务端版本更新、已按服务端覆盖本地的条数 */
+    val conflicts: Int = 0
 )
 
 /** 多账本同步的汇总结果 */
@@ -110,6 +149,8 @@ data class SyncSummary(
     val pushed: Int,
     val deleted: Int,
     val pulled: Int,
+    /** 服务端版本更新、已按服务端覆盖本地的条数 */
+    val conflicts: Int = 0,
     /** 同步失败的账本名 */
     val failedBooks: List<String> = emptyList()
 ) {

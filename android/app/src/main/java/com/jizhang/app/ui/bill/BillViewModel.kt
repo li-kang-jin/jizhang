@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.jizhang.app.data.local.entity.LocalAccount
 import com.jizhang.app.data.local.entity.LocalCategory
 import com.jizhang.app.data.local.entity.LocalTransaction
+import com.jizhang.app.data.prefs.SettingsStore
 import com.jizhang.app.data.repository.BookRepository
 import com.jizhang.app.data.repository.LedgerRepository
 import com.jizhang.app.data.repository.PetRepository
@@ -31,7 +32,8 @@ class BillViewModel @Inject constructor(
     private val bookRepository: BookRepository,
     private val petRepository: PetRepository,
     private val ledgerRepository: LedgerRepository,
-    private val syncManager: SyncManager
+    private val syncManager: SyncManager,
+    private val settingsStore: SettingsStore
 ) : ViewModel() {
 
     data class UiState(
@@ -58,6 +60,8 @@ class BillViewModel @Inject constructor(
         val petMood: PetMood = PetMood.NORMAL,
         /** 记账人 userId → 展示名（家庭账本里显示「谁记的」） */
         val memberLabels: Map<Long, String> = emptyMap(),
+        /** 账户 id → 名称（列表里显示「从哪个账户出的」） */
+        val accountLabels: Map<Long, String> = emptyMap(),
         val syncing: Boolean = false,
         val message: String? = null
     )
@@ -79,8 +83,17 @@ class BillViewModel @Inject constructor(
         observeJob?.cancel()
         observeJob = viewModelScope.launch {
             launch {
+                var first = true
                 transactionRepository.observeTransactions(bookId).collect { list ->
                     _state.update { it.copy(transactions = list).withDerived() }
+                    // 列表自己会刷新，但顶部卡片是本月的聚合数字（查一次），
+                    // 清理数据 / 导入 / 同步之后必须跟着重算，否则要重启应用才更新。
+                    // 首帧跳过：bind() 里刚查过一次。
+                    if (first) {
+                        first = false
+                    } else {
+                        refresh()
+                    }
                 }
             }
             launch {
@@ -99,10 +112,19 @@ class BillViewModel @Inject constructor(
                 }
             }
             launch {
-                // 账户 / 分类既是筛选下拉的数据源，也是列表分类图标的数据源。
+                // 筛选下拉的数据源：只含未归档账户。
                 // 用 Flow 而不是一次性读取：在「账户管理 / 分类管理」里新建之后要立刻出现在筛选里
                 ledgerRepository.observeAccounts(bookId).collect { accounts ->
                     _state.update { it.copy(accounts = accounts).withDerived() }
+                }
+            }
+            launch {
+                // 列表里「这一笔是从哪个账户出的」：取全量（含归档）。
+                // 归档过的账户不再出现在筛选里，但老账单还挂在它上面，得能显示名字
+                ledgerRepository.observeAllAccounts(bookId).collect { accounts ->
+                    _state.update {
+                        it.copy(accountLabels = accounts.associate { account -> account.id to account.name })
+                    }
                 }
             }
             launch {
@@ -120,7 +142,13 @@ class BillViewModel @Inject constructor(
     fun refresh() {
         val bookId = _state.value.bookId
         viewModelScope.launch {
-            val overview = reportRepository.overview(bookId)
+            // 失败要说话：这个协程里抛出去没人接，界面就会停在旧数字上，
+            // 看起来正是「卡片不刷新」那个毛病，排查时完全没线索。
+            val overview = runCatching { reportRepository.overview(bookId) }
+                .getOrElse { error ->
+                    _state.update { it.copy(message = "本月汇总刷新失败：${error.message ?: "未知错误"}") }
+                    return@launch
+                }
             val mood = when {
                 overview.balance < 0 -> PetMood.WORRIED
                 overview.income > 0 -> PetMood.HAPPY
@@ -146,9 +174,13 @@ class BillViewModel @Inject constructor(
         it.copy(range = range, customStart = null, customEnd = null)
     }
 
-    fun setCustomRange(start: Long, end: Long) = applyFilter {
-        it.copy(range = BillDateRange.CUSTOM, customStart = minOf(start, end), customEnd = maxOf(start, end))
-    }
+    /**
+     * 自定义日期区间。
+     *
+     * @param start 起日当天 0 点
+     * @param end 止日当天 0 点（止日整天都要算进去，换算成开区间上界见 [BillFilter.withDayRange]）
+     */
+    fun setCustomRange(start: Long, end: Long) = applyFilter { it.withDayRange(start, end) }
 
     fun setTypeFilter(type: Int) = applyFilter { it.copy(type = type) }
 
@@ -175,17 +207,16 @@ class BillViewModel @Inject constructor(
      */
     fun applyPreset(preset: BillPreset) {
         _state.update { current ->
-            val hasRange = preset.startMillis != null && preset.endMillis != null
             current.copy(
                 filter = BillFilter(
-                    range = if (hasRange) BillDateRange.CUSTOM else current.filter.range,
-                    customStart = preset.startMillis,
-                    customEnd = preset.endMillis,
                     type = preset.type ?: 0,
                     accountId = preset.accountId,
                     categoryIds = preset.categoryId?.let { setOf(it) } ?: emptySet(),
                     keyword = preset.keyword.orEmpty()
                 )
+                    // 预设带的是闭区间（止日 23:59:59.999），筛选条件存左闭右开，
+                    // 直接塞进去会把止日的后一天也框进来（选 16 日看到 16、17 两天）
+                    .withInclusiveRange(preset.startMillis, preset.endMillis)
             ).withDerived()
         }
     }
@@ -292,6 +323,11 @@ class BillViewModel @Inject constructor(
     fun sync() {
         val bookId = _state.value.bookId
         viewModelScope.launch {
+            // 离线模式：不发起请求，也不转圈，直接给一句说明
+            if (settingsStore.offlineMode()) {
+                _state.update { it.copy(message = "离线模式已开启，已跳过同步") }
+                return@launch
+            }
             _state.update { it.copy(syncing = true) }
             syncManager.sync(bookId)
                 .onSuccess { refresh() }

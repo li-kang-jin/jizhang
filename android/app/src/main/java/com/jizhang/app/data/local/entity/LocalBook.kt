@@ -17,7 +17,7 @@ data class LocalBook(
     @PrimaryKey val id: Long,
     val name: String,
     val icon: String? = null,
-    /** 0=个人（仅自己可见） 1=家庭/共享（成员互相可见） */
+    /** 0=个人（仅自己可见） 1=家庭 2=共享（1/2 都是「成员互相可见」的多人账本，服务端同一套逻辑） */
     val type: Int = 0,
     val ownerId: Long = 0,
     /** 当前用户在本账本中的角色 0=只读 1=可写 2=管理员（所有者） */

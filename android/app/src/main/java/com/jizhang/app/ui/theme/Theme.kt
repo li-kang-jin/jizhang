@@ -8,6 +8,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 
 /** 可选主题 */
 enum class AppTheme(val key: String, val label: String, val emoji: String) {
@@ -45,26 +46,49 @@ data class ThemePalette(
     fun toLightScheme() = lightColorScheme(
         primary = primary,
         onPrimary = onPrimary,
+        // 容器色必须给：M3 组件（FilterChip / FilledTonalButton / 导航选中底）默认走
+        // secondaryContainer，不覆盖就会露出 Material3 baseline 的紫色，跟主题打架。
+        primaryContainer = lerp(Color.White, primary, 0.18f),
+        onPrimaryContainer = onSurface,
         secondary = secondary,
+        secondaryContainer = lerp(Color.White, secondary, 0.24f),
+        onSecondaryContainer = onSurface,
+        tertiary = accent,
+        tertiaryContainer = lerp(Color.White, accent, 0.26f),
+        onTertiaryContainer = onSurface,
         background = background,
         surface = surface,
         surfaceVariant = surfaceVariant,
         outline = outline,
+        outlineVariant = lerp(background, outline, 0.45f),
         onSurface = onSurface,
-        onSurfaceVariant = onSurfaceVariant
+        onSurfaceVariant = onSurfaceVariant,
+        error = expense,
+        errorContainer = lerp(Color.White, expense, 0.18f),
+        onErrorContainer = onSurface
     )
 
     fun toDarkScheme() = darkColorScheme(
         primary = primary,
         onPrimary = onPrimary,
+        primaryContainer = lerp(Color(0xFF1C1B1F), primary, 0.30f),
+        onPrimaryContainer = Color(0xFFE6E1E9),
         secondary = secondary,
+        secondaryContainer = lerp(Color(0xFF1C1B1F), secondary, 0.32f),
+        onSecondaryContainer = Color(0xFFE6E1E9),
+        tertiary = accent,
+        tertiaryContainer = lerp(Color(0xFF1C1B1F), accent, 0.28f),
+        onTertiaryContainer = Color(0xFFE6E1E9),
         surface = Color(0xFF1C1B1F),
         background = Color(0xFF141317),
         surfaceVariant = Color(0xFF2A2830),
         outline = Color(0xFF8C8A93),
+        outlineVariant = lerp(Color(0xFF141317), Color(0xFF8C8A93), 0.5f),
         onSurface = Color(0xFFE6E1E9),
         onSurfaceVariant = Color(0xFFB8B5BD),
-        error = expense
+        error = expense,
+        errorContainer = lerp(Color(0xFF1C1B1F), expense, 0.24f),
+        onErrorContainer = Color(0xFFE6E1E9)
     )
 }
 

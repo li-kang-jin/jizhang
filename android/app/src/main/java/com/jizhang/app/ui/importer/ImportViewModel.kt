@@ -8,6 +8,7 @@ import com.jizhang.app.data.imports.BillCsvParser
 import com.jizhang.app.data.imports.BillImporter
 import com.jizhang.app.data.imports.CsvParseResult
 import com.jizhang.app.data.imports.ImportSummary
+import com.jizhang.app.data.prefs.SettingsStore
 import com.jizhang.app.data.repository.SyncManager
 import com.jizhang.app.data.repository.TransactionRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -40,7 +41,8 @@ class ImportViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val billImporter: BillImporter,
     private val transactionRepository: TransactionRepository,
-    private val syncManager: SyncManager
+    private val syncManager: SyncManager,
+    private val settingsStore: SettingsStore
 ) : ViewModel() {
 
     data class UiState(
@@ -130,7 +132,12 @@ class ImportViewModel @Inject constructor(
             _state.update { it.copy(clearing = true, error = null, summary = null, cleared = null) }
             runCatching {
                 val result = transactionRepository.clearBook(bookId)
-                val synced = if (result.needSync) syncManager.sync(bookId).isSuccess else true
+                // 离线模式不发起请求：删除标记留在本地，关掉离线后会自动补推
+                val synced = when {
+                    !result.needSync -> true
+                    settingsStore.offlineMode() -> false
+                    else -> syncManager.sync(bookId).isSuccess
+                }
                 result to synced
             }.onSuccess { (result, synced) ->
                 _state.update {

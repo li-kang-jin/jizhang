@@ -8,7 +8,7 @@ data class BookDto(
     val name: String,
     val icon: String? = null,
     val currency: String = "CNY",
-    /** 0=个人（仅自己可见） 1=家庭/共享 */
+    /** 0=个人（仅自己可见） 1=家庭 2=共享（1/2 都是成员互相可见的多人账本） */
     val type: Int = 0,
     val ownerId: Long? = null,
     val remark: String? = null,

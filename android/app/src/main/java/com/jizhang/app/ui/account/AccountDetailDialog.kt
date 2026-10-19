@@ -55,10 +55,13 @@ import com.jizhang.app.data.repository.AccountRepository
 import com.jizhang.app.data.repository.CategoryRepository
 import com.jizhang.app.data.repository.TransactionRepository
 import com.jizhang.app.ui.common.AppFullScreenDialog
+import com.jizhang.app.ui.common.accountColorOf
 import com.jizhang.app.ui.common.accountIconOf
+import com.jizhang.app.ui.common.categoryTintOn
 import com.jizhang.app.ui.common.accountTypeLabel
 import com.jizhang.app.ui.common.categoryIconOf
 import com.jizhang.app.ui.common.formatAmount
+import com.jizhang.app.ui.common.formatAmountInput
 import com.jizhang.app.ui.common.formatDate
 import com.jizhang.app.ui.common.formatSignedAmount
 import com.jizhang.app.ui.common.monthStartMillis
@@ -335,17 +338,19 @@ private fun BalanceCard(account: AccountWithBalance, hideAmounts: Boolean) {
             .padding(16.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
+            // 与账户列表同一套语义色：现金绿 / 储蓄卡蓝 / 信用卡紫
+            val accColor = accountColorOf(account.icon, account.type)
             Box(
                 modifier = Modifier
                     .size(36.dp)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                    .background(accColor.copy(alpha = 0.14f)),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = accountIconOf(account.icon),
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
+                    tint = categoryTintOn(accColor),
                     modifier = Modifier.size(20.dp)
                 )
             }
@@ -445,7 +450,7 @@ private fun TransactionRow(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
-            imageVector = categoryIconOf(category?.icon),
+            imageVector = categoryIconOf(category?.icon, category?.name),
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(18.dp)
@@ -492,7 +497,8 @@ private fun CalibrateDialog(
     onDismiss: () -> Unit,
     onConfirm: (Long) -> Unit
 ) {
-    var text by remember { mutableStateOf(formatAmount(account.balance)) }
+    // 回填输入框要用无千分位口径，否则下面的 toDoubleOrNull() 会解析失败
+    var text by remember { mutableStateOf(formatAmountInput(account.balance)) }
     val target = text.toDoubleOrNull()
 
     AlertDialog(

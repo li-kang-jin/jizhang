@@ -62,6 +62,12 @@ data class AccountAmountRow(
     val txCount: Long
 )
 
+/** 账户被用过的次数：记账页只铺三个常用账户，靠它排序 */
+data class AccountUsageRow(
+    val accountId: Long,
+    val cnt: Long
+)
+
 /** 按星期聚合（0=周日 … 6=周六），不含转账 */
 data class WeekdayAmountRow(
     val weekday: Int,
@@ -109,6 +115,35 @@ interface TransactionDao {
             "AND tags IS NOT NULL AND tags != '' ORDER BY tradeTime DESC LIMIT :limit"
     )
     suspend fun recentTags(bookId: Long, limit: Int): List<String>
+
+    /**
+     * 某个分类下最近若干条账单的标签原文，记账页用它算「这个分类常用的标签」。
+     * <p>
+     * 标签与分类在库里没有关联表，只有同一行的 `categoryId` + `tags` 两列；这里直接按分类
+     * 过滤历史账单，等价于「上次记餐饮时打过哪些标签」。
+     */
+    @Query(
+        "SELECT tags FROM local_transaction WHERE bookId = :bookId AND categoryId = :categoryId " +
+            "AND pendingDelete = 0 AND tags IS NOT NULL AND tags != '' " +
+            "ORDER BY tradeTime DESC LIMIT :limit"
+    )
+    suspend fun recentTagsByCategory(bookId: Long, categoryId: Long, limit: Int): List<String>
+
+    /**
+     * 每个账户被用过的次数，记账页据此只铺三个常用账户。
+     * <p>
+     * 转出方记在 `accountId`、转入方记在 `toAccountId`，两边都算使用（否则常收款的账户永远排不上）。
+     * 排序交给 Kotlin：SQL 只负责聚合。
+     */
+    @Query(
+        "SELECT accountId, COUNT(*) AS cnt FROM local_transaction " +
+            "WHERE bookId = :bookId AND pendingDelete = 0 GROUP BY accountId " +
+            "UNION ALL " +
+            "SELECT toAccountId AS accountId, COUNT(*) AS cnt FROM local_transaction " +
+            "WHERE bookId = :bookId AND pendingDelete = 0 AND type = 3 AND toAccountId IS NOT NULL " +
+            "GROUP BY toAccountId"
+    )
+    suspend fun accountUsage(bookId: Long): List<AccountUsageRow>
 
     /**
      * 最近记过的几笔账（最新在前），供记账页「再来一笔」照抄。
@@ -169,6 +204,13 @@ interface TransactionDao {
     @Query("SELECT COUNT(*) FROM local_transaction WHERE categoryId = :categoryId AND pendingDelete = 0")
     suspend fun countByCategory(categoryId: Long): Int
 
+    /** 某账户名下还有多少笔账单（转出 / 转入都算），删除账户前查引用，与服务端同一套规则 */
+    @Query(
+        "SELECT COUNT(*) FROM local_transaction WHERE pendingDelete = 0 " +
+            "AND (accountId = :accountId OR toAccountId = :accountId)"
+    )
+    suspend fun countByAccount(accountId: Long): Int
+
     @Query("SELECT * FROM local_transaction WHERE id = :id")
     suspend fun findById(id: Long): LocalTransaction?
 
@@ -210,6 +252,28 @@ interface TransactionDao {
     @Query("UPDATE local_transaction SET toAccountId = :newAccountId WHERE toAccountId = :oldAccountId")
     suspend fun migrateToAccount(oldAccountId: Long, newAccountId: Long)
 
+    /**
+     * 找「付费账户已经不存在」的账单，按账户 id 去重。
+     * <p>
+     * 账户被删掉（别的设备删了之后本机跟着删、或本机删除时还有账单没推上去）时，
+     * 挂在它上面的账单会留着一条已经对不上号的外键。推送时服务端整批拒绝
+     * （账户不存在），表现为「怎么点同步都失败」。
+     */
+    @Query(
+        "SELECT DISTINCT t.accountId FROM local_transaction t " +
+            "LEFT JOIN local_account a ON a.id = t.accountId " +
+            "WHERE t.bookId = :bookId AND t.pendingDelete = 0 AND a.id IS NULL"
+    )
+    suspend fun listDanglingAccountIds(bookId: Long): List<Long>
+
+    /** 同上，但查的是转账的「转入账户」那一侧 */
+    @Query(
+        "SELECT DISTINCT t.toAccountId FROM local_transaction t " +
+            "LEFT JOIN local_account a ON a.id = t.toAccountId " +
+            "WHERE t.bookId = :bookId AND t.pendingDelete = 0 AND t.toAccountId IS NOT NULL AND a.id IS NULL"
+    )
+    suspend fun listDanglingToAccountIds(bookId: Long): List<Long>
+
     @Query("UPDATE local_transaction SET categoryId = :newCategoryId WHERE categoryId = :oldCategoryId")
     suspend fun migrateCategory(oldCategoryId: Long, newCategoryId: Long)
 
@@ -223,6 +287,26 @@ interface TransactionDao {
             "AND tradeTime >= :start AND tradeTime < :end"
     )
     suspend fun sumBetween(bookId: Long, start: Long, end: Long): SumAmountRow
+
+    /**
+     * 指定区间收支汇总，但排除某个分类。
+     * <p>
+     * 预算统计必须剔掉「余额校准」生成的调整单：它只是把账户余额对到真实值，
+     * 不是消费；算进预算会让当月直接爆掉（例如把白条从 +1500 校准到 -3000 会记 4500 支出）。
+     */
+    @Query(
+        "SELECT COALESCE(SUM(CASE WHEN type = 2 THEN amount ELSE 0 END), 0) AS income, " +
+            "COALESCE(SUM(CASE WHEN type = 1 THEN amount ELSE 0 END), 0) AS expense " +
+            "FROM local_transaction WHERE bookId = :bookId AND pendingDelete = 0 " +
+            "AND tradeTime >= :start AND tradeTime < :end " +
+            "AND (categoryId IS NULL OR categoryId != :excludeCategoryId)"
+    )
+    suspend fun sumBetweenExcluding(
+        bookId: Long,
+        start: Long,
+        end: Long,
+        excludeCategoryId: Long
+    ): SumAmountRow
 
     /** 分类占比 */
     @Query(
@@ -241,6 +325,23 @@ interface TransactionDao {
             "AND tradeTime >= :start AND tradeTime < :end GROUP BY period ORDER BY period"
     )
     suspend fun sumByDay(bookId: Long, start: Long, end: Long): List<PeriodAmountRow>
+
+    /** 按日聚合，排除某个分类（预算预测的样本要剔掉「余额调整」这种一次性校准单） */
+    @Query(
+        "SELECT strftime('%Y-%m-%d', tradeTime / 1000, 'unixepoch', 'localtime') AS period, " +
+            "COALESCE(SUM(CASE WHEN type = 2 THEN amount ELSE 0 END), 0) AS income, " +
+            "COALESCE(SUM(CASE WHEN type = 1 THEN amount ELSE 0 END), 0) AS expense " +
+            "FROM local_transaction WHERE bookId = :bookId AND pendingDelete = 0 " +
+            "AND tradeTime >= :start AND tradeTime < :end " +
+            "AND (categoryId IS NULL OR categoryId != :excludeCategoryId) " +
+            "GROUP BY period ORDER BY period"
+    )
+    suspend fun sumByDayExcluding(
+        bookId: Long,
+        start: Long,
+        end: Long,
+        excludeCategoryId: Long
+    ): List<PeriodAmountRow>
 
     /** 按记账人聚合收支（家庭账本「谁花了多少」）；笔数不含转账 */
     @Query(
@@ -270,6 +371,25 @@ interface TransactionDao {
             "AND tradeTime >= :start AND tradeTime < :end"
     )
     suspend fun rangeSummary(bookId: Long, start: Long, end: Long): RangeSummaryRow
+
+    /**
+     * 区间内的账单明细（日历模块按月一次性取回来，点某天在内存里分组）。
+     * <p>
+     * 过滤条件与上面的聚合查询完全一致（同一个账本、同一套软删除规则），
+     * 这样「格子里显示 38 元」和「点开看到的几条明细」不会打架。
+     */
+    @Query(
+        "SELECT * FROM local_transaction WHERE bookId = :bookId AND pendingDelete = 0 " +
+            "AND tradeTime >= :start AND tradeTime < :end ORDER BY tradeTime DESC, id DESC"
+    )
+    suspend fun listBetween(bookId: Long, start: Long, end: Long): List<LocalTransaction>
+
+    /** 最早一笔账单的时刻；日历用它当下界，用户不必往 1970 年滑 */
+    @Query(
+        "SELECT MIN(tradeTime) FROM local_transaction " +
+            "WHERE bookId = :bookId AND pendingDelete = 0"
+    )
+    suspend fun minTradeTime(bookId: Long): Long?
 
     /** 按自然月聚合（年视图的 12 根柱），period 为 yyyy-MM */
     @Query(
@@ -401,6 +521,24 @@ interface AccountDao {
                 "FROM local_account a "
 
         const val BALANCE_SQL = BALANCE_SELECT + "WHERE a.bookId = :bookId ORDER BY a.sort, a.id"
+
+        /**
+         * 与 [BALANCE_SELECT] 同样的余额算法，但只统计 [:before] 之前的流水：
+         * 统计页的「期末净资产」要的是某个时间点的存量，而不是此刻。
+         */
+        const val BALANCE_AT_SELECT =
+            "SELECT a.id AS id, a.bookId AS bookId, a.name AS name, a.type AS type, " +
+                "a.initialBalance AS initialBalance, a.icon AS icon, a.sort AS sort, " +
+                "a.note AS note, a.archived AS archived, a.includeInTotal AS includeInTotal, " +
+                "(COALESCE(a.initialBalance, 0) " +
+                " + COALESCE((SELECT SUM(CASE WHEN t.type = 2 THEN t.amount ELSE -t.amount END) " +
+                "   FROM local_transaction t WHERE t.accountId = a.id AND t.pendingDelete = 0 " +
+                "   AND t.tradeTime < :before), 0) " +
+                " + COALESCE((SELECT SUM(t.amount) FROM local_transaction t " +
+                "   WHERE t.toAccountId = a.id AND t.type = 3 AND t.pendingDelete = 0 " +
+                "   AND t.tradeTime < :before), 0)" +
+                ") AS balance " +
+                "FROM local_account a "
     }
 
     @Query(BALANCE_SQL)
@@ -408,6 +546,14 @@ interface AccountDao {
 
     @Query(BALANCE_SQL)
     suspend fun listWithBalance(bookId: Long): List<AccountWithBalance>
+
+    /**
+     * [:before] 时刻的账户余额快照，统计页用它算期末净资产。
+     * <p>
+     * 注意：账户没有创建时间，`initialBalance` 一律按「自始存在」计入，历史快照无法还原开户时点。
+     */
+    @Query(BALANCE_AT_SELECT + "WHERE a.bookId = :bookId ORDER BY a.sort, a.id")
+    suspend fun listWithBalanceBefore(bookId: Long, before: Long): List<AccountWithBalance>
 
     /** 未归档账户（记账页选择、账单页筛选用）：归档过的账户不再参与新记账 */
     @Query(

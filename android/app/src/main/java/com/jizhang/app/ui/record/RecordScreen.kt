@@ -8,18 +8,22 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,27 +33,20 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.LocalOffer
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -63,6 +60,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -72,11 +70,14 @@ import com.jizhang.app.data.local.entity.LocalAccount
 import com.jizhang.app.data.local.entity.LocalCategory
 import com.jizhang.app.data.local.entity.LocalTransaction
 import com.jizhang.app.ui.category.CategoryEditorDialog
+import com.jizhang.app.ui.common.AppChip
 import com.jizhang.app.ui.common.AppFullScreenDialog
+import com.jizhang.app.ui.common.categoryColorOf
+import com.jizhang.app.ui.common.categoryContentOn
 import com.jizhang.app.ui.common.categoryIconOf
+import com.jizhang.app.ui.common.categoryTintOn
 import com.jizhang.app.ui.common.safeDialogContent
 import com.jizhang.app.ui.theme.AppColors
-import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.Instant
 import java.time.LocalDate
@@ -84,17 +85,20 @@ import java.time.ZoneId
 
 private const val PLACEHOLDER = "点击填写"
 
+/** 标签快选行最多铺几个：再多就靠横滚和弹窗，避免铺成一片「标签墙」 */
+private const val QUICK_TAG_LIMIT = 12
+
+/** 账户区默认铺几个常用账户：三个足够覆盖日常，再多就挤掉日期和备注 */
+private const val QUICK_ACCOUNT_LIMIT = 3
+
 /**
  * 「记一笔」全屏页。
  *
- * 五套模板共用同一个 ViewModel 与底层组件（金额引擎、分类、账户、数字键盘），
- * 但**信息架构与操作节奏完全不同**，各有适用场景：
+ * 只有一套布局，从上到下的顺序就是记账的动作顺序：
+ * 类型 → 分类（主区，可滚）→ 标签（常驻快选，跟当前分类走）→ 账户 / 日期 / 备注 → 金额 → 数字键盘。
  *
- * - 模板 1「经典键盘」：面板堆叠 + 常驻数字键盘，分类/账户/备注一屏滚动，信息最全；
- * - 模板 2「极简速记」：金额收进顶栏、分类变横向条、键盘铺满下半屏，3 秒记一笔；
- * - 模板 3「备注工作台」：卡片表单，备注/标签直接展开，数字键盘按需弹出；
- * - 模板 4「网格速记」：分类九宫格占主屏，账户/备注/标签收进键盘上方底栏；
- * - 模板 5「再来一笔」：列出最近记过的账，点一下照抄内容，改个金额就能存。
+ * 早期做过五套可切换模板（经典键盘 / 极简速记 / 备注工作台 / 网格速记 / 再来一笔），
+ * 实际用起来各套都只覆盖一部分场景，切换成本反而拖慢记账，现已合并成这一套。
  *
  * 另：ViewModel 是 Activity 作用域常驻实例，离开页面时必须复位表单（见页面末尾的
  * [DisposableEffect] 与 `RecordViewModel.resetForm`），否则「记完账旧数据不清零」。
@@ -105,10 +109,10 @@ fun RecordScreen(
     bookId: Long,
     /** 数字键盘按键震动反馈（设置页可关） */
     hapticEnabled: Boolean = true,
-    /** 记账页模板：1 经典键盘 / 2 极简速记 / 3 备注工作台 / 4 网格速记 / 5 再来一笔 */
-    recordTemplate: Int = 1,
     /** 非空表示「编辑这笔账单」（从账单页点进来），为空则是新增 */
     editTransaction: LocalTransaction? = null,
+    /** 非空表示「补记某天」（从日历页点某一天进来），表单里的记账日期预填成那天 */
+    initialDate: LocalDate? = null,
     onDismiss: () -> Unit,
     onSaved: () -> Unit,
     viewModel: RecordViewModel = hiltViewModel()
@@ -121,16 +125,15 @@ fun RecordScreen(
     var showDatePicker by remember { mutableStateOf(false) }
     var showCategoryEditor by remember { mutableStateOf(false) }
 
-    LaunchedEffect(bookId, editTransaction) {
+    LaunchedEffect(bookId, editTransaction, initialDate) {
         val target = editTransaction
-        if (target != null) viewModel.startEdit(bookId, target) else viewModel.load(bookId)
+        if (target != null) viewModel.startEdit(bookId, target) else viewModel.load(bookId, initialDate)
     }
 
     // 记账页的 ViewModel 是 Activity 作用域常驻实例（工程没有 Navigation），
     // 覆盖层只是反复 show/hide。离开页面时务必复位表单，否则下次打开会看到上次的金额 / 备注。
-    // 极简模板保留类型与分类，方便连着记同类账。
     DisposableEffect(Unit) {
-        onDispose { viewModel.resetForm(preserveType = recordTemplate == 2) }
+        onDispose { viewModel.resetForm() }
     }
 
     fun save() {
@@ -160,70 +163,18 @@ fun RecordScreen(
     }
 
     AppFullScreenDialog(onDismissRequest = onDismiss) {
-        when (recordTemplate) {
-            2 -> QuickRecordLayout(
-                state = state,
-                viewModel = viewModel,
-                errorMessage = errorMessage,
-                onBack = onDismiss,
-                onSave = ::save,
-                onOpenRemark = { showRemarkDialog = true },
-                onOpenTags = { showTagDialog = true },
-                onOpenDate = { showDatePicker = true },
-                onAddCategory = { showCategoryEditor = true },
-                onKey = ::handleKey
-            )
-
-            3 -> DetailRecordLayout(
-                state = state,
-                viewModel = viewModel,
-                errorMessage = errorMessage,
-                onBack = onDismiss,
-                onSave = ::save,
-                onOpenDate = { showDatePicker = true },
-                onAddCategory = { showCategoryEditor = true },
-                onKey = ::handleKey
-            )
-
-            4 -> GridRecordLayout(
-                state = state,
-                viewModel = viewModel,
-                errorMessage = errorMessage,
-                onBack = onDismiss,
-                onSave = ::save,
-                onOpenRemark = { showRemarkDialog = true },
-                onOpenTags = { showTagDialog = true },
-                onOpenDate = { showDatePicker = true },
-                onAddCategory = { showCategoryEditor = true },
-                onKey = ::handleKey
-            )
-
-            5 -> RecallRecordLayout(
-                state = state,
-                viewModel = viewModel,
-                errorMessage = errorMessage,
-                onBack = onDismiss,
-                onSave = ::save,
-                onOpenRemark = { showRemarkDialog = true },
-                onOpenTags = { showTagDialog = true },
-                onOpenDate = { showDatePicker = true },
-                onAddCategory = { showCategoryEditor = true },
-                onKey = ::handleKey
-            )
-
-            else -> ClassicRecordLayout(
-                state = state,
-                viewModel = viewModel,
-                errorMessage = errorMessage,
-                onBack = onDismiss,
-                onSave = ::save,
-                onOpenRemark = { showRemarkDialog = true },
-                onOpenTags = { showTagDialog = true },
-                onOpenDate = { showDatePicker = true },
-                onAddCategory = { showCategoryEditor = true },
-                onKey = ::handleKey
-            )
-        }
+        RecordLayout(
+            state = state,
+            viewModel = viewModel,
+            errorMessage = errorMessage,
+            onBack = onDismiss,
+            onSave = ::save,
+            onOpenRemark = { showRemarkDialog = true },
+            onOpenTags = { showTagDialog = true },
+            onOpenDate = { showDatePicker = true },
+            onAddCategory = { showCategoryEditor = true },
+            onKey = ::handleKey
+        )
     }
 
     if (showCategoryEditor) {
@@ -293,11 +244,18 @@ fun RecordScreen(
 }
 
 /* ==================================================================
- * 模板 1 · 经典键盘：面板堆叠 + 常驻数字键盘，信息最全
+ * 记账页唯一布局。
+ *
+ * 分层原则（屏幕从上到下就是手指的动作顺序）：
+ *   一级 · 每次必用：分类（主区，一屏装下）、金额（键盘正上方，拇指落点）、保存（右上）
+ *   一级 · 状态可见：类型（顶栏分段）、账户 / 日期（键盘上方元信息条）
+ *   二级 · 按需弹出：账户选择、日期、备注、标签、新建分类
+ * 所有「有默认值、偶尔才改」的东西都不再各占一行，省下来的高度全部给分类网格，
+ * 27 个分类也不用滚动。
  * ================================================================== */
 
 @Composable
-private fun ClassicRecordLayout(
+private fun RecordLayout(
     state: RecordViewModel.UiState,
     viewModel: RecordViewModel,
     errorMessage: String?,
@@ -310,987 +268,437 @@ private fun ClassicRecordLayout(
     onKey: (String) -> Unit
 ) {
     val accent = accentOf(state.type)
+    var showAccountPicker by remember { mutableStateOf(false) }
 
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            RecordTopBar(
-                canSave = state.canSave,
-                saving = state.saving,
-                editing = state.editing != null,
-                onBack = onBack,
-                onSave = onSave
-            )
-        },
-        bottomBar = { CalcKeyboard(onKey = onKey) }
-    ) { padding ->
-        Column(
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        // ① 顶栏：返回 / 类型（当前状态一眼可见，也可直接切） / 保存
+        Row(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(start = 2.dp, end = 8.dp, top = 2.dp, bottom = 2.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            // 常驻：金额面板（核心信息，绝不能滚没）
-            AmountPanel(state)
-            ErrorHint(errorMessage)
-
-            Spacer(Modifier.height(10.dp))
-            TypeSwitch(
+            IconButton(onClick = onBack, modifier = Modifier.size(38.dp)) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "返回",
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            CompactTypeSwitch(
                 type = state.type,
                 onChange = viewModel::switchType,
-                modifier = Modifier.padding(horizontal = 16.dp)
+                modifier = Modifier
+                    .width(168.dp)
+                    .padding(start = 2.dp)
             )
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.weight(1f))
+            SaveAction(
+                enabled = state.canSave && !state.saving,
+                saving = state.saving,
+                editing = state.editing != null,
+                onClick = onSave
+            )
+        }
 
+        // 校验失败时只占一行提示，不挤占别的区域
+        ErrorHint(errorMessage, horizontalPadding = 16.dp)
+
+        // ② 主区：分类网格（或转账的双账户选择），撑满剩余高度
+        if (state.type == 3) {
             Column(
                 modifier = Modifier
                     .weight(1f)
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 16.dp)
             ) {
-                if (state.type == 3) {
-                    TransferSection(state, viewModel)
-                } else {
-                    // 「常用」：把最近用过的分类提到最前，记账越用越顺手
-                    val recent = state.recentCategoryIds.mapNotNull { id ->
-                        state.categories.firstOrNull { it.id == id }
-                    }
-                    if (recent.isNotEmpty()) {
-                        SectionTitle("常用")
-                        Spacer(Modifier.height(8.dp))
-                        CategoryGrid(
-                            categories = recent.map { Triple(it.id, it.name, it.icon) },
-                            selectedId = state.selectedCategoryId,
-                            accent = accent,
-                            onSelect = viewModel::selectCategory
-                        )
-                        Spacer(Modifier.height(12.dp))
-                    }
-
-                    SectionTitle("分类")
-                    Spacer(Modifier.height(8.dp))
-                    CategoryGrid(
-                        categories = state.categories.map { Triple(it.id, it.name, it.icon) },
-                        selectedId = state.selectedCategoryId,
-                        accent = accent,
-                        onSelect = viewModel::selectCategory,
-                        onAdd = onAddCategory
-                    )
-                    Spacer(Modifier.height(12.dp))
-
-                    SectionTitle("账户")
-                    Spacer(Modifier.height(8.dp))
-                    AccountChips(
-                        accounts = state.accounts,
-                        selectedId = state.selectedAccountId,
-                        onSelect = viewModel::selectAccount
-                    )
-                }
-
-                Spacer(Modifier.height(12.dp))
-                DateRow(date = state.tradeDate, onClick = onOpenDate)
-                Spacer(Modifier.height(8.dp))
-                ExtraInfoRow(
-                    remark = state.remark,
-                    tags = state.tags,
-                    onRemark = onOpenRemark,
-                    onTags = onOpenTags
-                )
-
-                // 快捷标签：历史高频 + 内置兜底，直接摆在页面上，点一下就加上，不用再开弹窗打字
-                if (state.tagSuggestions.isNotEmpty()) {
-                    Spacer(Modifier.height(12.dp))
-                    SectionTitle("常用标签")
-                    Spacer(Modifier.height(8.dp))
-                    TagSuggestionChips(
-                        suggestions = state.tagSuggestions,
-                        picked = parseTags(state.tags),
-                        onToggle = viewModel::toggleTag
-                    )
-                }
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(6.dp))
+                TransferSection(state, viewModel)
+                Spacer(Modifier.height(10.dp))
             }
-        }
-    }
-}
-
-/* ==================================================================
- * 模板 2 · 极简速记：金额进顶栏、分类横向条、键盘铺满，3 秒一笔
- * ================================================================== */
-
-@Composable
-private fun QuickRecordLayout(
-    state: RecordViewModel.UiState,
-    viewModel: RecordViewModel,
-    errorMessage: String?,
-    onBack: () -> Unit,
-    onSave: () -> Unit,
-    onOpenRemark: () -> Unit,
-    onOpenTags: () -> Unit,
-    onOpenDate: () -> Unit,
-    onAddCategory: () -> Unit,
-    onKey: (String) -> Unit
-) {
-    val accent = accentOf(state.type)
-
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            RecordTopBar(
-                canSave = state.canSave,
-                saving = state.saving,
-                editing = state.editing != null,
-                onBack = onBack,
-                onSave = onSave,
-                title = { QuickAmountTitle(state) }
-            )
-        },
-        bottomBar = { CalcKeyboard(onKey = onKey) }
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(horizontal = 14.dp)
-        ) {
-            TypeSwitch(type = state.type, onChange = viewModel::switchType)
-            ErrorHint(errorMessage, horizontalPadding = 0.dp)
-            Spacer(Modifier.height(8.dp))
-
-            // 一行搞定：日期 / 账户（转账时账户交给下方的转出-转入选择）
-            Row(
+        } else {
+            CategoryGrid(
+                categories = state.categories,
+                selectedId = state.selectedCategoryId,
+                accent = accent,
+                onSelect = viewModel::selectCategory,
+                onAdd = onAddCategory,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                AssistChip(
-                    onClick = onOpenDate,
-                    label = { Text(dateLabel(state.tradeDate)) },
-                    leadingIcon = {
-                        Icon(Icons.Filled.DateRange, contentDescription = null, modifier = Modifier.size(16.dp))
-                    }
-                )
-                if (state.type != 3) {
-                    state.accounts.forEach { account ->
-                        FilterChip(
-                            selected = state.selectedAccountId == account.id,
-                            onClick = { viewModel.selectAccount(account.id) },
-                            label = { Text(account.name) }
-                        )
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(6.dp))
-
-            if (state.type == 3) {
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .verticalScroll(rememberScrollState())
-                ) {
-                    TransferSection(state, viewModel)
-                }
-            } else {
-                // 分类条：横向滚动，图标 + 名称，点选即定
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    state.categories.forEach { category ->
-                        CategoryItem(
-                            name = category.name,
-                            iconKey = category.icon,
-                            selected = state.selectedCategoryId == category.id,
-                            accent = accent,
-                            modifier = Modifier.width(62.dp),
-                            onClick = { viewModel.selectCategory(category.id) }
-                        )
-                    }
-                    AddCategoryItem(
-                        accent = accent,
-                        modifier = Modifier.width(62.dp),
-                        onClick = onAddCategory
-                    )
-                }
-                Spacer(Modifier.weight(1f))
-            }
-
-            // 快捷标签：一行横向滚动，点一下就记上，不占额外行高
-            if (state.tagSuggestions.isNotEmpty()) {
-                TagSuggestionChips(
-                    suggestions = state.tagSuggestions,
-                    picked = parseTags(state.tags),
-                    onToggle = viewModel::toggleTag,
-                    singleLine = true
-                )
-                Spacer(Modifier.height(2.dp))
-            }
-
-            // 备注 / 标签：折叠成一行入口，不抢主流程
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                ExtraEntry(
-                    icon = Icons.Filled.Edit,
-                    label = state.remark.takeIf { it.isNotBlank() } ?: "备注",
-                    filled = state.remark.isNotBlank(),
-                    onClick = onOpenRemark
-                )
-                ExtraEntry(
-                    icon = Icons.Filled.LocalOffer,
-                    label = state.tags.takeIf { it.isNotBlank() } ?: "标签",
-                    filled = state.tags.isNotBlank(),
-                    onClick = onOpenTags
-                )
-            }
-            Spacer(Modifier.height(4.dp))
+                    .weight(1f)
+                    .padding(horizontal = 10.dp)
+            )
         }
+
+        // ③ 标签：记账基本每笔都要打标签，常用标签直接铺在表单里，点一下就选上，不再进二级弹窗
+        TagQuickBar(
+            tags = state.tags,
+            suggestions = state.tagSuggestions,
+            accent = accent,
+            onToggle = viewModel::toggleTag,
+            onMore = onOpenTags
+        )
+
+        // ④ 元信息条：三个常用账户 / 日期 / 备注，一眼看到当前值，点一下就切
+        MetaBar(
+            state = state,
+            accent = accent,
+            onPickAccount = { showAccountPicker = true },
+            onSelectAccount = viewModel::selectAccount,
+            onOpenDate = onOpenDate,
+            onOpenRemark = onOpenRemark
+        )
+
+        // ⑤ 金额：紧贴键盘，眼睛不用离开手指
+        AmountBar(state)
+
+        // ⑥ 键盘
+        CalcKeyboard(onKey = onKey)
+    }
+
+    if (showAccountPicker) {
+        AccountPickerDialog(
+            accounts = state.accounts,
+            selectedId = state.selectedAccountId,
+            lastAccountId = state.lastAccountId,
+            accent = accent,
+            onSelect = {
+                viewModel.selectAccount(it)
+                showAccountPicker = false
+            },
+            onDismiss = { showAccountPicker = false }
+        )
     }
 }
 
-/** 极简模板的「顶栏即金额」 */
+/** 顶栏右侧的保存动作：不可保存时是明确的灰态，不是「点了没反应」 */
 @Composable
-private fun QuickAmountTitle(state: RecordViewModel.UiState) {
-    Row(verticalAlignment = Alignment.Bottom) {
+private fun SaveAction(enabled: Boolean, saving: Boolean, editing: Boolean, onClick: () -> Unit) {
+    TextButton(
+        onClick = onClick,
+        enabled = enabled,
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+        modifier = Modifier.height(34.dp)
+    ) {
+        Text(
+            text = when {
+                saving -> "保存中…"
+                editing -> "保存修改"
+                else -> "保存"
+            },
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold
+        )
+    }
+}
+
+/** 金额条：本页最大的数字，紧贴键盘 */
+@Composable
+private fun AmountBar(state: RecordViewModel.UiState) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.Bottom
+    ) {
         Text(
             text = "¥",
-            style = MaterialTheme.typography.labelMedium,
+            style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(bottom = 3.dp)
+            modifier = Modifier.padding(bottom = 4.dp)
         )
-        Spacer(Modifier.width(2.dp))
+        Spacer(Modifier.width(4.dp))
         Text(
             text = amountText(state),
-            style = MaterialTheme.typography.headlineSmall,
+            style = MaterialTheme.typography.headlineLarge,
             fontWeight = FontWeight.Bold,
             color = amountColor(state),
             maxLines = 1,
-            overflow = TextOverflow.Ellipsis
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false)
         )
         if (state.expressionText.isNotBlank()) {
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(10.dp))
             Text(
                 text = state.expressionText,
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(bottom = 4.dp)
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .padding(bottom = 5.dp)
             )
         }
     }
 }
 
+/**
+ * 元信息条：常用账户 / 日期 / 备注。
+ *
+ * 账户只铺**三个常用的**（按使用次数，见 [quickAccounts]），点一下直接切，不用先开弹窗；
+ * 账户多于三个时末尾补一个「更多」进完整选择器。日期与备注同样压缩成芯片，
+ * 整条可横滚，**当前值始终可见**。标签不在这里：它每笔都要点，已经常驻成一行（见 [TagQuickBar]）。
+ */
 @Composable
-private fun ExtraEntry(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    label: String,
-    filled: Boolean,
-    onClick: () -> Unit
+private fun MetaBar(
+    state: RecordViewModel.UiState,
+    accent: Color,
+    onPickAccount: () -> Unit,
+    onSelectAccount: (Long) -> Unit,
+    onOpenDate: () -> Unit,
+    onOpenRemark: () -> Unit
 ) {
+    val quickAccounts = quickAccounts(state)
     Row(
         modifier = Modifier
-            .clip(RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 8.dp),
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (state.type != 3) {
+            quickAccounts.forEach { account ->
+                AppChip(
+                    label = account.name,
+                    selected = state.selectedAccountId == account.id,
+                    onClick = { onSelectAccount(account.id) },
+                    tint = accent,
+                    compact = true
+                )
+            }
+            if (state.accounts.size > quickAccounts.size) {
+                AppChip(
+                    label = "更多",
+                    selected = false,
+                    onClick = onPickAccount,
+                    trailingIcon = Icons.Filled.ExpandMore,
+                    compact = true
+                )
+            }
+        }
+        AppChip(
+            label = dateShortLabel(state.tradeDate),
+            selected = false,
+            onClick = onOpenDate,
+            leadingIcon = Icons.Filled.DateRange,
+            compact = true
+        )
+        AppChip(
+            label = state.remark.ifBlank { "备注" }.let { if (it.length > 8) it.take(8) + "…" else it },
+            selected = state.remark.isNotBlank(),
+            onClick = onOpenRemark,
+            leadingIcon = Icons.Filled.Edit,
+            compact = true
+        )
+    }
+}
+
+/**
+ * 三个常用账户：使用次数降序（次数相同按账户管理里的手工顺序）。
+ * 当前选中的账户如果不在前三，就顶掉最后一个 —— 从「更多」里选过冷门账户后，
+ * 芯片行里必须还能看见它，否则用户会以为没选上。
+ */
+private fun quickAccounts(state: RecordViewModel.UiState): List<LocalAccount> {
+    val ranked = state.accounts.sortedByDescending { state.accountUsage[it.id] ?: 0L }
+    val top = ranked.take(QUICK_ACCOUNT_LIMIT).toMutableList()
+    val selected = state.accounts.firstOrNull { it.id == state.selectedAccountId }
+    if (selected != null && top.none { it.id == selected.id }) {
+        if (top.size >= QUICK_ACCOUNT_LIMIT) {
+            top[top.lastIndex] = selected
+        } else {
+            top.add(selected)
+        }
+    }
+    return top
+}
+
+/**
+ * 表单里的标签快选行：常用标签直接铺开，点一下加上、再点一下去掉。
+ *
+ * 记账几乎每笔都要打标签，塞进二级弹窗等于每笔多两次点击；这里常驻一行（横向滚动，
+ * 高度只有一行芯片），右侧「＋」留给候选里没有的标签（弹窗里可以手打、可以一次加多个）。
+ *
+ * 候选由 ViewModel 按**当前分类**算好（[RecordViewModel.refreshTagSuggestions]），
+ * 换分类时整排换掉，记「交通」不会再刷出「晚餐」。
+ */
+@Composable
+private fun TagQuickBar(
+    tags: String,
+    suggestions: List<String>,
+    accent: Color,
+    onToggle: (String) -> Unit,
+    onMore: () -> Unit
+) {
+    val picked = parseTags(tags)
+    // 已选但不在候选里的（别的分类打过 / 手打的）也要露出来，否则用户看不到自己到底选了啥
+    val chips = (suggestions + picked.filter { it !in suggestions }).take(QUICK_TAG_LIMIT)
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 15.dp, end = 10.dp, bottom = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
-            icon,
+            imageVector = Icons.Filled.LocalOffer,
             contentDescription = null,
-            modifier = Modifier.size(15.dp),
-            tint = if (filled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+            tint = if (picked.isEmpty()) {
+                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+            } else {
+                accent
+            },
+            modifier = Modifier.size(14.dp)
         )
-        Spacer(Modifier.width(5.dp))
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelMedium,
-            color = if (filled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-    }
-}
-
-/* ==================================================================
- * 模板 3 · 备注工作台：卡片表单，备注/标签直接展开，键盘按需弹出
- * ================================================================== */
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun DetailRecordLayout(
-    state: RecordViewModel.UiState,
-    viewModel: RecordViewModel,
-    errorMessage: String?,
-    onBack: () -> Unit,
-    onSave: () -> Unit,
-    onOpenDate: () -> Unit,
-    onAddCategory: () -> Unit,
-    onKey: (String) -> Unit
-) {
-    var keyboardVisible by remember { mutableStateOf(false) }
-    val accent = accentOf(state.type)
-
-    Scaffold(
-        // 备注/标签是页面内的输入框，键盘弹出时必须把内容顶上去
-        modifier = Modifier
-            .fillMaxSize()
-            .imePadding(),
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            RecordTopBar(
-                canSave = state.canSave,
-                saving = state.saving,
-                editing = state.editing != null,
-                onBack = onBack,
-                onSave = onSave
-            )
-        },
-        bottomBar = { if (keyboardVisible) CalcKeyboard(onKey = onKey) }
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-        ) {
-            TypeSwitch(
-                type = state.type,
-                onChange = viewModel::switchType,
-                modifier = Modifier.padding(horizontal = 14.dp)
-            )
-            ErrorHint(errorMessage, horizontalPadding = 14.dp)
-
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 14.dp)
-            ) {
-                Spacer(Modifier.height(10.dp))
-
-                // ① 金额 + 备注合在一张卡：备注是这一套模板的一级字段
-                DetailCard {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable { keyboardVisible = true }
-                            .padding(vertical = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Row(verticalAlignment = Alignment.Bottom) {
-                                Text(
-                                    text = "¥",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Spacer(Modifier.width(3.dp))
-                                Text(
-                                    text = amountText(state),
-                                    style = MaterialTheme.typography.headlineMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = amountColor(state),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            Text(
-                                text = state.expressionText.ifBlank { "点这里输入金额" },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        IconButton(onClick = { keyboardVisible = !keyboardVisible }) {
-                            Icon(
-                                imageVector = if (keyboardVisible) {
-                                    Icons.Filled.KeyboardArrowDown
-                                } else {
-                                    Icons.Filled.KeyboardArrowUp
-                                },
-                                contentDescription = if (keyboardVisible) "收起键盘" else "展开键盘",
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-
-                    Spacer(Modifier.height(10.dp))
-                    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
-                    Spacer(Modifier.height(10.dp))
-
-                    OutlinedTextField(
-                        value = state.remark,
-                        onValueChange = viewModel::setRemark,
-                        label = { Text("备注") },
-                        placeholder = { Text("这笔钱花在哪了？") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-
-                Spacer(Modifier.height(10.dp))
-
-                // ② 分类：表单行样式，比九宫格更适合逐个核对
-                if (state.type != 3) {
-                    DetailCard {
-                        SectionTitle("分类")
-                        Spacer(Modifier.height(4.dp))
-                        CategoryRows(
-                            categories = state.categories.map { Triple(it.id, it.name, it.icon) },
-                            selectedId = state.selectedCategoryId,
-                            accent = accent,
-                            onSelect = viewModel::selectCategory,
-                            onAdd = onAddCategory
-                        )
-                    }
-                    Spacer(Modifier.height(10.dp))
-                }
-
-                // ③ 其他信息：账户 / 日期 / 标签
-                DetailCard {
-                    SectionTitle(if (state.type == 3) "转账账户" else "账户")
-                    Spacer(Modifier.height(8.dp))
-                    if (state.type == 3) {
-                        TransferSection(state, viewModel)
-                    } else {
-                        AccountChips(
-                            accounts = state.accounts,
-                            selectedId = state.selectedAccountId,
-                            onSelect = viewModel::selectAccount
-                        )
-                    }
-
-                    Spacer(Modifier.height(10.dp))
-                    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
-                    Spacer(Modifier.height(6.dp))
-                    DateRow(date = state.tradeDate, onClick = onOpenDate)
-                    Spacer(Modifier.height(8.dp))
-
-                    OutlinedTextField(
-                        value = state.tags,
-                        onValueChange = viewModel::setTags,
-                        label = { Text("标签") },
-                        placeholder = { Text("多个标签用逗号分隔") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    // 常用标签：点一下就补进上面的输入框，记账时少打字
-                    TagSuggestionChips(
-                        suggestions = state.tagSuggestions,
-                        picked = parseTags(state.tags),
-                        onToggle = viewModel::toggleTag
-                    )
-                }
-
-                Spacer(Modifier.height(16.dp))
-            }
-        }
-    }
-}
-
-/** 表单式卡片容器：大圆角、靠留白分层 */
-@Composable
-private fun DetailCard(content: @Composable ColumnScope.() -> Unit) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(20.dp))
-            .background(MaterialTheme.colorScheme.surface)
-            .padding(16.dp),
-        content = content
-    )
-}
-
-/** 分类表单行：图标 + 名称 + 选中态，纵向排列 */
-@Composable
-private fun CategoryRows(
-    categories: List<Triple<Long, String, String?>>,
-    selectedId: Long?,
-    accent: Color,
-    onSelect: (Long) -> Unit,
-    onAdd: (() -> Unit)? = null
-) {
-    if (categories.isEmpty() && onAdd == null) {
-        Text(
-            text = "暂无分类数据",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        return
-    }
-
-    categories.forEach { (id, name, iconKey) ->
-        val selected = selectedId == id
+        Spacer(Modifier.width(8.dp))
         Row(
             modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .background(if (selected) accent.copy(alpha = 0.12f) else Color.Transparent)
-                .clickable { onSelect(id) }
-                .padding(horizontal = 10.dp, vertical = 9.dp),
+                .weight(1f)
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(
-                modifier = Modifier
-                    .size(30.dp)
-                    .clip(CircleShape)
-                    .background(if (selected) accent else MaterialTheme.colorScheme.surfaceVariant),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = categoryIconOf(iconKey),
-                    contentDescription = null,
-                    tint = if (selected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(17.dp)
+            if (chips.isEmpty()) {
+                Text(
+                    text = "点右侧 ＋ 加标签",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                 )
             }
-            Spacer(Modifier.width(10.dp))
-            Text(
-                text = name,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-            )
-            if (selected) {
-                Icon(
-                    Icons.Filled.Check,
-                    contentDescription = null,
+            chips.forEach { tag ->
+                AppChip(
+                    label = tag,
+                    selected = tag in picked,
+                    onClick = { onToggle(tag) },
                     tint = accent,
-                    modifier = Modifier.size(18.dp)
+                    compact = true
                 )
             }
         }
-    }
-
-    if (onAdd != null) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .clickable(onClick = onAdd)
-                .padding(horizontal = 10.dp, vertical = 9.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(30.dp)
-                    .clip(CircleShape)
-                    .border(1.dp, accent.copy(alpha = 0.6f), CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    Icons.Filled.Add,
-                    contentDescription = null,
-                    tint = accent,
-                    modifier = Modifier.size(17.dp)
-                )
-            }
-            Spacer(Modifier.width(10.dp))
-            Text(
-                text = "新建分类",
-                style = MaterialTheme.typography.bodyMedium,
-                color = accent
-            )
-        }
-    }
-}
-
-/* ==================================================================
- * 模板 4 · 网格速记：分类九宫格占主屏，其他字段收进底栏，选分类最快
- * ================================================================== */
-
-@Composable
-private fun GridRecordLayout(
-    state: RecordViewModel.UiState,
-    viewModel: RecordViewModel,
-    errorMessage: String?,
-    onBack: () -> Unit,
-    onSave: () -> Unit,
-    onOpenRemark: () -> Unit,
-    onOpenTags: () -> Unit,
-    onOpenDate: () -> Unit,
-    onAddCategory: () -> Unit,
-    onKey: (String) -> Unit
-) {
-    val accent = accentOf(state.type)
-
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            // 金额进顶栏：主屏整块留给分类，眼睛和手指都不用上下跑
-            RecordTopBar(
-                canSave = state.canSave,
-                saving = state.saving,
-                editing = state.editing != null,
-                onBack = onBack,
-                onSave = onSave,
-                title = { QuickAmountTitle(state) }
-            )
-        },
-        bottomBar = { CalcKeyboard(onKey = onKey) }
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-        ) {
-            TypeSwitch(
-                type = state.type,
-                onChange = viewModel::switchType,
-                modifier = Modifier.padding(horizontal = 14.dp)
-            )
-            ErrorHint(errorMessage, horizontalPadding = 14.dp)
-
-            // 主区：分类网格（这套模板的主角）。转账没有分类，换成转出/转入。
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 14.dp)
-            ) {
-                Spacer(Modifier.height(10.dp))
-                if (state.type == 3) {
-                    TransferSection(state, viewModel)
-                } else {
-                    // 「最近用过」置顶：同一批分类高频复用，不至于每次都在网格里找
-                    val recent = state.recentCategoryIds.mapNotNull { id ->
-                        state.categories.firstOrNull { it.id == id }
-                    }
-                    if (recent.isNotEmpty()) {
-                        SectionTitle("最近用过")
-                        Spacer(Modifier.height(8.dp))
-                        CategoryGrid(
-                            categories = recent.map { Triple(it.id, it.name, it.icon) },
-                            selectedId = state.selectedCategoryId,
-                            accent = accent,
-                            onSelect = viewModel::selectCategory
-                        )
-                        Spacer(Modifier.height(12.dp))
-                    }
-
-                    SectionTitle("分类")
-                    Spacer(Modifier.height(8.dp))
-                    CategoryGrid(
-                        categories = state.categories.map { Triple(it.id, it.name, it.icon) },
-                        selectedId = state.selectedCategoryId,
-                        accent = accent,
-                        onSelect = viewModel::selectCategory,
-                        onAdd = onAddCategory
-                    )
-                }
-                Spacer(Modifier.height(12.dp))
-            }
-
-            // 底栏（键盘之上）：账户 / 快捷标签 / 日期·备注·标签入口，全部内联可见
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp)
-            ) {
-                if (state.type != 3) {
-                    AccountChips(
-                        accounts = state.accounts,
-                        selectedId = state.selectedAccountId,
-                        onSelect = viewModel::selectAccount
-                    )
-                    Spacer(Modifier.height(6.dp))
-                }
-                TagSuggestionChips(
-                    suggestions = state.tagSuggestions,
-                    picked = parseTags(state.tags),
-                    onToggle = viewModel::toggleTag,
-                    singleLine = true
-                )
-                Spacer(Modifier.height(2.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    ExtraEntry(
-                        icon = Icons.Filled.DateRange,
-                        label = dateLabel(state.tradeDate),
-                        filled = false,
-                        onClick = onOpenDate
-                    )
-                    ExtraEntry(
-                        icon = Icons.Filled.Edit,
-                        label = state.remark.takeIf { it.isNotBlank() } ?: "备注",
-                        filled = state.remark.isNotBlank(),
-                        onClick = onOpenRemark
-                    )
-                    ExtraEntry(
-                        icon = Icons.Filled.LocalOffer,
-                        label = state.tags.takeIf { it.isNotBlank() } ?: "标签",
-                        filled = state.tags.isNotBlank(),
-                        onClick = onOpenTags
-                    )
-                }
-                Spacer(Modifier.height(4.dp))
-            }
-        }
-    }
-}
-
-/* ==================================================================
- * 模板 5 · 再来一笔：先看最近记过的账，点一下照抄内容，改个金额就能存
- * ================================================================== */
-
-@Composable
-private fun RecallRecordLayout(
-    state: RecordViewModel.UiState,
-    viewModel: RecordViewModel,
-    errorMessage: String?,
-    onBack: () -> Unit,
-    onSave: () -> Unit,
-    onOpenRemark: () -> Unit,
-    onOpenTags: () -> Unit,
-    onOpenDate: () -> Unit,
-    onAddCategory: () -> Unit,
-    onKey: (String) -> Unit
-) {
-    val accent = accentOf(state.type)
-
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            RecordTopBar(
-                canSave = state.canSave,
-                saving = state.saving,
-                editing = state.editing != null,
-                onBack = onBack,
-                onSave = onSave
-            )
-        },
-        bottomBar = { CalcKeyboard(onKey = onKey) }
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-        ) {
-            AmountPanel(state)
-            ErrorHint(errorMessage)
-
-            Spacer(Modifier.height(10.dp))
-            TypeSwitch(
-                type = state.type,
-                onChange = viewModel::switchType,
-                modifier = Modifier.padding(horizontal = 16.dp)
-            )
-            Spacer(Modifier.height(10.dp))
-
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp)
-            ) {
-                // ① 「最近记过」：早餐、打车这类反复发生的账，照抄比重新填快得多
-                if (state.recentTransactions.isNotEmpty()) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        SectionTitle("最近记过")
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = "点一下照抄",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    state.recentTransactions.forEach { transaction ->
-                        val category = state.categoryOf(transaction)
-                        RecentTransactionCard(
-                            transaction = transaction,
-                            categoryName = category?.name,
-                            iconKey = category?.icon,
-                            onClick = { viewModel.reuseRecent(transaction) }
-                        )
-                        Spacer(Modifier.height(8.dp))
-                    }
-                    Spacer(Modifier.height(4.dp))
-                }
-
-                // ② 照抄之后照样能改：分类 / 账户 / 日期 / 备注 / 标签
-                if (state.type == 3) {
-                    TransferSection(state, viewModel)
-                } else {
-                    SectionTitle("分类")
-                    Spacer(Modifier.height(8.dp))
-                    CategoryGrid(
-                        categories = state.categories.map { Triple(it.id, it.name, it.icon) },
-                        selectedId = state.selectedCategoryId,
-                        accent = accent,
-                        onSelect = viewModel::selectCategory,
-                        onAdd = onAddCategory
-                    )
-                    Spacer(Modifier.height(12.dp))
-                }
-
-                DateRow(date = state.tradeDate, onClick = onOpenDate)
-                Spacer(Modifier.height(8.dp))
-                ExtraInfoRow(
-                    remark = state.remark,
-                    tags = state.tags,
-                    onRemark = onOpenRemark,
-                    onTags = onOpenTags
-                )
-
-                if (state.tagSuggestions.isNotEmpty()) {
-                    Spacer(Modifier.height(12.dp))
-                    SectionTitle("常用标签")
-                    Spacer(Modifier.height(8.dp))
-                    TagSuggestionChips(
-                        suggestions = state.tagSuggestions,
-                        picked = parseTags(state.tags),
-                        onToggle = viewModel::toggleTag
-                    )
-                }
-                Spacer(Modifier.height(12.dp))
-            }
-        }
-    }
-}
-
-/** 最近账目里的一条：左边分类图标 + 名称/备注/日期，右边金额，点整行照抄 */
-@Composable
-private fun RecentTransactionCard(
-    transaction: LocalTransaction,
-    categoryName: String?,
-    iconKey: String?,
-    onClick: () -> Unit
-) {
-    val accent = accentOf(transaction.type)
-    val date = Instant.ofEpochMilli(transaction.tradeTime)
-        .atZone(ZoneId.systemDefault())
-        .toLocalDate()
-    val remark = transaction.remark.orEmpty()
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(MaterialTheme.colorScheme.surface)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
+        Spacer(Modifier.width(6.dp))
+        // 候选里没有的标签、或一次要加好几个，走原来的弹窗
         Box(
             modifier = Modifier
-                .size(34.dp)
+                .size(26.dp)
                 .clip(CircleShape)
-                .background(accent.copy(alpha = 0.14f)),
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f))
+                .clickable(onClick = onMore),
             contentAlignment = Alignment.Center
         ) {
             Icon(
-                imageVector = categoryIconOf(iconKey),
-                contentDescription = null,
-                tint = accent,
-                modifier = Modifier.size(18.dp)
+                imageVector = Icons.Filled.Add,
+                contentDescription = "更多标签",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(15.dp)
             )
         }
-        Spacer(Modifier.width(10.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = categoryName ?: typeLabelOf(transaction.type),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = if (remark.isBlank()) dateLabel(date) else "$remark · ${dateLabel(date)}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+    }
+}
+
+/** 账户选择：二级弹层，不再常驻占一行 */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun AccountPickerDialog(
+    accounts: List<LocalAccount>,
+    selectedId: Long?,
+    lastAccountId: Long?,
+    accent: Color,
+    onSelect: (Long) -> Unit,
+    onDismiss: () -> Unit
+) {
+    // 当前选中排第一、上次用过的排第二，其余保持账户管理里的手工顺序：
+    // 常点的账户永远在伸手就够到的地方，不用先滚动找
+    val ordered = accounts.sortedWith(
+        compareByDescending<LocalAccount> { it.id == selectedId }
+            .thenByDescending { it.id == lastAccountId }
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("选择账户", fontWeight = FontWeight.SemiBold) },
+        text = {
+            if (accounts.isEmpty()) {
+                Text(
+                    text = "还没有账户，可在账单页打开「账户管理」新建",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 320.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        ordered.forEach { account ->
+                            AppChip(
+                                label = account.name,
+                                selected = selectedId == account.id,
+                                onClick = { onSelect(account.id) },
+                                tint = accent
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("关闭") }
         }
-        Spacer(Modifier.width(8.dp))
+    )
+}
+
+/** 紧凑类型分段：顶栏里只占 168dp，当前类型一眼可见 */
+@Composable
+private fun CompactTypeSwitch(type: Int, onChange: (Int) -> Unit, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        TypeTab("支出", type == 1, AppColors.expense, Modifier.weight(1f)) { onChange(1) }
+        TypeTab("收入", type == 2, AppColors.income, Modifier.weight(1f)) { onChange(2) }
+        TypeTab("转账", type == 3, AppColors.accent, Modifier.weight(1f)) { onChange(3) }
+    }
+}
+
+@Composable
+private fun TypeTab(
+    label: String,
+    selected: Boolean,
+    selectedColor: Color,
+    modifier: Modifier,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = modifier
+            .clip(CircleShape)
+            .background(if (selected) selectedColor else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(vertical = 6.dp),
+        contentAlignment = Alignment.Center
+    ) {
         Text(
-            text = signedAmountText(transaction),
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.SemiBold,
-            color = accent
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (selected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
         )
     }
-}
-
-/** 最近账目在「当前分类表」里的分类：分类是按收支类型缓存的，类型对不上就查不到 */
-private fun RecordViewModel.UiState.categoryOf(transaction: LocalTransaction): LocalCategory? =
-    if (transaction.type == type) categories.firstOrNull { it.id == transaction.categoryId } else null
-
-/** 「转账 / 收入 / 支出」：分类查不到时用它兜底显示 */
-private fun typeLabelOf(type: Int): String = when (type) {
-    2 -> "收入"
-    3 -> "转账"
-    else -> "支出"
-}
-
-/** 带正负号的金额文本：「+12.00 / -12.00 / 12.00」 */
-private fun signedAmountText(transaction: LocalTransaction): String {
-    val sign = when (transaction.type) {
-        1 -> "-"
-        2 -> "+"
-        else -> ""
-    }
-    return sign + BigDecimal.valueOf(transaction.amount, 2)
-        .setScale(2, RoundingMode.HALF_UP)
-        .toPlainString()
 }
 
 /* ==================================================================
  * 共用组件
  * ================================================================== */
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun RecordTopBar(
-    canSave: Boolean,
-    saving: Boolean,
-    onBack: () -> Unit,
-    onSave: () -> Unit,
-    /** 编辑已有账单：标题与按钮文案都要和「记一笔」区分开 */
-    editing: Boolean = false,
-    title: @Composable () -> Unit = {
-        Text(if (editing) "编辑账单" else "记一笔", fontWeight = FontWeight.Bold)
-    }
-) {
-    TopAppBar(
-        title = title,
-        // 用默认 windowInsets：窗口在 Android 15+ 是 edge-to-edge，
-        // 顶部状态栏/挖孔必须由这个顶栏自己让位
-        navigationIcon = {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-            }
-        },
-        actions = {
-            TextButton(enabled = canSave && !saving, onClick = onSave) {
-                Text(
-                    when {
-                        saving -> "保存中…"
-                        editing -> "保存修改"
-                        else -> "保存"
-                    },
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-        }
-    )
-}
 
 @Composable
 private fun ErrorHint(message: String?, horizontalPadding: androidx.compose.ui.unit.Dp = 16.dp) {
@@ -1324,93 +732,23 @@ private fun amountColor(state: RecordViewModel.UiState): Color = when {
 private fun amountText(state: RecordViewModel.UiState): String =
     state.resultYuan?.setScale(2, RoundingMode.HALF_UP)?.toPlainString() ?: "0.00"
 
-private fun dateLabel(date: LocalDate): String =
-    "${date.monthValue} 月 ${date.dayOfMonth} 日"
+/** 元信息条上的日期：今天不占字，非今天才显示月日 */
+private fun dateShortLabel(date: LocalDate): String =
+    if (date == LocalDate.now()) "今天" else "${date.monthValue}月${date.dayOfMonth}日"
 
 /* ---------------- 金额 ---------------- */
-
-@Composable
-private fun AmountPanel(state: RecordViewModel.UiState) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp),
-        verticalAlignment = Alignment.Bottom
-    ) {
-        Text(
-            text = "¥",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.width(4.dp))
-        Text(
-            text = amountText(state),
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold,
-            color = amountColor(state)
-        )
-        if (state.expressionText.isNotBlank()) {
-            Spacer(Modifier.width(10.dp))
-            Text(
-                text = state.expressionText,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(bottom = 4.dp)
-            )
-        }
-    }
-}
 
 /* ---------------- 类型 / 分类 / 账户 ---------------- */
 
 @Composable
-private fun TypeSwitch(type: Int, onChange: (Int) -> Unit, modifier: Modifier = Modifier) {
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
-    ) {
-        SwitchTab("支出", type == 1, AppColors.expense, Modifier.weight(1f)) { onChange(1) }
-        SwitchTab("收入", type == 2, AppColors.income, Modifier.weight(1f)) { onChange(2) }
-        SwitchTab("转账", type == 3, AppColors.accent, Modifier.weight(1f)) { onChange(3) }
-    }
-}
-
-@Composable
-private fun SwitchTab(
-    label: String,
-    selected: Boolean,
-    selectedColor: Color,
-    modifier: Modifier,
-    onClick: () -> Unit
-) {
-    Box(
-        modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (selected) selectedColor else Color.Transparent)
-            .clickable(onClick = onClick)
-            .padding(vertical = 10.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = label,
-            color = if (selected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-            style = MaterialTheme.typography.labelLarge
-        )
-    }
-}
-
-@Composable
 private fun TransferSection(state: RecordViewModel.UiState, viewModel: RecordViewModel) {
+    val accent = accentOf(state.type)
     SectionTitle("转出账户")
     Spacer(Modifier.height(8.dp))
     AccountChips(
         accounts = state.accounts,
         selectedId = state.selectedAccountId,
+        accent = accent,
         excludeId = state.selectedToAccountId,
         onSelect = viewModel::selectAccount
     )
@@ -1421,18 +759,25 @@ private fun TransferSection(state: RecordViewModel.UiState, viewModel: RecordVie
     AccountChips(
         accounts = state.accounts,
         selectedId = state.selectedToAccountId,
+        accent = accent,
         excludeId = state.selectedAccountId,
         onSelect = viewModel::selectToAccount
     )
 }
 
-/** 分类九宫格：每行 4 个，超出自动换行；[onAdd] 非空时在末尾补一个「＋新建」格子 */
+/**
+ * 分类九宫格：每行 4 个，[onAdd] 非空时在末尾补一个「＋新建」格子。
+ *
+ * 高度全部交给 [modifier]（主区 weight），格子按最小尺寸收紧：27 个分类 + 新建 = 7 行，
+ * 一屏装得下，不需要滑。
+ */
 @Composable
 private fun CategoryGrid(
-    categories: List<Triple<Long, String, String?>>,
+    categories: List<LocalCategory>,
     selectedId: Long?,
     accent: Color,
     onSelect: (Long) -> Unit,
+    modifier: Modifier = Modifier,
     onAdd: (() -> Unit)? = null
 ) {
     if (categories.isEmpty() && onAdd == null) {
@@ -1444,35 +789,32 @@ private fun CategoryGrid(
         return
     }
 
-    val cellCount = categories.size + if (onAdd == null) 0 else 1
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        (0 until cellCount).chunked(4).forEach { rowIndices ->
-            Row(
+    // spacedBy + CenterVertically：分类少时整块在剩余高度里居中（不会顶在上面留一大片空白），
+    // 多到一屏装不下时照常滚动
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(4),
+        modifier = modifier,
+        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(1.dp, Alignment.CenterVertically),
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        items(categories, key = { it.id }) { category ->
+            CategoryItem(
+                name = category.name,
+                iconKey = category.icon,
+                color = categoryColorOf(category.color, category.icon, category.name),
+                selected = selectedId == category.id,
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                rowIndices.forEach { index ->
-                    if (index < categories.size) {
-                        val (id, name, iconKey) = categories[index]
-                        CategoryItem(
-                            name = name,
-                            iconKey = iconKey,
-                            selected = selectedId == id,
-                            accent = accent,
-                            modifier = Modifier.weight(1f),
-                            onClick = { onSelect(id) }
-                        )
-                    } else if (onAdd != null) {
-                        AddCategoryItem(
-                            accent = accent,
-                            modifier = Modifier.weight(1f),
-                            onClick = onAdd
-                        )
-                    }
-                }
-                repeat(4 - rowIndices.size) {
-                    Spacer(Modifier.weight(1f))
-                }
+                onClick = { onSelect(category.id) }
+            )
+        }
+        if (onAdd != null) {
+            item(key = "add-category") {
+                AddCategoryItem(
+                    accent = accent,
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = onAdd
+                )
             }
         }
     }
@@ -1483,14 +825,14 @@ private fun CategoryGrid(
 private fun AddCategoryItem(accent: Color, modifier: Modifier, onClick: () -> Unit) {
     Column(
         modifier = modifier
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
-            .padding(vertical = 6.dp),
+            .padding(vertical = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(
             modifier = Modifier
-                .size(42.dp)
+                .size(38.dp)
                 .clip(CircleShape)
                 .border(1.dp, accent.copy(alpha = 0.6f), CircleShape),
             contentAlignment = Alignment.Center
@@ -1499,10 +841,10 @@ private fun AddCategoryItem(accent: Color, modifier: Modifier, onClick: () -> Un
                 imageVector = Icons.Filled.Add,
                 contentDescription = "新建分类",
                 tint = accent,
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(18.dp)
             )
         }
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(3.dp))
         Text(
             text = "新建",
             style = MaterialTheme.typography.labelSmall,
@@ -1517,41 +859,41 @@ private fun AddCategoryItem(accent: Color, modifier: Modifier, onClick: () -> Un
 private fun CategoryItem(
     name: String,
     iconKey: String?,
+    color: Color,
     selected: Boolean,
-    accent: Color,
     modifier: Modifier,
     onClick: () -> Unit
 ) {
     Column(
         modifier = modifier
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
-            .padding(vertical = 6.dp),
+            .padding(vertical = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(
             modifier = Modifier
-                .size(42.dp)
+                .size(38.dp)
                 .clip(CircleShape)
-                .background(if (selected) accent else MaterialTheme.colorScheme.surfaceVariant),
+                // 未选中：分类色 13% 的淡底 + 同色线性图标，色相负责「找得到」；
+                // 选中：分类色实心 + 反色图标，靠「填充」而不是打勾表达选中 ——
+                // 打勾会把所有分类都变成同一个符号，反而认不出点的是哪个
+                .background(if (selected) color else color.copy(alpha = 0.13f)),
             contentAlignment = Alignment.Center
         ) {
-            if (selected) {
-                Icon(Icons.Filled.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
-            } else {
-                Icon(
-                    imageVector = categoryIconOf(iconKey),
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
+            Icon(
+                imageVector = categoryIconOf(iconKey, name),
+                contentDescription = null,
+                tint = if (selected) categoryContentOn(color) else categoryTintOn(color),
+                modifier = Modifier.size(19.dp)
+            )
         }
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(3.dp))
         Text(
             text = name,
             style = MaterialTheme.typography.labelSmall,
             color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
@@ -1562,6 +904,7 @@ private fun CategoryItem(
 private fun AccountChips(
     accounts: List<LocalAccount>,
     selectedId: Long?,
+    accent: Color,
     excludeId: Long? = null,
     onSelect: (Long) -> Unit
 ) {
@@ -1581,92 +924,19 @@ private fun AccountChips(
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         visible.forEach { account ->
-            FilterChip(
+            AppChip(
+                label = account.name,
                 selected = selectedId == account.id,
                 onClick = { onSelect(account.id) },
-                label = { Text(account.name) }
+                tint = accent
             )
         }
+        // 横向滚到末尾时别让最后一个芯片贴着文字边缘，看起来像被切掉
+        Spacer(Modifier.width(4.dp))
     }
 }
 
 /* ---------------- 日期 / 备注 / 标签 ---------------- */
-
-@Composable
-private fun DateRow(date: LocalDate, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick)
-            .padding(vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text("日期", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.weight(1f))
-        Text(
-            text = "${date.year} 年 ${date.monthValue} 月 ${date.dayOfMonth} 日",
-            style = MaterialTheme.typography.bodyMedium
-        )
-        Spacer(Modifier.width(2.dp))
-        Icon(
-            Icons.Filled.ChevronRight,
-            contentDescription = null,
-            modifier = Modifier.size(16.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
-}
-
-@Composable
-private fun ExtraInfoRow(remark: String, tags: String, onRemark: () -> Unit, onTags: () -> Unit) {
-    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-        InfoField(
-            label = "备注",
-            value = remark.ifBlank { PLACEHOLDER },
-            placeholder = remark.isBlank(),
-            modifier = Modifier.weight(1f),
-            onClick = onRemark
-        )
-        InfoField(
-            label = "标签",
-            value = tags.ifBlank { PLACEHOLDER },
-            placeholder = tags.isBlank(),
-            modifier = Modifier.weight(1f),
-            onClick = onTags
-        )
-    }
-}
-
-@Composable
-private fun InfoField(
-    label: String,
-    value: String,
-    placeholder: Boolean,
-    modifier: Modifier,
-    onClick: () -> Unit
-) {
-    Column(
-        modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick)
-            .padding(vertical = 6.dp)
-    ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodyMedium,
-            color = if (placeholder) MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-    }
-}
 
 /**
  * 标签编辑弹窗（经典键盘 / 极简速记模板用）。
@@ -1741,10 +1011,12 @@ private fun TagSuggestionChips(
     }
     val chips: @Composable () -> Unit = {
         suggestions.forEach { tag ->
-            FilterChip(
+            AppChip(
+                label = tag,
                 selected = tag in picked,
                 onClick = { onToggle(tag) },
-                label = { Text(tag) }
+                tint = MaterialTheme.colorScheme.primary,
+                compact = true
             )
         }
     }
@@ -1756,12 +1028,13 @@ private fun TagSuggestionChips(
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             chips()
+            Spacer(Modifier.width(4.dp))
         }
     } else {
         FlowRow(
             modifier = modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             chips()
         }

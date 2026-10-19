@@ -20,13 +20,14 @@ import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.outlined.Group
+import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -46,6 +47,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jizhang.app.data.local.entity.LocalBook
+import com.jizhang.app.ui.common.AppChip
 import com.jizhang.app.ui.common.AppFullScreenDialog
 import com.jizhang.app.ui.common.safeDialogContent
 
@@ -115,7 +117,7 @@ fun BookListDialog(
 
                 if (books.any { it.shared }) {
                     Text(
-                        text = "家庭账本里的每一笔收支，所有家庭成员都能看到。私人开销请记在「我的账本」里。",
+                        text = "家庭 / 共享账本里的每一笔收支，所有成员都能看到。私人开销请记在「我的账本」里。",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -132,24 +134,41 @@ fun BookListDialog(
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(Modifier.height(10.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        FilterChip(
+                    /*
+                     * 三种类型：个人 / 家庭 / 共享。
+                     * 「家庭」与「共享」在服务端目前是同一套多人账本逻辑（成员表 + 邀请码 + 角色权限），
+                     * 区别只在用户怎么理解它：家里人用家庭，同事 / 朋友 / 项目用共享。
+                     */
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        AppChip(
+                            label = "个人",
                             selected = newType == 0,
                             onClick = { newType = 0 },
-                            label = { Text("个人") },
-                            leadingIcon = { Icon(Icons.Filled.Person, null, Modifier.size(16.dp)) }
+                            leadingIcon = Icons.Outlined.Person
                         )
-                        Spacer(Modifier.size(8.dp))
-                        FilterChip(
+                        AppChip(
+                            label = "家庭",
                             selected = newType == 1,
                             onClick = { newType = 1 },
-                            label = { Text("家庭") },
-                            leadingIcon = { Icon(Icons.Filled.Group, null, Modifier.size(16.dp)) }
+                            leadingIcon = Icons.Outlined.Group
+                        )
+                        AppChip(
+                            label = "共享",
+                            selected = newType == 2,
+                            onClick = { newType = 2 },
+                            leadingIcon = Icons.Outlined.Share
                         )
                     }
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        text = if (newType == 0) "个人账本只有自己能看到" else "家庭账本可邀请家人一起记账",
+                        text = when (newType) {
+                            0 -> "个人账本只有自己能看到"
+                            1 -> "家庭账本可邀请家人一起记账，全家都能看到"
+                            else -> "共享账本给同事 / 朋友 / 项目一起记，成员都能看到"
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -176,9 +195,9 @@ fun BookListDialog(
                     }
                 }
 
-                SectionCard("加入家庭账本") {
+                SectionCard("加入家庭 / 共享账本") {
                     Text(
-                        text = "让家人把邀请码发给你，输入后即可一起记账。",
+                        text = "让家人或同事把邀请码发给你，输入后即可一起记账。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -368,9 +387,12 @@ private fun BookRow(
 private fun LocalBook.subtitle(): String = when {
     !remote -> "本地账本 · 未登录，仅本机可见"
     !shared -> "个人账本 · 仅自己可见"
-    myRole == 0 -> "家庭账本 · $memberCount 位成员 · 只读"
-    else -> "家庭账本 · $memberCount 位成员 · 互相可见"
+    myRole == 0 -> "${bookTypeLabel()} · $memberCount 位成员 · 只读"
+    else -> "${bookTypeLabel()} · $memberCount 位成员 · 互相可见"
 }
+
+/** 多人账本要按实际类型称呼：type = 2 是共享账本，其余（1）是家庭账本 */
+private fun LocalBook.bookTypeLabel(): String = if (type == 2) "共享账本" else "家庭账本"
 
 @Composable
 private fun SectionCard(title: String, content: @Composable () -> Unit) {

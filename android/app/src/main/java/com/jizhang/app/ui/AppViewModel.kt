@@ -50,12 +50,12 @@ class AppViewModel @Inject constructor(
         val budgetAlertEnabled: Boolean = true,
         /** 记账数字键盘的震动反馈开关 */
         val hapticEnabled: Boolean = true,
-        /** 记账页模板：1 经典键盘 / 2 极简速记 / 3 备注工作台 / 4 网格速记 / 5 再来一笔 */
-        val recordTemplate: Int = 1,
         /** 账单页模板：1 清爽列表 / 2 信息卡片 / 3 紧凑单行 */
         val billTemplate: Int = 1,
         /** 金额隐私模式：资产金额显示成 ****（只影响展示） */
         val hideAmounts: Boolean = false,
+        /** 离线模式：打开后 App 不发起任何网络请求 */
+        val offlineMode: Boolean = false,
         /** 登录后是否需要提示用户已迁移数据 */
         val loginTip: String? = null,
         /** 一次性提示（切账本、同步结果等） */
@@ -89,12 +89,6 @@ class AppViewModel @Inject constructor(
         }
 
         viewModelScope.launch {
-            settingsStore.recordTemplateFlow.collect { value ->
-                _state.update { it.copy(recordTemplate = value) }
-            }
-        }
-
-        viewModelScope.launch {
             settingsStore.billTemplateFlow.collect { value ->
                 _state.update { it.copy(billTemplate = value) }
             }
@@ -103,6 +97,12 @@ class AppViewModel @Inject constructor(
         viewModelScope.launch {
             settingsStore.hideAmountsFlow.collect { hidden ->
                 _state.update { it.copy(hideAmounts = hidden) }
+            }
+        }
+
+        viewModelScope.launch {
+            settingsStore.offlineModeFlow.collect { offline ->
+                _state.update { it.copy(offlineMode = offline) }
             }
         }
 
@@ -123,14 +123,18 @@ class AppViewModel @Inject constructor(
         viewModelScope.launch {
             val theme = settingsStore.theme()
             val loggedIn = !tokenStore.accessToken().isNullOrBlank()
+            // 离线模式：启动时一次网络请求都不发，账本列表直接用本地缓存（由 observeBooks 下发）
+            val offline = settingsStore.offlineMode()
 
             if (loggedIn) {
-                val books = bookRepository.refreshBooks().getOrDefault(emptyList())
-                // 老版本升级上来时当前账本还是 0，落到个人账本
-                if (tokenStore.currentBookId() == JizhangDatabase.LOCAL_BOOK_ID) {
-                    val fallback = books.firstOrNull { it.personal } ?: books.firstOrNull()
-                    if (fallback != null) {
-                        bookRepository.switchBook(fallback.id)
+                if (!offline) {
+                    val books = bookRepository.refreshBooks().getOrDefault(emptyList())
+                    // 老版本升级上来时当前账本还是 0，落到个人账本
+                    if (tokenStore.currentBookId() == JizhangDatabase.LOCAL_BOOK_ID) {
+                        val fallback = books.firstOrNull { it.personal } ?: books.firstOrNull()
+                        if (fallback != null) {
+                            bookRepository.switchBook(fallback.id)
+                        }
                     }
                 }
             } else {
@@ -139,10 +143,10 @@ class AppViewModel @Inject constructor(
                 localDataInitializer.ensureLocalData(JizhangDatabase.LOCAL_BOOK_ID)
             }
 
-            _state.update { it.copy(ready = true, theme = theme, loggedIn = loggedIn) }
+            _state.update { it.copy(ready = true, theme = theme, loggedIn = loggedIn, offlineMode = offline) }
 
-            // 进入应用后台静默同步全部账本
-            if (loggedIn) {
+            // 进入应用后台静默同步全部账本（离线模式下跳过）
+            if (loggedIn && !offline) {
                 launch { syncAll(silent = true) }
             }
         }
@@ -180,12 +184,24 @@ class AppViewModel @Inject constructor(
         setHideAmounts(!_state.value.hideAmounts)
     }
 
-    fun setRecordTemplate(value: Int) {
-        viewModelScope.launch { settingsStore.setRecordTemplate(value) }
-    }
-
     fun setBillTemplate(value: Int) {
         viewModelScope.launch { settingsStore.setBillTemplate(value) }
+    }
+
+    /**
+     * 离线模式开关。
+     * <p>
+     * 打开后所有网络请求在 OkHttp 拦截器里直接失败，同步 / 登录入口随之停用，数据留在本地；
+     * 关闭时补一次静默同步，把离线期间攒下的待同步账单推上去，不用用户再点一次「立即同步」。
+     */
+    fun setOfflineMode(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsStore.setOfflineMode(enabled)
+            _state.update { it.copy(offlineMode = enabled) }
+            if (!enabled) {
+                syncAll(silent = true)
+            }
+        }
     }
 
     /** 登录成功后调用：重新拉账本并做一次全量同步 */
@@ -235,6 +251,12 @@ class AppViewModel @Inject constructor(
     /** 同步全部账本 */
     fun syncAll(silent: Boolean = false) {
         viewModelScope.launch {
+            if (_state.value.offlineMode) {
+                if (!silent) {
+                    _state.update { it.copy(message = "离线模式已开启，已跳过同步") }
+                }
+                return@launch
+            }
             if (!_state.value.loggedIn) {
                 if (!silent) {
                     _state.update { it.copy(message = "登录后即可同步到云端") }
@@ -249,10 +271,18 @@ class AppViewModel @Inject constructor(
                         } else {
                             "；失败：${summary.failedBooks.joinToString("、")}"
                         }
+                        // 冲突是「服务端版本更新，按服务端为准」：不提示的话用户只会看到
+                        // 待同步条数不动、上传 0 条，误以为同步没生效
+                        val conflict = if (summary.conflicts > 0) {
+                            "，${summary.conflicts} 条冲突已采用服务端版本"
+                        } else {
+                            ""
+                        }
                         _state.update {
                             it.copy(
                                 message = "同步完成：上传 ${summary.pushed} 条，" +
-                                    "删除 ${summary.deleted} 条，拉取 ${summary.pulled} 条$failed"
+                                    "删除 ${summary.deleted} 条，拉取 ${summary.pulled} 条" +
+                                    "$conflict$failed"
                             )
                         }
                     }

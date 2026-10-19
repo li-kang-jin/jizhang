@@ -1,6 +1,7 @@
 package com.jizhang.app.ui.category
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,7 +27,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -53,6 +53,8 @@ import com.jizhang.app.data.repository.CategoryRepository
 import com.jizhang.app.ui.common.AppFullScreenDialog
 import com.jizhang.app.ui.common.categoryIconOf
 import com.jizhang.app.ui.common.safeDialogContent
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import com.jizhang.app.ui.theme.AppColors
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -169,22 +171,22 @@ fun CategoryListDialog(
                 }
             )
 
+            // 与记账页同一个类型分段：选中直接填充收支色，比两个灰边 FilterChip 干净
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .padding(3.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                FilterChip(
-                    selected = state.type == 1,
-                    onClick = { viewModel.switchType(1) },
-                    label = { Text("支出") }
-                )
-                FilterChip(
-                    selected = state.type == 2,
-                    onClick = { viewModel.switchType(2) },
-                    label = { Text("收入") }
-                )
+                ScopeTab("支出", state.type == 1, AppColors.expense, Modifier.weight(1f)) {
+                    viewModel.switchType(1)
+                }
+                ScopeTab("收入", state.type == 2, AppColors.income, Modifier.weight(1f)) {
+                    viewModel.switchType(2)
+                }
             }
 
             // weight(1f)：顶栏与分段按钮之外的剩余空间（fillMaxSize 会超出屏幕被裁）
@@ -277,6 +279,32 @@ fun CategoryListDialog(
     }
 }
 
+/** 支出 / 收入分段里的单个页签 */
+@Composable
+private fun ScopeTab(
+    label: String,
+    selected: Boolean,
+    selectedColor: Color,
+    modifier: Modifier,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = modifier
+            .clip(CircleShape)
+            .background(if (selected) selectedColor else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(vertical = 7.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            color = if (selected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+        )
+    }
+}
+
 @Composable
 private fun CategoryRow(
     category: LocalCategory,
@@ -305,7 +333,7 @@ private fun CategoryRow(
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = categoryIconOf(category.icon),
+                    imageVector = categoryIconOf(category.icon, category.name),
                     contentDescription = null,
                     tint = accent,
                     modifier = Modifier.size(19.dp)

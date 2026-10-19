@@ -6,17 +6,22 @@ import com.jizhang.app.data.local.entity.LocalRecurringExpense
 import com.jizhang.app.data.remote.dto.BudgetOverviewDto
 import com.jizhang.app.data.remote.dto.CategoryStatDto
 import com.jizhang.app.data.repository.BudgetCycle
+import com.jizhang.app.data.repository.BudgetForecast
 import com.jizhang.app.data.repository.BudgetPeriods
 import com.jizhang.app.data.repository.BudgetRepository
 import com.jizhang.app.data.repository.FixedReservation
 import com.jizhang.app.data.repository.ReportRepository
+import com.jizhang.app.data.repository.TransactionRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.math.BigDecimal
 import java.math.RoundingMode
 import javax.inject.Inject
@@ -33,7 +38,8 @@ import javax.inject.Inject
 @HiltViewModel
 class BudgetViewModel @Inject constructor(
     private val budgetRepository: BudgetRepository,
-    private val reportRepository: ReportRepository
+    private val reportRepository: ReportRepository,
+    private val transactionRepository: TransactionRepository
 ) : ViewModel() {
 
     data class UiState(
@@ -49,6 +55,8 @@ class BudgetViewModel @Inject constructor(
         val reservation: FixedReservation = FixedReservation(),
         /** 本次进入自动沿用上一周期的预算条数 */
         val inheritedCount: Int = 0,
+        /** 趋势 / 超支概率预测；没设总预算时为 null */
+        val forecast: BudgetForecast? = null,
         val message: String? = null
     ) {
         val periodLabel: String get() = BudgetPeriods.label(period)
@@ -65,6 +73,7 @@ class BudgetViewModel @Inject constructor(
 
     private var bound = -1L
     private var recurringJob: Job? = null
+    private var dataWatchJob: Job? = null
 
     fun bind(bookId: Long) {
         if (bound == bookId) {
@@ -85,6 +94,20 @@ class BudgetViewModel @Inject constructor(
         recurringJob = viewModelScope.launch {
             budgetRepository.observeRecurring(bookId).collect { list ->
                 _state.update { it.copy(recurring = list) }
+            }
+        }
+
+        /*
+         * 本期「已花 / 剩余」是按账单现算的聚合，本身没有观察者：
+         * 记一笔 / 删除 / 导入 / 同步之后不重算的话，预算页会一直停在旧数字上，
+         * 必须切走再切回来（bind 早退，也不会重查）。
+         * drop(1) 跳过订阅首帧：那份数据紧接着的 load() 就会取。
+         */
+        dataWatchJob?.cancel()
+        dataWatchJob = viewModelScope.launch {
+            transactionRepository.observeTransactions(bookId).drop(1).collect {
+                // 不沿用上一周期：那是一次写入，不该被账单变化反复触发
+                load()
             }
         }
 
@@ -140,6 +163,19 @@ class BudgetViewModel @Inject constructor(
             val overview = budgetRepository.overview(current.bookId, current.period)
             val reservation = budgetRepository.reservedFixed(current.bookId, current.period)
             val categories = reportRepository.expenseCategories(current.bookId)
+            // 2000 条蒙特卡洛路径在 Default 上跑，别占主线程；没预算时内部直接返回 null
+            val forecast = withContext(Dispatchers.Default) {
+                budgetRepository.forecast(current.bookId, current.period, overview, reservation)
+            }
+
+            /*
+             * 落地前确认没切过账本 / 周期。
+             * 冷启动时 bookId 先从默认的本地账本变成真实账本，两次 load 会并发跑：
+             * 旧的那次如果后完成，会把整页刷成「没有预算、没有支出」的空状态。
+             */
+            if (_state.value.bookId != current.bookId || _state.value.period != current.period) {
+                return@launch
+            }
 
             _state.update {
                 it.copy(
@@ -147,6 +183,7 @@ class BudgetViewModel @Inject constructor(
                     overview = overview,
                     expenseCategories = categories,
                     reservation = reservation,
+                    forecast = forecast,
                     inheritedCount = inherited,
                     message = if (inherited > 0) {
                         "已沿用上一周期的 $inherited 条预算"

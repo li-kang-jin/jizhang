@@ -59,7 +59,13 @@ data class BillFilter(
     /** 备注 / 标签关键字 */
     val keyword: String = "",
     val sort: BillSort = BillSort.TIME_DESC,
-    /** 自定义范围：本地时区的「当天 0 点」epoch millis */
+    /**
+     * 自定义范围：**左闭右开**的 epoch 毫秒区间（与 [com.jizhang.app.data.repository.ReportPeriod]
+     * 和 Room 查询同一个口径）。
+     * <p>
+     * 别往这里塞「最后一天的 23:59:59.999」：那样上界就成了第二天开头，
+     * 会把第二天的账一起框进来。外部传的是闭区间时，先过 [withInclusiveRange] 换算。
+     */
     val customStart: Long? = null,
     val customEnd: Long? = null
 ) {
@@ -85,10 +91,28 @@ data class BillFilter(
             BillDateRange.LAST_7_DAYS -> (todayStart - 6 * DAY_MILLIS) to (todayStart + DAY_MILLIS)
             BillDateRange.LAST_30_DAYS -> (todayStart - 29 * DAY_MILLIS) to (todayStart + DAY_MILLIS)
             BillDateRange.ALL -> null to null
-            // customEnd 是「结束当天 0 点」，加一天才是闭区间
-            BillDateRange.CUSTOM -> customStart to customEnd?.let { it + DAY_MILLIS }
+            BillDateRange.CUSTOM -> customStart to customEnd
         }
     }
+
+    /**
+     * 用「闭区间」写时间范围（统计页 / 日历跳过来时带的就是这种：止日是最后一天的 23:59:59.999）。
+     * 存进来仍按左闭右开，所以这里给止点加 1 毫秒。
+     */
+    fun withInclusiveRange(startMillis: Long?, endMillis: Long?): BillFilter = copy(
+        range = if (startMillis != null && endMillis != null) BillDateRange.CUSTOM else range,
+        customStart = startMillis,
+        customEnd = endMillis?.plus(1)
+    )
+
+    /**
+     * 用「起止两个自然日」写时间范围（日期选择器给的是两端的当天 0 点）。
+     * 止日整天都要算进去，所以上界取止日次日 0 点。
+     */
+    fun withDayRange(startDayMillis: Long, endDayMillis: Long): BillFilter = withInclusiveRange(
+        startMillis = minOf(startDayMillis, endDayMillis),
+        endMillis = maxOf(startDayMillis, endDayMillis) + DAY_MILLIS - 1
+    )
 
     fun matches(item: LocalTransaction, bounds: Pair<Long?, Long?>): Boolean {
         val (start, end) = bounds
@@ -105,13 +129,17 @@ data class BillFilter(
         return true
     }
 
-    /** 时间区间的可读文案（自定义范围用） */
+    /** 时间区间的可读文案（自定义范围用）；起止同一天时只显示一个日期 */
     fun rangeLabel(): String {
         if (!range.isCustom) return range.label
         val fmt = java.time.format.DateTimeFormatter.ofPattern("M月d日")
-        val start = customStart?.let { millisToLocalDate(it) }?.format(fmt) ?: "?"
-        val end = customEnd?.let { millisToLocalDate(it) }?.format(fmt) ?: "?"
-        return "$start - $end"
+        val start = customStart?.let { millisToLocalDate(it) }
+        // customEnd 是开区间上界，减 1 毫秒才是用户眼里的「止日」
+        val end = customEnd?.let { millisToLocalDate(it - 1) }
+        return when {
+            start != null && end != null && start == end -> start.format(fmt)
+            else -> (start?.format(fmt) ?: "?") + " - " + (end?.format(fmt) ?: "?")
+        }
     }
 
     private fun millisToLocalDate(millis: Long): LocalDate =

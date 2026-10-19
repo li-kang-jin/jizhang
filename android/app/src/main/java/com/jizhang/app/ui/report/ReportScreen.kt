@@ -72,8 +72,6 @@ import com.jizhang.app.data.remote.dto.MemberReportDto
 import com.jizhang.app.data.remote.dto.MemberStatDto
 import com.jizhang.app.data.remote.dto.TrendItemDto
 import com.jizhang.app.data.repository.AssetSummary
-import com.jizhang.app.data.repository.BudgetCycle
-import com.jizhang.app.data.repository.BudgetPeriods
 import com.jizhang.app.data.repository.CategorySlice
 import com.jizhang.app.data.repository.DayAmount
 import com.jizhang.app.data.repository.DayDetail
@@ -83,12 +81,20 @@ import com.jizhang.app.data.repository.ReportGranularity
 import com.jizhang.app.data.repository.ReportOverview
 import com.jizhang.app.data.repository.ReportPeriod
 import com.jizhang.app.ui.bill.BillPreset
+import com.jizhang.app.ui.common.HeatCell
+import com.jizhang.app.ui.common.MonthGrid
+import com.jizhang.app.ui.common.SmallAction
+import com.jizhang.app.ui.common.WEEKDAY_SHORT
 import com.jizhang.app.ui.common.accountIconOf
 import com.jizhang.app.ui.common.categoryIconOf
+import com.jizhang.app.ui.common.compactAmount
 import com.jizhang.app.ui.common.formatAmount
+import com.jizhang.app.ui.common.money
+import com.jizhang.app.ui.common.weekdayShortOf
 import com.jizhang.app.ui.theme.AppColors
 import com.jizhang.app.ui.theme.JizhangTheme
 import com.patrykandpatrick.vico.compose.cartesian.CartesianChartHost
+import com.patrykandpatrick.vico.compose.cartesian.axis.rememberBottom
 import com.patrykandpatrick.vico.compose.cartesian.axis.rememberStart
 import com.patrykandpatrick.vico.compose.cartesian.layer.continuous
 import com.patrykandpatrick.vico.compose.cartesian.layer.rememberColumnCartesianLayer
@@ -99,17 +105,24 @@ import com.patrykandpatrick.vico.compose.common.component.rememberLineComponent
 import com.patrykandpatrick.vico.compose.common.fill
 import com.patrykandpatrick.vico.compose.common.shape.toVicoShape
 import com.patrykandpatrick.vico.core.cartesian.CartesianDrawingContext
+import com.patrykandpatrick.vico.core.cartesian.CartesianMeasuringContext
+import com.patrykandpatrick.vico.core.cartesian.axis.Axis
+import com.patrykandpatrick.vico.core.cartesian.axis.BaseAxis
+import com.patrykandpatrick.vico.core.cartesian.axis.HorizontalAxis
 import com.patrykandpatrick.vico.core.cartesian.axis.VerticalAxis
 import com.patrykandpatrick.vico.core.cartesian.data.CartesianChartModelProducer
+import com.patrykandpatrick.vico.core.cartesian.data.CartesianValueFormatter
 import com.patrykandpatrick.vico.core.cartesian.data.columnSeries
 import com.patrykandpatrick.vico.core.cartesian.data.lineSeries
 import com.patrykandpatrick.vico.core.cartesian.layer.ColumnCartesianLayer
 import com.patrykandpatrick.vico.core.cartesian.layer.LineCartesianLayer
 import com.patrykandpatrick.vico.core.cartesian.marker.CartesianMarker
 import com.patrykandpatrick.vico.core.cartesian.marker.CartesianMarkerVisibilityListener
+import java.text.DecimalFormat
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.DateTimeFormatter
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.hypot
 import kotlin.math.roundToInt
@@ -128,7 +141,8 @@ import kotlin.math.roundToInt
  * 趋势图的柱子、日历里的某一天、记账习惯的星期柱点下去就地摊开明细；
  * 总览的收入 / 支出 / 结余与各维度排行则带着筛选条件跳到账单页看流水。
  * <p>
- * 隐私模式（[hideAmounts]）在这里是**全覆盖**的：环形图圆心、排行、日历、趋势纵轴都会打码。
+ * 隐私模式（[hideAmounts]）在这里是**全覆盖**的：环形图圆心、排行、日历、趋势纵轴都会打码；
+ * 趋势图更进一步 —— 柱子改画「有 / 没有」，净值线不画，否则相对高度 / 走势照样能反推金额。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -137,17 +151,34 @@ fun ReportScreen(
     shared: Boolean = false,
     /** 金额隐私模式：金额与图表刻度显示成 ****（设置里的开关） */
     hideAmounts: Boolean = false,
+    /**
+     * 外部数据版本号：导入 / 清空账单后由 MainScreen +1。
+     * <p>
+     * 本页的聚合全是「查一次」的，而 ViewModel 挂在 Activity 上、切 Tab 回来 `bind()` 会早退，
+     * 所以导入这类批量写库之后显式重取一次，避免要重启应用才看到新数字。
+     */
+    dataVersion: Int = 0,
     /** 「资产管理」入口 */
     onOpenAccounts: (() -> Unit)? = null,
     /** 点分类 / 账户 / 标签看明细：切到账单页并带上筛选条件 */
     onOpenBills: (BillPreset) -> Unit = {},
+    /** 日历卡片的「在日历里按月翻看」：切到日历 Tab */
+    onOpenCalendar: () -> Unit = {},
+    /** 预算卡片的「调整」：设置预算覆盖层挂在 MainScreen 根部，这里只上报意图 */
+    onOpenBudgetEditor: () -> Unit = {},
     viewModel: ReportViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
-    var showBudgetDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(bookId, shared) { viewModel.bind(bookId, shared) }
+
+    // 导入 / 清空账单后重算整页聚合。放在 bind 之后：首次组合时 bookId 已就位。
+    LaunchedEffect(dataVersion) {
+        if (dataVersion > 0) {
+            viewModel.load()
+        }
+    }
 
     LaunchedEffect(state.message) {
         state.message?.let {
@@ -200,19 +231,29 @@ fun ReportScreen(
                             overview = state.overview,
                             period = state.period,
                             hideAmounts = hideAmounts,
+                            // 净资产是唯一要在这个位置出现的「存量」：看流量时也得知道身家有多少
+                            netAssets = state.assets.netAssets,
+                            onOpenAssets = onOpenAccounts,
                             // 点收入 / 支出 / 结余 → 账单页只看对应的那部分
                             onOpen = { type -> openBills(type = type) }
                         )
                     }
+                    // 预算紧跟总览：本期花得离额度还有多远，是打开统计页的第二诉求
+                    item { BudgetCard(state.budget, state.budgetTitle, hideAmounts, onEdit = onOpenBudgetEditor) }
                     item {
                         TrendCard(
                             trend = state.trend,
+                            netAssets = state.netAssetTrend,
                             period = state.period,
                             hideAmounts = hideAmounts,
                             onOpenRange = { start, end -> openBills(startMillis = start, endMillis = end - 1) }
                         )
                     }
-                    if (state.period.granularity != ReportGranularity.YEAR || state.calendar.isNotEmpty()) {
+                    // 日历卡是「当期概览」：周视图已由趋势图逐日铺开，再摆一个月历会和「只看这一周」打架；
+                    // 年视图只在有数据时给热力图
+                    if (state.period.granularity == ReportGranularity.MONTH ||
+                        (state.period.granularity == ReportGranularity.YEAR && state.calendar.isNotEmpty())
+                    ) {
                         item {
                             CalendarCard(
                                 days = state.calendar,
@@ -221,8 +262,7 @@ fun ReportScreen(
                                 dayDetail = state.dayDetail,
                                 onPickDay = viewModel::selectDay,
                                 onCloseDay = viewModel::clearDayDetail,
-                                // 想真正切到那天的统计：面板里的「切到该日统计」
-                                onOpenDay = { viewModel.selectDate(it, ReportGranularity.DAY) },
+                                onOpenCalendar = onOpenCalendar,
                                 onOpenBills = { date ->
                                     val day = ReportPeriod(ReportGranularity.DAY, date)
                                     openBills(
@@ -242,38 +282,41 @@ fun ReportScreen(
                             onOpenCategory = { openBills(categoryId = it) }
                         )
                     }
+                    // 账户 / 标签合成一张「排行」卡：原来两张卡各挂一个「支出/收入」开关，
+                    // 绑的却是同一个 rankType，切一个另一个跟着变，看着像 bug
                     item {
-                        AccountRankCard(
-                            ranks = state.accountRanks,
+                        RankCard(
+                            accountRanks = state.accountRanks,
+                            tagRanks = state.tagRanks,
                             rankType = state.rankType,
                             hideAmounts = hideAmounts,
                             onSwitchType = viewModel::switchRankType,
-                            onOpen = { openBills(accountId = it) }
+                            onOpenAccount = { openBills(accountId = it) },
+                            onOpenTag = { openBills(keyword = it) }
                         )
                     }
-                    item {
-                        TagRankCard(
-                            ranks = state.tagRanks,
-                            rankType = state.rankType,
-                            hideAmounts = hideAmounts,
-                            onSwitchType = viewModel::switchRankType,
-                            onOpen = { openBills(keyword = it) }
-                        )
-                    }
+                    item { AssetCard(state.assets, hideAmounts, onOpenAccounts) }
                     state.habit?.let { habit ->
-                        item { HabitCard(habit, state.period, hideAmounts) }
+                        item {
+                            HabitCard(
+                                habit = habit,
+                                hideAmounts = hideAmounts,
+                                folded = ReportFoldableCard.HABIT in state.foldedCards,
+                                onToggle = { viewModel.toggleCard(ReportFoldableCard.HABIT) }
+                            )
+                        }
                     }
-                    item { BudgetCard(state.budget, state.budgetTitle, hideAmounts, onEdit = { showBudgetDialog = true }) }
                     if (state.shared) {
                         item {
                             MemberCard(
                                 members = state.members,
                                 hideAmounts = hideAmounts,
+                                folded = ReportFoldableCard.MEMBERS in state.foldedCards,
+                                onToggle = { viewModel.toggleCard(ReportFoldableCard.MEMBERS) },
                                 onOpen = { openBills(keyword = it) }
                             )
                         }
                     }
-                    item { AssetCard(state.assets, hideAmounts, onOpenAccounts) }
                 }
             }
         }
@@ -284,18 +327,6 @@ fun ReportScreen(
         )
     }
 
-    if (showBudgetDialog) {
-        BudgetDialog(
-            periodLabel = BudgetPeriods.label(
-                BudgetPeriods.of(BudgetCycle.MONTH, state.period.anchor)
-            ),
-            expenseCategories = state.expenseCategories,
-            budget = state.budget,
-            onSave = viewModel::saveBudget,
-            onDelete = viewModel::deleteBudget,
-            onDismiss = { showBudgetDialog = false }
-        )
-    }
 }
 
 /** 首屏骨架：只占位不闪白，避免打开统计页先看到一片空 */
@@ -335,10 +366,11 @@ private fun TimeAxisCard(state: ReportViewModel.UiState, viewModel: ReportViewMo
     CardBox {
         Row(verticalAlignment = Alignment.CenterVertically) {
             SegmentedTabs(
-                items = ReportGranularity.entries.map { it.label },
-                selectedIndex = period.granularity.ordinal,
+                items = REPORT_GRANULARITY_TABS.map { it.label },
+                // 用 indexOf 而不是 ordinal：DAY 仍留在枚举里（单日时间窗要用），不能让它占档位
+                selectedIndex = REPORT_GRANULARITY_TABS.indexOf(period.granularity).coerceAtLeast(0),
                 onSelect = { index ->
-                    viewModel.setGranularity(ReportGranularity.entries[index])
+                    viewModel.setGranularity(REPORT_GRANULARITY_TABS[index])
                     expanded = false
                 },
                 modifier = Modifier.width(150.dp)
@@ -414,7 +446,18 @@ private fun TimeAxisCard(state: ReportViewModel.UiState, viewModel: ReportViewMo
     }
 }
 
-/** 期间选择面板：按粒度给出年网格 / 年月网格 / 月历 */
+/**
+ * 统计粒度的筛选档位：周 / 月 / 年。
+ * <p>
+ * 不用 `ReportGranularity.entries`：日粒度还在枚举里给「单日时间窗」用，但不该占一个档位。
+ */
+private val REPORT_GRANULARITY_TABS = listOf(
+    ReportGranularity.WEEK,
+    ReportGranularity.MONTH,
+    ReportGranularity.YEAR
+)
+
+/** 期间选择面板：按粒度给出年网格 / 年月网格 / 月历（周粒度点某天即落到那一周） */
 @Composable
 private fun PeriodPicker(period: ReportPeriod, onPick: (LocalDate) -> Unit) {
     val today = remember { LocalDate.now() }
@@ -427,7 +470,9 @@ private fun PeriodPicker(period: ReportPeriod, onPick: (LocalDate) -> Unit) {
             onPick(minOf(month.atDay(1), today))
         }
 
-        ReportGranularity.DAY -> DayPicker(YearMonth.from(period.anchor), period.anchor, today, onPick)
+        // 周和日都用月历选：点哪天就落到那天所在周（ReportPeriod 会把锚点推到周一）
+        ReportGranularity.WEEK, ReportGranularity.DAY ->
+            DayPicker(YearMonth.from(period.anchor), period.anchor, today, onPick)
     }
 }
 
@@ -668,19 +713,16 @@ private fun OverviewCard(
     overview: ReportOverview?,
     period: ReportPeriod,
     hideAmounts: Boolean,
+    /** 当前净资产（实时存量，不属于本期）：流量卡里也要给一根「身家」的锚 */
+    netAssets: Long,
+    /** 点净资产 → 资产管理；null 表示这个入口关掉了 */
+    onOpenAssets: (() -> Unit)?,
     /** 点收入 / 支出 / 结余 → 去账单页看对应那部分（type = 2 收入、1 支出、null 全部） */
     onOpen: (Int?) -> Unit
 ) {
     CardBox {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("收支总览", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.weight(1f))
-            Text(
-                text = period.label,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
+        // 周期只在顶部时间轴条写一次：这里再写一遍是重复信息（而且它随时会被滚出屏幕）
+        Text("收支总览", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
 
         Spacer(Modifier.height(10.dp))
 
@@ -746,12 +788,43 @@ private fun OverviewCard(
             )
         }
 
-        Spacer(Modifier.height(8.dp))
-        Text(
-            text = "点金额 → 去账单页核对流水",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        // 流量 + 存量放一张卡：本期收入和「我现在有多少钱」本来就是一次扫描里要一起看到的两个数
+        Spacer(Modifier.height(10.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .then(
+                    if (onOpenAssets != null) {
+                        Modifier.clickable(onClick = onOpenAssets)
+                    } else {
+                        Modifier
+                    }
+                )
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "当前净资产",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = money(netAssets, hideAmounts),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.weight(1f))
+            if (onOpenAssets != null) {
+                Text(
+                    text = "资产明细 ›",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
     }
 }
 
@@ -808,11 +881,19 @@ private fun ValueBlock(
     ) {
         Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(2.dp))
+        // 三列等宽：金额位数多时降一档字号，宁可小一点也不能折行 —— 折行会让三列基线错开
+        val amount = money(value, hideAmounts, suffix = "")
         Text(
-            text = money(value, hideAmounts, suffix = ""),
-            style = MaterialTheme.typography.titleMedium,
+            text = amount,
+            style = when {
+                amount.length >= 12 -> MaterialTheme.typography.bodyMedium
+                amount.length >= 10 -> MaterialTheme.typography.titleSmall
+                else -> MaterialTheme.typography.titleMedium
+            },
             color = color,
-            fontWeight = FontWeight.Bold
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            softWrap = false
         )
         if (count != null) {
             Text(
@@ -829,15 +910,21 @@ private fun ValueBlock(
 /**
  * 收支趋势：横轴随粒度变化（小时 / 按天 / 按月）。
  * <p>
- * 用 Vico 的柱 + 折线组合：支出是柱（看总量），收入是折线（看趋势），
- * 纵轴在隐私模式下直接隐藏刻度，避免打码打不干净。
+ * 用 Vico 的柱 + 折线组合：支出是柱（看总量），收入是折线（看趋势）。
+ * 横轴标签由图表自己按桶中心摆放（[BucketLabelFormatter]），密度按粒度定 ——
+ * 周视图 7 天全标，月视图每 5 天一个，不会和柱子错位。
  * <p>
- * 图上的柱子 / 折线点**可点**：点中的那一格会在图下方摊开明细（支出 / 收入 / 结余 / 占比），
+ * 隐私模式**不是只藏刻度**：柱子高低本身就是金额，所以数据整形成「有 / 没有」两档，
+ * 净值线直接不画（形状同样会暴露量级）。
+ * <p>
+ * 图上的柱子 / 折线点 / 下方净值线**都可点**：点中的那一格会在图下方摊开明细（支出 / 收入 / 结余 / 占比），
  * 想进一步看这批账就点「查看这批账单」——带着那一格的时间窗跳到账单页。
  */
 @Composable
 private fun TrendCard(
     trend: List<TrendItemDto>,
+    /** 期末净资产序列（与 [trend] 等长）：存量指标，单独画一条窄线 */
+    netAssets: List<Long>,
     period: ReportPeriod,
     hideAmounts: Boolean,
     /** 「查看这批账单」：把选中那格的时间窗（左闭右开毫秒）交给账单页 */
@@ -862,6 +949,7 @@ private fun TrendCard(
             Spacer(Modifier.width(6.dp))
             Text(
                 text = when (period.granularity) {
+                    ReportGranularity.WEEK -> "按天"
                     ReportGranularity.DAY -> "按小时"
                     ReportGranularity.MONTH -> "按天"
                     ReportGranularity.YEAR -> "按月"
@@ -882,10 +970,12 @@ private fun TrendCard(
         }
 
         val modelProducer = remember { CartesianChartModelProducer() }
-        LaunchedEffect(trend) {
-            // 单位换成「元」：纵轴刻度不会长到六位数
-            val expenses = trend.map { it.expense / 100.0 }
-            val incomes = trend.map { it.income / 100.0 }
+        // 单位换成「元」：纵轴刻度不会长到六位数。
+        // 隐私模式**不能只藏纵轴刻度**：柱子的相对高度本身就是金额，一比就能估出来，
+        // 所以这里直接改喂「有 / 没有」两档，柱高只剩「这天有没有花钱」这一个信息
+        LaunchedEffect(trend, hideAmounts) {
+            val expenses = trend.map { it.expense.chartValue(hideAmounts) }
+            val incomes = trend.map { it.income.chartValue(hideAmounts) }
             modelProducer.runTransaction {
                 columnSeries { series(expenses) }
                 lineSeries { series(incomes) }
@@ -896,6 +986,29 @@ private fun TrendCard(
         // 于是「图例红=支出、绿=收入」和图里的蓝色对不上 —— 这正是之前看不懂的来源
         val expenseColor = AppColors.expense
         val incomeColor = AppColors.income
+
+        // 横轴：交给 Vico 自己画，不再用一行 Text 拼 —— 图的左右边距由纵轴宽度决定，
+        // 手拼的一行永远对不准柱子；交给图表，标签就落在桶中心上
+        val axisLabels = trend.map { it.period }
+        val labelStep = when (period.granularity) {
+            // 周视图 7 根柱子，「周一…周日」正好一屏放得下，全标
+            ReportGranularity.WEEK -> 1
+            // 一天 24 小时太密，每 6 小时一个
+            ReportGranularity.DAY -> 6
+            // 一个月 28-31 天，5 天一格够定位又不糊
+            ReportGranularity.MONTH -> 5
+            // 「1 月」很短，12 个月全标也挤得下
+            ReportGranularity.YEAR -> 1
+        }
+        val bottomAxis = HorizontalAxis.rememberBottom(
+            itemPlacer = remember(labelStep) {
+                HorizontalAxis.ItemPlacer.aligned(spacing = { labelStep }, offset = { 0 })
+            },
+            valueFormatter = remember(axisLabels) { BucketLabelFormatter(axisLabels) }
+        )
+        // 纵轴宽度固定：净值窄图用同一个宽度，两张图的横轴才对得上
+        val yAxisSize = remember { BaseAxis.Size.Fixed(TREND_Y_AXIS_WIDTH_DP) }
+        val yAxisFormatter = remember { YuanAxisFormatter() }
 
         CartesianChartHost(
             chart = rememberCartesianChart(
@@ -916,7 +1029,11 @@ private fun TrendCard(
                         )
                     )
                 ),
-                startAxis = if (hideAmounts) null else VerticalAxis.rememberStart(),
+                startAxis = if (hideAmounts) null else VerticalAxis.rememberStart(
+                    valueFormatter = yAxisFormatter,
+                    size = yAxisSize
+                ),
+                bottomAxis = bottomAxis,
                 // 点柱子 / 折线点：Vico 把命中的 x 值回调过来，换成下标后摊开明细
                 marker = marker,
                 markerVisibilityListener = markerListener,
@@ -928,25 +1045,78 @@ private fun TrendCard(
         )
         Spacer(Modifier.height(6.dp))
 
-        // 横轴标签只抽样几个：全画会糊成一团，抽首尾 + 中点已经够定位
-        val labels = sampledLabels(trend.map { it.period })
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            labels.forEach { label ->
+        Text(
+            text = if (hideAmounts) {
+                "柱 / 线只表示「有没有收支」，高度不代表金额"
+            } else {
+                "柱 = 支出，线 = 收入；两者共用左侧刻度，单位：元"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        // 净值是存量，量级通常比单格收支大一两个数量级：塞进主图会把柱子压成一条线，
+        // 所以单独画一条窄线。横轴与主图共用：纵轴宽度固定成同一个值，两边的格子才对得上；
+        // 点这条线也能选中（同一个 marker 回调），不用非得去够上面那根柱子
+        if (netAssets.isNotEmpty() && netAssets.any { it != 0L }) {
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("期末净资产", style = MaterialTheme.typography.labelMedium)
+                Spacer(Modifier.weight(1f))
                 Text(
-                    text = label,
+                    text = money(netAssets.last(), hideAmounts),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = AppColors.accent
+                )
+            }
+            Spacer(Modifier.height(2.dp))
+            if (hideAmounts) {
+                // 线本身也会说话：一段陡升陡降就把「这段时间赚了多少」交代出去了。
+                // 隐私模式下宁可不画，只留一句说明，也不留一个能被反推的形状
+                Text(
+                    text = "隐私模式下不画净值曲线（走势会暴露量级）",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                val netProducer = remember { CartesianChartModelProducer() }
+                LaunchedEffect(netAssets) {
+                    // 与主图一样换算成「元」，否则纵轴刻度会是六位数的分
+                    netProducer.runTransaction {
+                        lineSeries { series(netAssets.map { it / 100.0 }) }
+                    }
+                }
+                CartesianChartHost(
+                    chart = rememberCartesianChart(
+                        rememberLineCartesianLayer(
+                            lineProvider = LineCartesianLayer.LineProvider.series(
+                                LineCartesianLayer.rememberLine(
+                                    fill = LineCartesianLayer.LineFill.single(fill(AppColors.accent)),
+                                    stroke = LineCartesianLayer.LineStroke.continuous(thickness = 2.dp)
+                                )
+                            )
+                        ),
+                        // 与主图同一个宽度 + 同一个格式化器，横轴才能严丝合缝
+                        startAxis = VerticalAxis.rememberStart(
+                            valueFormatter = yAxisFormatter,
+                            size = yAxisSize
+                        ),
+                        marker = marker,
+                        markerVisibilityListener = markerListener
+                    ),
+                    modelProducer = netProducer,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(76.dp)
+                )
+                Text(
+                    text = "线 = 期末净资产（截至该周期最后一天）· 可点选",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
-        Text(
-            text = buildString {
-                append("柱 = 支出，线 = 收入；两者共用左侧刻度")
-                append(if (hideAmounts) "（金额已隐藏）" else "，单位：元")
-            },
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
 
         Spacer(Modifier.height(8.dp))
         val picked = selected?.takeIf { it in trend.indices }
@@ -959,6 +1129,7 @@ private fun TrendCard(
         } else {
             TrendBucketDetail(
                 item = trend[picked],
+                netAsset = netAssets.getOrNull(picked),
                 label = period.bucketLabel(picked),
                 periodExpense = trend.sumOf { it.expense },
                 periodIncome = trend.sumOf { it.income },
@@ -981,6 +1152,8 @@ private fun TrendCard(
 @Composable
 private fun TrendBucketDetail(
     item: TrendItemDto,
+    /** 这一格结束时的净资产；主图没数据时为空 */
+    netAsset: Long?,
     label: String,
     periodExpense: Long,
     periodIncome: Long,
@@ -1025,6 +1198,13 @@ private fun TrendBucketDetail(
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        if (netAsset != null) {
+            Text(
+                text = "这一格结束时的净资产 ${money(netAsset, hideAmounts)}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 
@@ -1032,13 +1212,59 @@ private fun TrendBucketDetail(
 private fun shareText(part: Long, total: Long): String =
     if (total <= 0L) "—" else "${(part * 100.0 / total).roundToInt()}%"
 
-private fun sampledLabels(all: List<String>, count: Int = 4): List<String> {
-    if (all.size <= count) {
-        return all
+/**
+ * 趋势图纵轴的固定宽度（dp）。
+ * <p>
+ * 主图和下面的净值窄图必须一样宽：纵轴宽度就是绘图区的左边界，
+ * 两边宽度不同，两条线一眼就能看出错位（各自按自己的标签宽度自适应时必然不同）。
+ */
+private const val TREND_Y_AXIS_WIDTH_DP = 44f
+
+/**
+ * 金额换算成图上喂给 Vico 的值（单位：元）。
+ * <p>
+ * 隐私模式只保留「有 / 没有」两档：柱子高低、折线起伏都是金额的另一种写法，
+ * 光把纵轴刻度藏掉挡不住量级泄露。
+ */
+private fun Long.chartValue(hideAmounts: Boolean): Double = when {
+    !hideAmounts -> this / 100.0
+    this == 0L -> 0.0
+    else -> 1.0
+}
+
+/**
+ * 纵轴刻度：折算成「万 / 亿」，保证在 [TREND_Y_AXIS_WIDTH_DP] 里放得下。
+ * <p>
+ * 折算后**至少留一位小数**（3.2 万不写成 3 万）：刻度是读图时唯一的参照，
+ * 这一格取整了，柱子高度就白画了。
+ */
+private class YuanAxisFormatter : CartesianValueFormatter {
+    override fun format(
+        context: CartesianMeasuringContext,
+        value: Double,
+        verticalAxisPosition: Axis.Position.Vertical?
+    ): CharSequence {
+        val magnitude = abs(value)
+        return when {
+            magnitude >= 100_000_000 -> "${AXIS_ONE_DECIMAL.format(value / 100_000_000)}亿"
+            magnitude >= 10_000 -> "${AXIS_ONE_DECIMAL.format(value / 10_000)}万"
+            magnitude >= 0.01 -> AXIS_TWO_DECIMALS.format(value)
+            else -> "0"
+        }
     }
-    return (0 until count).map { index ->
-        all[(index * (all.size - 1) / (count - 1)).coerceIn(0, all.size - 1)]
-    }
+}
+
+/** 刻度上的小数位：`3` / `3.2` / `3.25`，不留无意义的 0 */
+private val AXIS_ONE_DECIMAL: DecimalFormat = DecimalFormat("0.#")
+private val AXIS_TWO_DECIMALS: DecimalFormat = DecimalFormat("0.##")
+
+/** 横轴刻度：直接用桶名（周一 / 14 日 / 5 时 / 1 月），越界的 x 留空 */
+private class BucketLabelFormatter(private val labels: List<String>) : CartesianValueFormatter {
+    override fun format(
+        context: CartesianMeasuringContext,
+        value: Double,
+        verticalAxisPosition: Axis.Position.Vertical?
+    ): CharSequence = labels.getOrNull(value.roundToInt()).orEmpty()
 }
 
 /**
@@ -1120,10 +1346,10 @@ private fun CalendarCard(
     dayDetail: DayDetail?,
     onPickDay: (LocalDate) -> Unit,
     onCloseDay: () -> Unit,
-    /** 切到那天的统计（日视图） */
-    onOpenDay: (LocalDate) -> Unit,
     /** 看那天的账单 */
-    onOpenBills: (LocalDate) -> Unit
+    onOpenBills: (LocalDate) -> Unit,
+    /** 去日历页按月翻看（这张卡是「当期概览」，翻月是日历页的事） */
+    onOpenCalendar: () -> Unit
 ) {
     val today = remember { LocalDate.now() }
     val byDate = remember(days) { days.associateBy { it.date } }
@@ -1183,11 +1409,13 @@ private fun CalendarCard(
             DayDetailPanel(
                 detail = picked,
                 hideAmounts = hideAmounts,
-                onOpenDay = { onOpenDay(picked.date) },
                 onOpenBills = { onOpenBills(picked.date) },
                 onClose = onCloseDay
             )
         }
+
+        Spacer(Modifier.height(8.dp))
+        SmallAction("在日历里按月翻看 ›", onOpenCalendar)
     }
 }
 
@@ -1201,7 +1429,6 @@ private fun CalendarCard(
 private fun DayDetailPanel(
     detail: DayDetail,
     hideAmounts: Boolean,
-    onOpenDay: () -> Unit,
     onOpenBills: () -> Unit,
     onClose: () -> Unit
 ) {
@@ -1255,79 +1482,9 @@ private fun DayDetailPanel(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(8.dp))
+        // 日视图已不在筛选档位里，这里只留「看当天账单」这一个出口
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            SmallAction("切到该日统计", onOpenDay)
             SmallAction("看当天账单", onOpenBills)
-        }
-    }
-}
-
-/** 卡片里的小动作按钮：描边 + 主题色，和「去设置」那种纯文字入口区分开 */
-@Composable
-private fun SmallAction(text: String, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(8.dp)
-    Text(
-        text = text,
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier
-            .clip(shape)
-            .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f), shape)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 5.dp)
-    )
-}
-
-@Composable
-private fun MonthGrid(
-    month: YearMonth,
-    byDate: Map<LocalDate, DayAmount>,
-    maxExpense: Long,
-    today: LocalDate,
-    selected: LocalDate,
-    hideAmounts: Boolean,
-    onPickDay: (LocalDate) -> Unit
-) {
-    val leading = month.atDay(1).dayOfWeek.value % 7
-    val cells = leading + month.lengthOfMonth()
-    val rows = (cells + 6) / 7
-
-    Column {
-        Row(modifier = Modifier.fillMaxWidth()) {
-            WEEKDAY_SHORT.forEach { label ->
-                Text(
-                    text = label,
-                    modifier = Modifier.weight(1f),
-                    textAlign = TextAlign.Center,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-        Spacer(Modifier.height(4.dp))
-
-        (0 until rows).forEach { row ->
-            Row(modifier = Modifier.fillMaxWidth()) {
-                repeat(7) { column ->
-                    val day = row * 7 + column - leading + 1
-                    if (day in 1..month.lengthOfMonth()) {
-                        val date = month.atDay(day)
-                        HeatCell(
-                            date = date,
-                            expense = byDate[date]?.expense ?: 0L,
-                            maxExpense = maxExpense,
-                            selected = date == selected,
-                            today = date == today,
-                            future = date.isAfter(today),
-                            hideAmounts = hideAmounts,
-                            modifier = Modifier.weight(1f),
-                            onClick = { onPickDay(date) }
-                        )
-                    } else {
-                        Spacer(Modifier.weight(1f))
-                    }
-                }
-            }
         }
     }
 }
@@ -1369,87 +1526,6 @@ private fun YearHeatmap(
                             Spacer(Modifier.size(14.dp))
                         }
                     }
-                }
-            }
-        }
-    }
-}
-
-/**
- * 日历格子。
- * <p>
- * 支出越多底色越深；没记录的日子只有浅灰底，没到的日子连底都没有（不可点）——
- * 这样「没花钱」和「还没到」不会再混淆。今天用描边圈出来，选中的那天用主题色粗描边。
- */
-@Composable
-private fun HeatCell(
-    date: LocalDate,
-    expense: Long,
-    maxExpense: Long,
-    selected: Boolean,
-    today: Boolean,
-    future: Boolean,
-    hideAmounts: Boolean,
-    modifier: Modifier = Modifier,
-    compact: Boolean = false,
-    onClick: () -> Unit
-) {
-    val ratio = if (maxExpense <= 0L) 0f else (expense.toFloat() / maxExpense).coerceIn(0f, 1f)
-    // 五档色阶：视觉上能分档，又不至于每笔差一点就换颜色
-    val level = if (expense <= 0L) 0 else (ratio * 4).roundToInt().coerceIn(1, 4)
-    val alpha = when (level) {
-        0 -> 0f
-        1 -> 0.28f
-        2 -> 0.5f
-        3 -> 0.72f
-        else -> 1f
-    }
-    val background = when {
-        future -> Color.Transparent
-        expense <= 0L -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
-        else -> AppColors.expense.copy(alpha = alpha)
-    }
-    val shape = RoundedCornerShape(if (compact) 3.dp else 6.dp)
-    val borderColor = when {
-        selected -> MaterialTheme.colorScheme.primary
-        today -> MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
-        else -> Color.Transparent
-    }
-
-    Box(
-        modifier = modifier
-            .padding(if (compact) 1.dp else 2.dp)
-            .let { if (compact) it.size(14.dp) else it.aspectRatio(1f) }
-            .clip(shape)
-            .background(background)
-            .border(
-                width = if (selected) 2.dp else if (today) 1.5.dp else 0.dp,
-                color = borderColor,
-                shape = shape
-            )
-            .clickable(enabled = !future, onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) {
-        if (!compact) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                    text = date.dayOfMonth.toString(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = when {
-                        future -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
-                        alpha > 0.6f -> Color.White
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    fontWeight = if (selected || today) FontWeight.Bold else FontWeight.Normal
-                )
-                // 写「几十」而不是完整金额：格子太窄，只给量级，精确数字点进日视图看
-                if (!future && expense > 0L) {
-                    Text(
-                        text = if (hideAmounts) "**" else compactAmount(expense),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (alpha > 0.6f) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontWeight = FontWeight.Medium
-                    )
                 }
             }
         }
@@ -1632,7 +1708,7 @@ private fun CategoryRow(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
-                            imageVector = categoryIconOf(child.icon),
+                            imageVector = categoryIconOf(child.icon, child.name),
                             contentDescription = null,
                             modifier = Modifier.size(14.dp),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1785,16 +1861,21 @@ private fun CategoryDonut(
 
 /** 账户排行：钱从哪张卡进出 */
 @Composable
-private fun AccountRankCard(
-    ranks: List<RankItem>,
+private fun RankCard(
+    accountRanks: List<RankItem>,
+    tagRanks: List<RankItem>,
     rankType: Int,
     hideAmounts: Boolean,
     onSwitchType: (Int) -> Unit,
-    onOpen: (Long) -> Unit
+    onOpenAccount: (Long) -> Unit,
+    onOpenTag: (String) -> Unit
 ) {
+    // 0 = 账户，1 = 标签。这是「看哪个维度」，与右上角「支出/收入」不是一回事，所以单独一行
+    val tab = remember { mutableStateOf(0) }
+
     CardBox {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("账户排行", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text("排行", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.weight(1f))
             SegmentedTabs(
                 items = listOf("支出", "收入"),
@@ -1806,48 +1887,37 @@ private fun AccountRankCard(
         }
         Spacer(Modifier.height(8.dp))
 
-        if (ranks.isEmpty()) {
-            EmptyHint("这段没有账户流水")
-        } else {
-            ranks.forEachIndexed { index, item ->
-                RankRow(
-                    index = index,
-                    item = item,
-                    color = if (rankType == 2) AppColors.income else AppColors.expense,
-                    hideAmounts = hideAmounts,
-                    amountSuffix = " · ${item.count} 笔",
-                    onOpen = { onOpen(item.key) }
+        // 维度切换用轻量文字 tab：同一个卡里出现两个一模一样的分段控件，主次就分不清了
+        Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            listOf("账户", "标签").forEachIndexed { index, label ->
+                val selected = tab.value == index
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                    color = if (selected) {
+                        MaterialTheme.colorScheme.onSurface
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable { tab.value = index }
+                        .padding(horizontal = 4.dp, vertical = 4.dp)
                 )
             }
         }
-    }
-}
+        Spacer(Modifier.height(6.dp))
 
-/** 标签排行：本地标签是逗号串，这里显示的是拆分后的聚合结果 */
-@Composable
-private fun TagRankCard(
-    ranks: List<RankItem>,
-    rankType: Int,
-    hideAmounts: Boolean,
-    onSwitchType: (Int) -> Unit,
-    onOpen: (String) -> Unit
-) {
-    CardBox {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("标签排行", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.weight(1f))
-            SegmentedTabs(
-                items = listOf("支出", "收入"),
-                selectedIndex = if (rankType == 2) 1 else 0,
-                onSelect = { onSwitchType(if (it == 1) 2 else 1) },
-                selectedColor = if (rankType == 2) AppColors.income else AppColors.expense,
-                modifier = Modifier.width(130.dp)
-            )
-        }
-        Spacer(Modifier.height(8.dp))
-
+        val ranks = if (tab.value == 1) tagRanks else accountRanks
         if (ranks.isEmpty()) {
-            EmptyHint("还没有带标签的账单，记账时加个标签就能在这里看到排行")
+            EmptyHint(
+                if (tab.value == 1) {
+                    "还没有带标签的账单，记账时加个标签就能在这里看到排行"
+                } else {
+                    "这段没有账户流水"
+                }
+            )
         } else {
             ranks.forEachIndexed { index, item ->
                 RankRow(
@@ -1856,7 +1926,9 @@ private fun TagRankCard(
                     color = if (rankType == 2) AppColors.income else AppColors.expense,
                     hideAmounts = hideAmounts,
                     amountSuffix = " · ${item.count} 笔",
-                    onOpen = { onOpen(item.name) }
+                    onOpen = {
+                        if (tab.value == 1) onOpenTag(item.name) else onOpenAccount(item.key)
+                    }
                 )
             }
         }
@@ -1939,19 +2011,43 @@ private fun RankRow(
  * 记了几天、平均一天几笔、最大单日花在哪天、哪一天最容易超支。
  */
 @Composable
-private fun HabitCard(habit: HabitStats, period: ReportPeriod, hideAmounts: Boolean) {
+private fun HabitCard(
+    habit: HabitStats,
+    hideAmounts: Boolean,
+    folded: Boolean,
+    onToggle: () -> Unit
+) {
     // 点中的星期（0=周一 … 6=周日），再点一次收起
     var pickedWeekday by remember(habit) { mutableStateOf<Int?>(null) }
 
     CardBox {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        // 周期同上：只有顶部时间轴条负责展示，卡片里不再重复
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .clickable(onClick = onToggle)
+                .padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Text("记账习惯", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.weight(1f))
+            Icon(
+                imageVector = if (folded) Icons.Filled.ExpandMore else Icons.Filled.ExpandLess,
+                contentDescription = if (folded) "展开" else "收起",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+        if (folded) {
+            Spacer(Modifier.height(4.dp))
             Text(
-                text = period.shortLabel,
+                text = "记账 ${habit.activeDays} 天 · ${habit.txCount} 笔 · " +
+                    "日均 ${money(habit.avgAmountPerDay, hideAmounts)}",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            return@CardBox
         }
         Spacer(Modifier.height(10.dp))
 
@@ -2022,7 +2118,7 @@ private fun HabitCard(habit: HabitStats, period: ReportPeriod, hideAmounts: Bool
         } else {
             val amount = habit.weekdayExpense.getOrElse(weekday) { 0L }
             Text(
-                text = "周${WEEKDAY_SHORT[weekday + 1]} 支出 ${money(amount, hideAmounts)} · " +
+                text = "周${weekdayShortOf(weekday)} 支出 ${money(amount, hideAmounts)} · " +
                     "占当期支出 ${shareText(amount, weekdayTotal)}" +
                     if (weekday == habit.busiestWeekday) " · 当期花钱最多的一天" else "",
                 style = MaterialTheme.typography.labelSmall,
@@ -2103,7 +2199,8 @@ private fun WeekdayBars(
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    text = WEEKDAY_SHORT[index + 1],
+                    // 周日那根柱子要回到「日」：`WEEKDAY_SHORT[index + 1]` 在 index = 6 时会越界闪退
+                    text = weekdayShortOf(index),
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
                     color = if (isSelected) {
@@ -2161,9 +2258,10 @@ private fun BudgetCard(
         val barColor = if (budget.exceeded) AppColors.expense else AppColors.accent
 
         Row(verticalAlignment = Alignment.Bottom) {
+            // 全页金额统一一档字号：预算这块原来是 24sp，比总览还大，抢走了页面焦点
             Text(
                 text = money(budget.totalUsed, hideAmounts, suffix = ""),
-                style = MaterialTheme.typography.headlineSmall,
+                style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
                 color = if (budget.exceeded) AppColors.expense else MaterialTheme.colorScheme.onSurface
             )
@@ -2271,10 +2369,19 @@ private fun BudgetCard(
 private fun MemberCard(
     members: MemberReportDto?,
     hideAmounts: Boolean,
+    folded: Boolean,
+    onToggle: () -> Unit,
     onOpen: (String) -> Unit
 ) {
     CardBox {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .clickable(onClick = onToggle)
+                .padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Text("家庭成员", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.weight(1f))
             members?.let {
@@ -2283,7 +2390,24 @@ private fun MemberCard(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                Spacer(Modifier.width(4.dp))
             }
+            Icon(
+                imageVector = if (folded) Icons.Filled.ExpandMore else Icons.Filled.ExpandLess,
+                contentDescription = if (folded) "展开" else "收起",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+        if (folded) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "${members?.items?.size ?: 0} 位成员 · 支出 " +
+                    money(members?.totalExpense ?: 0L, hideAmounts),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            return@CardBox
         }
         Spacer(Modifier.height(10.dp))
 
@@ -2369,13 +2493,7 @@ private fun AssetCard(
             }
         }
 
-        Spacer(Modifier.height(6.dp))
-        Text(
-            text = "净资产 ${money(assets.netAssets, hideAmounts)}",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.primary,
-            fontWeight = FontWeight.Bold
-        )
+        // 净资产挪到「收支总览」底部了（流量 + 存量一次看完），这里只留资产 / 负债的结构
         Spacer(Modifier.height(8.dp))
         Row(modifier = Modifier.fillMaxWidth()) {
             StatItem(
@@ -2580,7 +2698,19 @@ private fun StatItem(label: String, value: String, color: Color, modifier: Modif
     Column(modifier = modifier) {
         Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(2.dp))
-        Text(value, style = MaterialTheme.typography.bodyMedium, color = color, fontWeight = FontWeight.Medium)
+        // 三等分格子里放不下就降一档字号，绝不允许折行（折行会把相邻两格顶得高低不齐）
+        Text(
+            text = value,
+            style = if (value.length >= 12) {
+                MaterialTheme.typography.bodySmall
+            } else {
+                MaterialTheme.typography.bodyMedium
+            },
+            color = color,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            softWrap = false
+        )
     }
 }
 
@@ -2596,29 +2726,15 @@ private fun EmptyHint(text: String = "暂无数据") {
 
 /* ==================== 小工具 ==================== */
 
-private val WEEKDAY_SHORT = listOf("日", "一", "二", "三", "四", "五", "六")
+/*
+ * 金额统一走 [com.jizhang.app.ui.common.money] / [formatAmount]：
+ * 精确到分 + 千分位 + 去掉无意义的 0（`¥3.2` / `¥12,345.67`），口径全 App 只有这一份。
+ * 宽度靠 [ValueBlock] / [StatItem] 的字号降档解决，不再用四舍五入换排版。
+ */
+
 private val MONTH_TEXT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy 年 M 月")
 private val DAY_TEXT: DateTimeFormatter = DateTimeFormatter.ofPattern("M 月 d 日")
 private val TIME_TEXT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
-
-/**
- * 隐私模式下的金额文案。
- * <p>
- * 只给「¥1,200.00」这一种写法 —— 之前写成「¥1,200.00 元」，¥ 和「元」重复得像打错字。
- */
-private fun money(value: Long, hideAmounts: Boolean, suffix: String = ""): String =
-    if (hideAmounts) "****$suffix" else "¥${formatAmount(value)}$suffix"
-
-/** 星期柱上方的紧凑金额：不到 1000 显示整数，往上用 k / w，免得柱子被长数字撑变形 */
-private fun compactAmount(value: Long): String {
-    val yuan = value / 100.0
-    return when {
-        yuan <= 0.0 -> "-"
-        yuan < 1000 -> yuan.roundToInt().toString()
-        yuan < 10000 -> "%.1fk".format(yuan / 1000)
-        else -> "%.1fw".format(yuan / 10000)
-    }
-}
 
 private fun timeText(millis: Long): String =
     java.time.Instant.ofEpochMilli(millis)
@@ -2629,6 +2745,7 @@ private fun timeText(millis: Long): String =
 /** 环比 / 同比的对照期名称 */
 private val ReportPeriod.previousLabel: String
     get() = when (granularity) {
+        ReportGranularity.WEEK -> "上周"
         ReportGranularity.DAY -> "昨天"
         ReportGranularity.MONTH -> "上月"
         ReportGranularity.YEAR -> "去年"
@@ -2636,6 +2753,7 @@ private val ReportPeriod.previousLabel: String
 
 private val ReportPeriod.lastYearLabel: String
     get() = when (granularity) {
+        ReportGranularity.WEEK -> "去年同周"
         ReportGranularity.DAY -> "去年同期"
         ReportGranularity.MONTH -> "去年同月"
         ReportGranularity.YEAR -> "去年"
@@ -2744,8 +2862,21 @@ private fun ReportOverviewPreview() {
             modifier = Modifier.padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            OverviewCard(state.overview, state.period, hideAmounts = false, onOpen = {})
-            TrendCard(state.trend, state.period, hideAmounts = false, onOpenRange = { _, _ -> })
+            OverviewCard(
+                state.overview,
+                state.period,
+                hideAmounts = false,
+                netAssets = state.assets.netAssets,
+                onOpenAssets = {},
+                onOpen = {}
+            )
+            TrendCard(
+                state.trend,
+                state.netAssetTrend,
+                state.period,
+                hideAmounts = false,
+                onOpenRange = { _, _ -> }
+            )
         }
     }
 }
@@ -2759,13 +2890,17 @@ private fun ReportBreakdownPreview() {
             modifier = Modifier.padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            state.habit?.let { HabitCard(it, state.period, hideAmounts = false) }
-            AccountRankCard(
-                ranks = state.accountRanks,
+            state.habit?.let {
+                HabitCard(it, hideAmounts = false, folded = false, onToggle = {})
+            }
+            RankCard(
+                accountRanks = state.accountRanks,
+                tagRanks = state.tagRanks,
                 rankType = 1,
                 hideAmounts = false,
                 onSwitchType = {},
-                onOpen = {}
+                onOpenAccount = {},
+                onOpenTag = {}
             )
         }
     }
@@ -2780,7 +2915,14 @@ private fun ReportEmptyPreview() {
             modifier = Modifier.padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            OverviewCard(state.overview, state.period, hideAmounts = false, onOpen = {})
+            OverviewCard(
+                state.overview,
+                state.period,
+                hideAmounts = false,
+                netAssets = state.assets.netAssets,
+                onOpenAssets = {},
+                onOpen = {}
+            )
             CalendarCard(
                 days = state.calendar,
                 period = state.period,
@@ -2788,8 +2930,8 @@ private fun ReportEmptyPreview() {
                 dayDetail = state.dayDetail,
                 onPickDay = {},
                 onCloseDay = {},
-                onOpenDay = {},
-                onOpenBills = {}
+                onOpenBills = {},
+                onOpenCalendar = {}
             )
         }
     }

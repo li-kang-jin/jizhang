@@ -20,7 +20,6 @@ import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Savings
 import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -28,13 +27,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -48,8 +45,9 @@ import com.jizhang.app.data.remote.dto.BudgetDto
 import com.jizhang.app.data.remote.dto.BudgetOverviewDto
 import com.jizhang.app.data.repository.BudgetCycle
 import com.jizhang.app.data.repository.FixedReservation
+import com.jizhang.app.data.repository.uncoveredFixedTotal
+import com.jizhang.app.ui.common.AppChip
 import com.jizhang.app.ui.common.formatAmount
-import com.jizhang.app.ui.report.BudgetDialog
 import com.jizhang.app.ui.theme.AppColors
 import kotlin.math.roundToInt
 
@@ -60,14 +58,29 @@ import kotlin.math.roundToInt
 fun BudgetScreen(
     bookId: Long,
     onOpenRecurring: () -> Unit,
+    /**
+     * 打开「设置预算」覆盖层，参数是预算范围（0 表示总预算）。
+     * 覆盖层本身挂在 MainScreen 根部 —— 塞在本页内部会盖不住底部导航栏，还会被裁剪。
+     */
+    onOpenBudgetEditor: (Long) -> Unit,
+    /**
+     * 外部数据版本号：导入 / 清空账单后由 MainScreen +1。
+     * 本页 ViewModel 是 Activity 级的，切 Tab 回来 `bind()` 会早退，这里显式重算一次。
+     */
+    dataVersion: Int = 0,
     viewModel: BudgetViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
-    var showDialog by remember { mutableStateOf(false) }
-    var dialogCategoryId by remember { mutableLongStateOf(0L) }
 
     LaunchedEffect(bookId) { viewModel.bind(bookId) }
+
+    // 导入 / 清空账单后重算本期「已花 / 剩余」
+    LaunchedEffect(dataVersion) {
+        if (dataVersion > 0) {
+            viewModel.load()
+        }
+    }
 
     LaunchedEffect(state.message) {
         state.message?.let {
@@ -98,36 +111,36 @@ fun BudgetScreen(
                 TotalBudgetCard(
                     overview = state.overview,
                     reservation = state.reservation,
-                    onEdit = {
-                        dialogCategoryId = 0L
-                        showDialog = true
-                    }
+                    onEdit = { onOpenBudgetEditor(0L) }
                 )
+            }
+            // 趋势图只在设了总预算时才有意义：没有额度就谈不上超支概率
+            state.forecast?.let { forecast ->
+                item { BudgetTrendCard(forecast) }
             }
             item {
                 FixedExpenseCard(
                     recurring = state.recurring,
                     reservation = state.reservation,
+                    // 已在分类预算里给过额度的部分：只提示、不再计入建议总预算
+                    coveredByCategoryBudget = state.reservation.total - uncoveredFixedTotal(
+                        state.overview?.items.orEmpty(),
+                        state.reservation
+                    ),
                     onManage = onOpenRecurring
                 )
             }
             item {
                 CategoryBudgetCard(
                     overview = state.overview,
-                    onEdit = { categoryId ->
-                        dialogCategoryId = categoryId
-                        showDialog = true
-                    }
+                    onEdit = { categoryId -> onOpenBudgetEditor(categoryId) }
                 )
             }
             item { TipsCard() }
         }
 
         ExtendedFloatingActionButton(
-            onClick = {
-                dialogCategoryId = 0L
-                showDialog = true
-            },
+            onClick = { onOpenBudgetEditor(0L) },
             containerColor = MaterialTheme.colorScheme.primary,
             contentColor = MaterialTheme.colorScheme.onPrimary,
             icon = { Icon(Icons.Filled.Savings, contentDescription = null) },
@@ -140,21 +153,6 @@ fun BudgetScreen(
         SnackbarHost(
             hostState = snackbarHostState,
             modifier = Modifier.align(Alignment.BottomCenter)
-        )
-    }
-
-    if (showDialog) {
-        BudgetDialog(
-            periodLabel = state.periodLabel,
-            initialCategoryId = dialogCategoryId,
-            expenseCategories = state.expenseCategories,
-            budget = state.overview,
-            onInherit = viewModel::inheritPrevious,
-            onSave = { categoryId, amount, onResult ->
-                viewModel.saveBudget(categoryId, amount, onResult)
-            },
-            onDelete = viewModel::deleteBudget,
-            onDismiss = { showDialog = false }
         )
     }
 }
@@ -171,10 +169,10 @@ private fun PeriodBar(
     Column {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             BudgetCycle.entries.forEach { cycle ->
-                FilterChip(
+                AppChip(
+                    label = cycle.label,
                     selected = state.cycle == cycle,
-                    onClick = { onCycle(cycle) },
-                    label = { Text(cycle.label) }
+                    onClick = { onCycle(cycle) }
                 )
             }
         }
@@ -190,16 +188,15 @@ private fun PeriodBar(
                 fontWeight = FontWeight.SemiBold
             )
             if (!state.isCurrent) {
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = "回到本期",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .clickable(onClick = onCurrent)
-                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                )
+                Spacer(Modifier.width(4.dp))
+                // 触摸目标按 48dp 给：原来只有两行小字，手指点不准
+                TextButton(
+                    onClick = onCurrent,
+                    modifier = Modifier.height(48.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp)
+                ) {
+                    Text("回到本期", style = MaterialTheme.typography.labelMedium)
+                }
             }
             Spacer(Modifier.weight(1f))
             IconButton(onClick = onNext, enabled = state.canGoNext) {
@@ -249,15 +246,13 @@ private fun TotalBudgetCard(
                 fontWeight = FontWeight.SemiBold
             )
             Spacer(Modifier.weight(1f))
-            Text(
-                text = if (overview?.hasBudget == true) "调整" else "去设置",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .clickable(onClick = onEdit)
-                    .padding(horizontal = 6.dp, vertical = 2.dp)
-            )
+            TextButton(
+                onClick = onEdit,
+                modifier = Modifier.height(48.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp)
+            ) {
+                Text(if (overview?.hasBudget == true) "调整" else "去设置")
+            }
         }
 
         Spacer(Modifier.height(10.dp))
@@ -268,6 +263,26 @@ private fun TotalBudgetCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            // 有分类预算 / 固定支出却没总预算时，两者之和就是最合理的默认值。
+            // 房租这类两边都登记的钱要先去重，否则建议值会把这笔钱算两遍。
+            val categorySum = overview?.items.orEmpty().sumOf { it.amount }
+            val uncovered = uncoveredFixedTotal(overview?.items.orEmpty(), reservation)
+            val suggestTotal = categorySum + uncovered
+            if (suggestTotal > 0L) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = buildString {
+                        append("建议总预算 ${formatAmount(suggestTotal)} 元 = ")
+                        if (categorySum > 0L) append("分类 ${formatAmount(categorySum)} 元")
+                        if (uncovered > 0L) {
+                            if (categorySum > 0L) append(" + ")
+                            append("没算进分类的固定支出 ${formatAmount(uncovered)} 元")
+                        }
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
             Spacer(Modifier.height(12.dp))
             Text(
                 text = "本周期已支出 ${formatAmount(overview?.monthExpense ?: 0)} 元",
@@ -324,6 +339,31 @@ private fun TotalBudgetCard(
                 color = barColor,
                 trackColor = MaterialTheme.colorScheme.surfaceVariant
             )
+
+            // 还没到期的固定支出：在进度条上补一段浅色，表示这些额度已经被占住。
+            // 它们不自动记账，所以不计入「已用」，但真实能花的钱必须扣掉 —— 光靠文字说明容易漏看。
+            if (reservation.total > 0L && overview.totalBudget > 0L) {
+                val usedFraction = overview.totalUsed.toFloat() / overview.totalBudget
+                val reservedFraction =
+                    ((overview.totalUsed + reservation.total).toFloat() / overview.totalBudget)
+                        .coerceIn(0f, 1f)
+                if (reservedFraction > usedFraction) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(reservedFraction)
+                            .height(8.dp),
+                        contentAlignment = Alignment.CenterEnd
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth((reservedFraction - usedFraction) / reservedFraction)
+                                .height(8.dp)
+                                .background(AppColors.accent.copy(alpha = 0.45f))
+                        )
+                    }
+                }
+            }
+
             if (showForecastMark && forecastRatio != null) {
                 Box(
                     modifier = Modifier
@@ -341,42 +381,24 @@ private fun TotalBudgetCard(
             }
         }
 
-        if (showForecastMark && forecastRatio != null) {
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = "竖线 = 按现在的花法，期末预计花到 ${formatAmount(overview.forecastExpense ?: 0L)} 元",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-
+        // 一行三个数：剩余是主角，日均可用 / 今天还能花跟在后面。
+        // 原来铺了两张三列小卡片（剩余 / 日均可用 / 剩余天数 + 今日已花 / 今天还能花 / 固定支出预留），
+        // 同一个「每天能花多少」被讲了两遍，字号还一样大，反而看不出重点。
         Spacer(Modifier.height(12.dp))
-        Row(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.Bottom
+        ) {
             StatItem(
                 label = "剩余",
                 value = "${formatAmount(overview.remaining)} 元",
                 color = if (overview.exceeded) AppColors.expense else AppColors.income,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1.15f),
+                emphasized = true
             )
             StatItem(
                 label = "日均可用",
                 value = "${formatAmount(overview.dailyAvailable)} 元",
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.weight(1f)
-            )
-            StatItem(
-                label = "剩余天数",
-                value = "${overview.daysLeft} 天",
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.weight(1f)
-            )
-        }
-
-        Spacer(Modifier.height(10.dp))
-        Row(Modifier.fillMaxWidth()) {
-            StatItem(
-                label = "今日已花",
-                value = "${formatAmount(overview.todayExpense)} 元",
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f)
             )
@@ -386,17 +408,59 @@ private fun TotalBudgetCard(
                 color = if (todayRemaining == 0L) AppColors.expense else AppColors.income,
                 modifier = Modifier.weight(1f)
             )
-            StatItem(
-                label = "固定支出预留",
-                value = "${formatAmount(overview.fixedReserved)} 元",
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.weight(1f)
-            )
         }
 
+        // 次要信息压成一行灰色小字；「预计期末」交给下面的趋势卡，
+        // 这里不再用旧的线性外推，免得同一个「期末支出」出现两个数字
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = "剩余 ${overview.daysLeft} 天 · 今日已花 ${formatAmount(overview.todayExpense)} 元",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        // 固定支出：不自动记账，所以「已用」里看不到它们；总预算必须显式扣一遍，并给出扣完后的真实结论
+        if (reservation.total > 0L) {
+            val afterReserved = overview.remaining - reservation.total
+            val shortfall = afterReserved < 0L
+            Spacer(Modifier.height(10.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(
+                        if (shortfall) {
+                            AppColors.expense.copy(alpha = 0.12f)
+                        } else {
+                            AppColors.accent.copy(alpha = 0.12f)
+                        }
+                    )
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            ) {
+                Text(
+                    text = "本期还有 ${reservation.items.size} 笔固定支出未扣" +
+                        "（${formatAmount(reservation.total)} 元），不计入「已用」",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = if (shortfall) {
+                        "扣掉后已超预算 ${formatAmount(-afterReserved)} 元"
+                    } else {
+                        "扣掉后实际可花 ${formatAmount(afterReserved)} 元"
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (shortfall) AppColors.expense else AppColors.income
+                )
+            }
+        }
+
+        // 只留「结论」（超支 / 可能超支）；正常情况的预测数字已经在上面那行了
         val prediction = predictionText(overview)
         if (prediction != null) {
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(8.dp))
             Text(
                 text = prediction.first,
                 style = MaterialTheme.typography.labelMedium,
@@ -404,45 +468,28 @@ private fun TotalBudgetCard(
             )
         }
 
-        if (reservation.total > 0L) {
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = "日均可用已扣掉本期还没到期的 ${reservation.items.size} 笔固定支出",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
     }
 }
 
-/** 预测结论：超支 / 有风险 / 正常。返回 null 表示没有可说的 */
+/**
+ * 事实层面的结论：已经超支。预测类结论（可能会超多少）交给趋势卡的概率与分位，
+ * 两边各说一个数只会让人不知道该信哪个。
+ */
 @Composable
-private fun predictionText(overview: BudgetOverviewDto): Pair<String, Color>? = when (overview.status) {
-    BudgetOverviewDto.STATUS_OVER -> "已超支 ${formatAmount(overview.totalUsed - overview.totalBudget)} 元" to AppColors.expense
-
-    BudgetOverviewDto.STATUS_AT_RISK -> {
-        val forecast = overview.forecastExpense ?: 0L
-        // 还没到期的固定支出也要算进期末支出，否则房租没扣的那几天会被误判成安全
-        val gap = (forecast + overview.fixedReserved - overview.totalBudget).coerceAtLeast(0L)
-        "按现在的花法预计花到 ${formatAmount(forecast)} 元，可能超支约 ${formatAmount(gap)} 元" to AppColors.expense
+private fun predictionText(overview: BudgetOverviewDto): Pair<String, Color>? =
+    if (overview.status == BudgetOverviewDto.STATUS_OVER) {
+        "已超支 ${formatAmount(overview.totalUsed - overview.totalBudget)} 元" to AppColors.expense
+    } else {
+        null
     }
-
-    else -> when {
-        overview.forecastExpense != null && overview.elapsedDays > 0 ->
-            "按现在的花法预计花到 ${formatAmount(overview.forecastExpense)} 元，在预算内" to AppColors.income
-
-        overview.suggestDaily > 0L ->
-            "按额度平摊，每天约 ${formatAmount(overview.suggestDaily)} 元" to MaterialTheme.colorScheme.onSurfaceVariant
-
-        else -> null
-    }
-}
 
 /** 固定支出卡片：只做预算内预留，不自动记账 */
 @Composable
 private fun FixedExpenseCard(
     recurring: List<LocalRecurringExpense>,
     reservation: FixedReservation,
+    /** 本期固定支出里已包含在分类预算中的金额（分） */
+    coveredByCategoryBudget: Long,
     onManage: () -> Unit
 ) {
     CardBox {
@@ -453,15 +500,13 @@ private fun FixedExpenseCard(
                 fontWeight = FontWeight.SemiBold
             )
             Spacer(Modifier.weight(1f))
-            Text(
-                text = "管理",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .clickable(onClick = onManage)
-                    .padding(horizontal = 6.dp, vertical = 2.dp)
-            )
+            TextButton(
+                onClick = onManage,
+                modifier = Modifier.height(48.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp)
+            ) {
+                Text("管理")
+            }
         }
 
         Spacer(Modifier.height(10.dp))
@@ -481,6 +526,15 @@ private fun FixedExpenseCard(
             text = "生效中 $enabledCount 项 · 本期预留 ${formatAmount(reservation.total)} 元",
             style = MaterialTheme.typography.bodyMedium
         )
+        if (coveredByCategoryBudget > 0L) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "其中 ${formatAmount(coveredByCategoryBudget)} 元已经算在分类预算里了，" +
+                    "不会再重复加进总预算建议",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
 
         if (reservation.items.isEmpty()) {
             Spacer(Modifier.height(6.dp))
@@ -534,15 +588,13 @@ private fun CategoryBudgetCard(overview: BudgetOverviewDto?, onEdit: (Long) -> U
                 fontWeight = FontWeight.SemiBold
             )
             Spacer(Modifier.weight(1f))
-            Text(
-                text = "添加",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .clickable { onEdit(0L) }
-                    .padding(horizontal = 6.dp, vertical = 2.dp)
-            )
+            TextButton(
+                onClick = { onEdit(0L) },
+                modifier = Modifier.height(48.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp)
+            ) {
+                Text("添加")
+            }
         }
 
         Spacer(Modifier.height(10.dp))
@@ -556,6 +608,27 @@ private fun CategoryBudgetCard(overview: BudgetOverviewDto?, onEdit: (Long) -> U
             )
             return@CardBox
         }
+
+        // 分类额度各自独立，合计只是参考：超过总预算时明确说出来，别让用户自己去加
+        val categorySum = items.sumOf { it.amount }
+        val totalBudget = overview?.takeIf { it.hasBudget }?.totalBudget ?: 0L
+        val overflow = if (totalBudget > 0L) categorySum - totalBudget else 0L
+        Text(
+            text = buildString {
+                append("共 ${items.size} 项，合计 ${formatAmount(categorySum)} 元")
+                if (overflow > 0L) {
+                    append("，比总预算多 ${formatAmount(overflow)} 元")
+                }
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = if (overflow > 0L) {
+                AppColors.expense
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            }
+        )
+
+        Spacer(Modifier.height(10.dp))
 
         items.forEachIndexed { index, item ->
             if (index > 0) Spacer(Modifier.height(12.dp))
@@ -645,7 +718,14 @@ private fun CardBox(content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun StatItem(label: String, value: String, color: Color, modifier: Modifier) {
+private fun StatItem(
+    label: String,
+    value: String,
+    color: Color,
+    modifier: Modifier,
+    /** 主指标（剩余）：字号放大一级，形成主次层级 */
+    emphasized: Boolean = false
+) {
     Column(modifier = modifier) {
         Text(
             label,
@@ -655,9 +735,13 @@ private fun StatItem(label: String, value: String, color: Color, modifier: Modif
         Spacer(Modifier.height(2.dp))
         Text(
             text = value,
-            style = MaterialTheme.typography.bodyMedium,
+            style = if (emphasized) {
+                MaterialTheme.typography.titleLarge
+            } else {
+                MaterialTheme.typography.bodyMedium
+            },
             color = color,
-            fontWeight = FontWeight.SemiBold
+            fontWeight = if (emphasized) FontWeight.Bold else FontWeight.SemiBold
         )
     }
 }

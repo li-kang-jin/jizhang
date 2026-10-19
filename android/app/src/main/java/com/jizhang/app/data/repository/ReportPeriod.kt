@@ -1,27 +1,40 @@
 package com.jizhang.app.data.repository
 
+import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.time.temporal.TemporalAdjusters
 
 /**
- * 统计粒度：日 / 月 / 年。
+ * 统计粒度：周 / 月 / 年。
  * <p>
  * 与预算的 [BudgetCycle] 是两套东西：预算关心「额度按什么周期设置」，统计关心「看哪段时间的数据」，
- * 两者都有年 / 月，但统计没有「周」，也不需要和服务端的线格式对齐。
+ * 两者都按 ISO 周（周一起）算，口径一致。
+ * <p>
+ * 顺序即筛选档位的顺序：记账频率通常按周回顾，所以周在前、日不再是档位。
  */
 enum class ReportGranularity(val label: String) {
-    DAY("日"),
+    WEEK("周"),
     MONTH("月"),
-    YEAR("年");
+    YEAR("年"),
 
-    /** 上一个更粗的粒度，用于「回到今天 / 本月 / 今年」文案 */
+    /**
+     * 日粒度：**不出现在筛选档位上**，只作为「单日时间窗」工具保留 ——
+     * 日历详情里跳当天账单、[ReportRepository.dayDetail]、日历页的单日区间都还在用
+     * （`ReportPeriod(DAY, date)` 就是那一天）。
+     * 放在最后，避免动到可能存在的外部序号假设。
+     */
+    DAY("日");
+
+    /** 「回到本期」按钮的文案 */
     val nowLabel: String
         get() = when (this) {
-            DAY -> "今天"
+            WEEK -> "本周"
             MONTH -> "本月"
             YEAR -> "今年"
+            DAY -> "今天"
         }
 }
 
@@ -45,6 +58,7 @@ data class ReportPeriod(
 
     /** 周期结束日（不含） */
     val endDate: LocalDate = when (granularity) {
+        ReportGranularity.WEEK -> startDate.plusWeeks(1)
         ReportGranularity.DAY -> startDate.plusDays(1)
         ReportGranularity.MONTH -> startDate.plusMonths(1)
         ReportGranularity.YEAR -> startDate.plusYears(1)
@@ -56,6 +70,7 @@ data class ReportPeriod(
 
     /** 周期总天数 */
     val daysTotal: Int = when (granularity) {
+        ReportGranularity.WEEK -> 7
         ReportGranularity.DAY -> 1
         ReportGranularity.MONTH -> startDate.lengthOfMonth()
         ReportGranularity.YEAR -> startDate.lengthOfYear()
@@ -86,6 +101,8 @@ data class ReportPeriod(
      */
     val daysCounted: Int = when {
         isCurrent -> when (granularity) {
+            // 周一 = 1，所以当前周已经过去的天数正好等于 dayOfWeek.value
+            ReportGranularity.WEEK -> anchor.dayOfWeek.value
             ReportGranularity.DAY -> 1
             ReportGranularity.MONTH -> anchor.dayOfMonth
             ReportGranularity.YEAR -> anchor.dayOfYear
@@ -95,15 +112,20 @@ data class ReportPeriod(
         else -> daysTotal
     }
 
-    /** 完整展示：2026 年 10 月 16 日 / 2026 年 10 月 / 2026 年 */
+    /** 完整展示：10 月 13 日 - 10 月 19 日 / 2026 年 10 月 16 日 / 2026 年 10 月 / 2026 年 */
     val label: String = when (granularity) {
+        // 周不用「第 N 周」：多数人记不住 ISO 周号，直接给区间更直观；跨年那一周补上年份
+        ReportGranularity.WEEK ->
+            weekSpan(startDate, withYear = startDate.year != LocalDate.now().year)
+
         ReportGranularity.DAY -> anchor.format(DAY_LABEL)
         ReportGranularity.MONTH -> anchor.format(MONTH_LABEL)
         ReportGranularity.YEAR -> anchor.format(YEAR_LABEL)
     }
 
-    /** 紧凑展示：10 月 16 日（周五） / 10 月 / 2026 */
+    /** 紧凑展示：10 月 13 日 - 10 月 19 日 / 10 月 16 日（周五） / 10 月 / 2026 */
     val shortLabel: String = when (granularity) {
+        ReportGranularity.WEEK -> weekSpan(startDate)
         ReportGranularity.DAY -> anchor.format(SHORT_DAY_LABEL) + "（" + weekdayText(anchor) + "）"
         ReportGranularity.MONTH -> anchor.format(SHORT_MONTH_LABEL)
         ReportGranularity.YEAR -> anchor.year.toString()
@@ -123,11 +145,13 @@ data class ReportPeriod(
     fun bucketMillis(index: Int): Pair<Long, Long> {
         val start = when (granularity) {
             // 日粒度：第 index 个小时（0 时 = 当天 0 点）
+            ReportGranularity.WEEK -> startDate.plusDays(index.toLong()).atStartOfDay(ZONE)
             ReportGranularity.DAY -> startDate.atStartOfDay(ZONE).plusHours(index.toLong())
             ReportGranularity.MONTH -> startDate.plusDays(index.toLong()).atStartOfDay(ZONE)
             ReportGranularity.YEAR -> startDate.plusMonths(index.toLong()).atStartOfDay(ZONE)
         }
         val end = when (granularity) {
+            ReportGranularity.WEEK -> start.plusDays(1)
             ReportGranularity.DAY -> start.plusHours(1)
             ReportGranularity.MONTH -> start.plusDays(1)
             ReportGranularity.YEAR -> start.plusMonths(1)
@@ -140,7 +164,8 @@ data class ReportPeriod(
         ReportGranularity.DAY ->
             anchor.format(SHORT_DAY_LABEL) + " " + "%02d:00 - %02d:00".format(index, (index + 1) % 24)
 
-        ReportGranularity.MONTH -> {
+        // 周和月的桶都是「第 index 天」，标题给日期 + 星期
+        ReportGranularity.WEEK, ReportGranularity.MONTH -> {
             val date = startDate.plusDays(index.toLong())
             date.format(SHORT_DAY_LABEL) + "（" + weekdayText(date) + "）"
         }
@@ -155,6 +180,8 @@ data class ReportPeriod(
     /** 同比窗口：去年同期（年粒度的同比就是上一年，与环比相同） */
     val lastYearPeriod: ReportPeriod
         get() = when (granularity) {
+            // 去年同周：锚点回退一年再落回那一周的周一（与 ISO 周口径一致）
+            ReportGranularity.WEEK -> ReportPeriod(ReportGranularity.WEEK, anchor.minusYears(1))
             ReportGranularity.DAY -> ReportPeriod(ReportGranularity.DAY, anchor.minusYears(1))
             ReportGranularity.MONTH -> ReportPeriod(ReportGranularity.MONTH, anchor.minusYears(1))
             ReportGranularity.YEAR -> previousPeriod
@@ -162,6 +189,7 @@ data class ReportPeriod(
 
     fun plus(offset: Long): ReportPeriod {
         val nextAnchor = when (granularity) {
+            ReportGranularity.WEEK -> anchor.plusWeeks(offset)
             ReportGranularity.DAY -> anchor.plusDays(offset)
             ReportGranularity.MONTH -> anchor.plusMonths(offset)
             ReportGranularity.YEAR -> anchor.plusYears(offset)
@@ -182,11 +210,20 @@ data class ReportPeriod(
     companion object {
         private val ZONE: ZoneId = ZoneId.systemDefault()
 
-        /** 某个粒度下锚点所属周期的首日：日=当天，月=当月 1 号，年=1 月 1 日 */
+        /** 某个粒度下锚点所属周期的首日：周=本周一，日=当天，月=当月 1 号，年=1 月 1 日 */
         fun startOf(granularity: ReportGranularity, date: LocalDate): LocalDate = when (granularity) {
+            // ISO 周（周一起），与预算模块 BudgetPeriods 同口径
+            ReportGranularity.WEEK -> date.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
             ReportGranularity.DAY -> date
             ReportGranularity.MONTH -> YearMonth.from(date).atDay(1)
             ReportGranularity.YEAR -> LocalDate.of(date.year, 1, 1)
+        }
+
+        /** 「10 月 13 日 - 10 月 19 日」；[withYear] 用于跨年那一周，否则分不清哪一年 */
+        fun weekSpan(start: LocalDate, withYear: Boolean = false): String {
+            val prefix = if (withYear) "${start.year} 年 " else ""
+            return prefix + start.format(SHORT_DAY_LABEL) +
+                " - " + start.plusDays(6).format(SHORT_DAY_LABEL)
         }
 
         private val DAY_LABEL = DateTimeFormatter.ofPattern("yyyy 年 M 月 d 日")

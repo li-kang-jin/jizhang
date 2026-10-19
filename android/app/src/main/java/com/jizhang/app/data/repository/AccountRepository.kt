@@ -1,5 +1,6 @@
 package com.jizhang.app.data.repository
 
+import com.jizhang.app.data.local.JizhangDatabase
 import com.jizhang.app.data.local.dao.AccountDao
 import com.jizhang.app.data.local.entity.AccountWithBalance
 import com.jizhang.app.data.local.entity.LocalAccount
@@ -44,7 +45,7 @@ class AccountRepository @Inject constructor(
         note: String? = null
     ): Result<Unit> = runCatching {
         val sort = accountDao.countByBook(bookId)
-        if (isLoggedIn()) {
+        if (isRemoteBook(bookId)) {
             val dto = api.createAccount(
                 AccountSaveDto(
                     bookId = bookId,
@@ -54,24 +55,27 @@ class AccountRepository @Inject constructor(
                     icon = icon,
                     sort = sort
                 )
-            ).data ?: error("创建账户失败")
-            // note / archived 服务端没有，必须自己贴到本地缓存上，
-            // 否则「新建时就填的备注」会被服务端返回体覆盖掉
-            accountDao.upsert(dto.toLocal().copy(note = note))
-        } else {
-            accountDao.upsert(
-                LocalAccount(
-                    id = accountDao.maxId() + 1,
-                    bookId = bookId,
-                    name = name,
-                    type = type,
-                    initialBalance = initialBalance,
-                    icon = icon,
-                    sort = sort,
-                    note = note
-                )
-            )
+            ).data
+            if (dto != null) {
+                // note / archived 服务端没有，必须自己贴到本地缓存上，
+                // 否则「新建时就填的备注」会被服务端返回体覆盖掉
+                accountDao.upsert(dto.toLocal().copy(note = note))
+                return@runCatching
+            }
+            // 接口挂了也要让用户建得出账户：退回本地自增 id，联网后再补齐
         }
+        accountDao.upsert(
+            LocalAccount(
+                id = accountDao.maxId() + 1,
+                bookId = bookId,
+                name = name,
+                type = type,
+                initialBalance = initialBalance,
+                icon = icon,
+                sort = sort,
+                note = note
+            )
+        )
     }
 
     /**
@@ -90,7 +94,25 @@ class AccountRepository @Inject constructor(
         archived: Boolean = false
     ): Result<Unit> = runCatching {
         val existing = accountDao.findById(id) ?: error("账户不存在")
-        if (isLoggedIn()) {
+
+        // 1) 先落本地：改完立刻生效，网络失败也不回滚
+        accountDao.upsert(
+            existing.copy(
+                name = name,
+                type = type,
+                initialBalance = initialBalance,
+                icon = icon,
+                note = note,
+                archived = archived
+            )
+        )
+
+        /*
+         * 2) 能推就推，推不动就保持本地版本。
+         * 之前这里直接 `?: error("修改账户失败")`：本机登录着、但账户是导入生成的本地自增 id
+         * （服务端根本没有这条），一保存就 404，用户看到「修改账户失败」——账户其实改得了。
+         */
+        if (isRemoteBook(bookId)) {
             val dto = api.updateAccount(
                 id,
                 AccountSaveDto(
@@ -101,21 +123,12 @@ class AccountRepository @Inject constructor(
                     icon = icon,
                     sort = existing.sort
                 )
-            ).data ?: error("修改账户失败")
-            accountDao.upsert(
-                dto.toLocal().copy(note = note, archived = archived, sort = existing.sort)
-            )
-        } else {
-            accountDao.upsert(
-                existing.copy(
-                    name = name,
-                    type = type,
-                    initialBalance = initialBalance,
-                    icon = icon,
-                    note = note,
-                    archived = archived
+            ).data
+            if (dto != null) {
+                accountDao.upsert(
+                    dto.toLocal().copy(note = note, archived = archived, sort = existing.sort)
                 )
-            )
+            }
         }
     }
 
@@ -170,8 +183,21 @@ class AccountRepository @Inject constructor(
             diff
         }
 
+    /**
+     * 删除账户。
+     * <p>
+     * 账户下还有账单就先拦下来（与服务端同一套规则）：删掉账户行会让那些账单失去依据，
+     * 本地看着没事，一旦同步就会被服务端整批拒绝（「账户不存在」），表现成「怎么点同步都失败」。
+     * 想删就先把那些账改到别的账户，或者用「归档」停用它（归档只是不再出现在选择里，历史账单照旧）。
+     */
     suspend fun delete(id: Long): Result<Unit> = runCatching {
-        if (isLoggedIn()) {
+        val used = transactionRepository.countByAccount(id)
+        if (used > 0) {
+            error("这个账户下还有 $used 笔账单：先把它们改到别的账户，或者改成「归档」停用")
+        }
+        // 本地账本 / 导入生成的账户在服务端不存在，直接删本地，否则会报「账户不存在」
+        val bookId = accountDao.findById(id)?.bookId
+        if (bookId != null && isRemoteBook(bookId)) {
             val result = api.deleteAccount(id)
             if (!result.isSuccess) {
                 error(result.message.ifBlank { "删除账户失败" })
@@ -181,6 +207,16 @@ class AccountRepository @Inject constructor(
     }
 
     private suspend fun isLoggedIn(): Boolean = !tokenStore.accessToken().isNullOrBlank()
+
+    /**
+     * 这个账户所在的账本是否跟服务端同步。
+     * <p>
+     * 只有「服务端账本 + 已登录」才值得调接口：本地账本（[JizhangDatabase.LOCAL_BOOK_ID]）
+     * 和导入时按 CSV 自动建出来的账户（本地自增 id）在服务端都没有对应记录，
+     * 调过去只会 404。
+     */
+    private suspend fun isRemoteBook(bookId: Long): Boolean =
+        bookId != JizhangDatabase.LOCAL_BOOK_ID && isLoggedIn()
 
     companion object {
         /** 余额校准生成的调整账单统一挂在这个分类下，便于筛选 / 排除 */

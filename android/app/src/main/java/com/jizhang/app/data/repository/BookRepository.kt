@@ -125,7 +125,7 @@ class BookRepository @Inject constructor(
     /**
      * 新建账本。
      *
-     * @param type 0=个人（仅自己可见） 1=家庭/共享
+     * @param type 0=个人（仅自己可见） 1=家庭 2=共享
      */
     suspend fun createBook(name: String, type: Int, icon: String? = null): Result<LocalBook> =
         runCatching {
