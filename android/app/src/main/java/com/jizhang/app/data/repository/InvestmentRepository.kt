@@ -3,6 +3,7 @@ package com.jizhang.app.data.repository
 import com.jizhang.app.data.local.dao.AccountDao
 import com.jizhang.app.data.local.dao.InvestmentDao
 import com.jizhang.app.data.local.entity.AccountWithBalance
+import com.jizhang.app.data.local.entity.LocalInvestFlow
 import com.jizhang.app.data.local.entity.LocalInvestPosition
 import com.jizhang.app.data.local.entity.LocalInvestValuation
 import com.jizhang.app.data.local.entity.PositionWithValue
@@ -14,6 +15,9 @@ import javax.inject.Singleton
 
 /** 投资账户的类型（`local_account.type = 6`） */
 private const val ACCOUNT_TYPE_INVEST = 6
+
+/** 转账的账单类型（1=支出 2=收入 3=转账）；只有转账才可能挂到投资品种上 */
+private const val TRANSFER_TYPE = 3
 
 /**
  * 投资总览：一次算清「投了多少、现在值多少、还有多少没分配」。
@@ -165,12 +169,97 @@ class InvestmentRepository @Inject constructor(
         )
     }
 
-    /** 删除品种：连同它的估值快照一起清掉（V1 没有同步，不需要墓碑） */
+    /** 删除品种：连同估值快照与成本流水一起清掉（纯本地，不保留墓碑） */
     suspend fun deletePosition(positionId: Long) {
+        investmentDao.deleteFlowsOf(positionId)
         investmentDao.deleteValuationsOf(positionId)
         investmentDao.deleteById(positionId)
     }
 
     /** 某账户下还挂着几个品种：删除投资账户前要先拦下来 */
     suspend fun countByAccount(accountId: Long): Int = investmentDao.countByAccount(accountId)
+
+    /** 某投资账户下可选的品种（记账页「转账 → 归属品种」用） */
+    suspend fun positionsOfAccount(accountId: Long): List<LocalInvestPosition> =
+        investmentDao.listByAccount(accountId)
+
+    /** 某笔转账当前挂在哪个品种上（编辑账单时回填） */
+    suspend fun positionIdOfTransaction(transactionId: Long): Long? =
+        investmentDao.positionIdOfTransaction(transactionId)
+
+    /**
+     * 把一笔转账记成某品种的买入 / 卖出。
+     * <p>
+     * 方向不用用户选，由账户判定：钱**转入**持仓所属账户 = 买入，**转出** = 卖出。
+     * 让用户手选「这是买还是卖」是多余的一步，而且选反了成本就会反向累计。
+     * <p>
+     * 实现上**先删后建**：改账单时品种、金额、方向都可能变，逐个比对字段既繁琐又容易残留
+     * 一条旧记录（表现成成本凭空翻倍）。`transactionId` 上的唯一索引兜住并发重复。
+     *
+     * @return 是否记成功；品种不存在或这笔转账与该品种的账户无关时返回 false
+     */
+    suspend fun syncTransfer(
+        bookId: Long,
+        transactionId: Long,
+        positionId: Long?,
+        type: Int,
+        amountFen: Long,
+        accountId: Long,
+        toAccountId: Long?,
+        occurredAt: Long
+    ): Boolean {
+        investmentDao.deleteFlowByTransaction(transactionId)
+        if (positionId == null || type != TRANSFER_TYPE || amountFen <= 0L) return false
+        val position = investmentDao.findById(positionId) ?: return false
+        val side = investSideOf(
+            positionAccountId = position.accountId,
+            accountId = accountId,
+            toAccountId = toAccountId
+        ) ?: return false
+        investmentDao.upsertFlow(
+            LocalInvestFlow(
+                id = newClientId(),
+                bookId = bookId,
+                positionId = positionId,
+                transactionId = transactionId,
+                side = side,
+                amountFen = amountFen,
+                occurredAt = occurredAt,
+                clientUpdatedAt = System.currentTimeMillis()
+            )
+        )
+        return true
+    }
+
+    /** 账单被删除时解除关联：成本必须跟着回退，否则删了账成本还挂着 */
+    suspend fun detachTransfer(transactionId: Long) {
+        investmentDao.deleteFlowByTransaction(transactionId)
+    }
+
+    /** 清空账本时一并清掉成本流水（账单没了，挂在上面的成本也没有意义） */
+    suspend fun clearFlows(bookId: Long) {
+        investmentDao.deleteFlowsOfBook(bookId)
+    }
+}
+
+/**
+ * 判定一笔转账相对某个品种是买入还是卖出。
+ * <p>
+ * 钱**转入**持仓所属账户 = 买入，**转出** = 卖出，两端都不沾边 = 不计入（null）。
+ * <p>
+ * 抽成纯函数是为了能直接单测：方向判反了不会报错，只会让成本朝反方向累计，
+ * 症状是"卖了之后成本反而变高"，肉眼很难发现。
+ *
+ * @param positionAccountId 该品种挂靠的投资账户
+ * @param accountId 转账的转出账户
+ * @param toAccountId 转账的转入账户（支出/收入时为 null）
+ */
+internal fun investSideOf(
+    positionAccountId: Long,
+    accountId: Long,
+    toAccountId: Long?
+): Int? = when {
+    toAccountId != null && positionAccountId == toAccountId -> LocalInvestFlow.SIDE_BUY
+    positionAccountId == accountId -> LocalInvestFlow.SIDE_SELL
+    else -> null
 }

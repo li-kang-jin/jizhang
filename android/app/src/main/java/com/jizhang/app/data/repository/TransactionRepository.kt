@@ -32,7 +32,8 @@ private const val ACCOUNT_USAGE_WINDOW = 200
 class TransactionRepository @Inject constructor(
     private val api: ApiService,
     private val tokenStore: TokenStore,
-    private val transactionDao: TransactionDao
+    private val transactionDao: TransactionDao,
+    private val investmentRepository: InvestmentRepository
 ) {
 
     fun observeTransactions(bookId: Long): Flow<List<LocalTransaction>> =
@@ -223,6 +224,9 @@ class TransactionRepository @Inject constructor(
      * 这样断网删除也不会「删了又回来」。
      */
     suspend fun deleteLocal(id: Long) {
+        // 先解除投资关联：这笔转账如果记到某个品种上，成本必须跟着回退，
+        // 否则删了账成本还挂着，盈亏会凭空好看一截
+        investmentRepository.detachTransfer(id)
         transactionDao.markPendingDelete(listOf(id))
     }
 
@@ -243,6 +247,8 @@ class TransactionRepository @Inject constructor(
 
         val localOnly = bookId == JizhangDatabase.LOCAL_BOOK_ID ||
             tokenStore.accessToken().isNullOrBlank()
+        // 账单全没了，挂在转账上的投资成本也没有意义：两个分支都要清
+        investmentRepository.clearFlows(bookId)
         if (localOnly) {
             transactionDao.deleteByBook(bookId)
             return ClearResult(count, needSync = false)

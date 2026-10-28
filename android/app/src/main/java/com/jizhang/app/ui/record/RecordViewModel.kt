@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jizhang.app.data.local.entity.LocalAccount
 import com.jizhang.app.data.local.entity.LocalCategory
+import com.jizhang.app.data.local.entity.LocalInvestPosition
 import com.jizhang.app.data.local.entity.LocalTransaction
 import com.jizhang.app.data.prefs.SettingsStore
 import com.jizhang.app.data.prefs.SuggestionEvent
@@ -11,6 +12,7 @@ import com.jizhang.app.data.repository.AccountRepository
 import com.jizhang.app.data.repository.CategoryGuess
 import com.jizhang.app.data.repository.CategoryRepository
 import com.jizhang.app.data.repository.CategorySuggester
+import com.jizhang.app.data.repository.InvestmentRepository
 import com.jizhang.app.data.repository.LedgerRepository
 import com.jizhang.app.data.repository.NoteSample
 import com.jizhang.app.data.repository.TransactionRepository
@@ -39,6 +41,7 @@ class RecordViewModel @Inject constructor(
     private val ledgerRepository: LedgerRepository,
     private val transactionRepository: TransactionRepository,
     private val categoryRepository: CategoryRepository,
+    private val investmentRepository: InvestmentRepository,
     private val settingsStore: SettingsStore
 ) : ViewModel() {
 
@@ -57,6 +60,12 @@ class RecordViewModel @Inject constructor(
         val lastAccountId: Long? = null,
         /** 转账的转入账户 */
         val selectedToAccountId: Long? = null,
+        /**
+         * 转入账户下的投资品种（只有转入「投资」账户时才非空）。
+         * 选中某个品种 = 这笔转账计入它的成本；不选也照样能记，只是钱落在「未分配」里。
+         */
+        val positions: List<LocalInvestPosition> = emptyList(),
+        val selectedPositionId: Long? = null,
         val selectedCategoryId: Long? = null,
         val tradeDate: LocalDate = LocalDate.now(),
         val remark: String = "",
@@ -254,6 +263,18 @@ class RecordViewModel @Inject constructor(
             }
             // 编辑态同样要刷新：用户可能刚在账单页改过标签、或新记了一笔
             refreshTagSuggestions()
+
+            // 编辑一笔「转入投资账户」的转账时，把它挂过的品种回填出来。
+            // 品种可能已被删除 —— 那就留空，并让这笔转账退回到「未分配」。
+            val toAccountId = transaction.toAccountId
+            if (transaction.type == 3 && toAccountId != null) {
+                val list = runCatching { investmentRepository.positionsOfAccount(toAccountId) }
+                    .getOrDefault(emptyList())
+                val attached = runCatching {
+                    investmentRepository.positionIdOfTransaction(transaction.id)
+                }.getOrNull()?.takeIf { id -> list.any { it.id == id } }
+                _state.update { it.copy(positions = list, selectedPositionId = attached) }
+            }
         }
     }
 
@@ -479,8 +500,26 @@ class RecordViewModel @Inject constructor(
         _state.update { it.copy(selectedAccountId = id) }
     }
 
+    /**
+     * 选择转入账户。
+     * <p>
+     * 转入的是「投资」账户时，顺手把它名下可选的品种拉出来：让用户在这一步就把钱归到
+     * 具体基金 / 股票上，成本自动累计，不必事后再去投资页手填一遍。
+     */
     fun selectToAccount(id: Long) {
-        _state.update { it.copy(selectedToAccountId = id) }
+        _state.update {
+            it.copy(selectedToAccountId = id, selectedPositionId = null, positions = emptyList())
+        }
+        viewModelScope.launch {
+            val list = runCatching { investmentRepository.positionsOfAccount(id) }
+                .getOrDefault(emptyList())
+            // 加载期间用户可能又换了账户：只落在仍选中的那个上，否则会把 A 的品种挂到 B 上
+            _state.update { if (it.selectedToAccountId == id) it.copy(positions = list) else it }
+        }
+    }
+
+    fun selectPosition(id: Long?) {
+        _state.update { it.copy(selectedPositionId = id) }
     }
 
     fun selectCategory(id: Long) {
@@ -642,7 +681,7 @@ class RecordViewModel @Inject constructor(
         val accountId = current.selectedAccountId!!
         val toAccountId = if (current.type == 3) current.selectedToAccountId else null
         val categoryId = if (current.type == 3) null else current.selectedCategoryId
-        if (editing == null) {
+        val transactionId = if (editing == null) {
             transactionRepository.addLocal(
                 bookId = current.bookId,
                 type = current.type,
@@ -669,6 +708,23 @@ class RecordViewModel @Inject constructor(
             if (!updated) {
                 return "这笔账单已被删除，无法保存修改"
             }
+            editing.id
+        }
+
+        // 挂到投资品种上：买入还是卖出由转出/转入账户判定，用户只需要选品种。
+        // 这一步失败不影响记账本身（钱已经记对了），最多是成本没自动累计 ——
+        // 用户仍能去投资页手动改，所以不把异常抛给保存流程。
+        runCatching {
+            investmentRepository.syncTransfer(
+                bookId = current.bookId,
+                transactionId = transactionId,
+                positionId = current.selectedPositionId,
+                type = current.type,
+                amountFen = fen,
+                accountId = accountId,
+                toAccountId = toAccountId,
+                occurredAt = millis
+            )
         }
         return null
     }
@@ -721,6 +777,10 @@ class RecordViewModel @Inject constructor(
                 remark = "",
                 tags = "",
                 selectedToAccountId = null,
+                // 品种是跟着「转入账户」走的：转入账户清空了，它也必须一起清，否则会把
+                // 上一笔的品种悄悄挂到下一笔转账上
+                positions = emptyList(),
+                selectedPositionId = null,
                 // **故意**保留 selectedAccountId：记账是连着记的，钱包/银行卡通常不变，
                 // 每次都回落到第一个账户反而要多点一下。账户被删除或归档时由 load() /
                 // startEdit() 的「列表里存在才保留」逻辑兜住。

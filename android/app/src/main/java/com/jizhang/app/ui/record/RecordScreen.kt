@@ -768,6 +768,50 @@ private fun TransferSection(state: RecordViewModel.UiState, viewModel: RecordVie
         excludeId = state.selectedAccountId,
         onSelect = viewModel::selectToAccount
     )
+
+    // 转入「投资」账户且名下已有品种时，多一行「这笔钱算谁的」。
+    // 不选也能存：钱会留在投资页的「未分配」里，不让分类变成记账的门槛。
+    if (state.positions.isNotEmpty()) {
+        Spacer(Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "归属品种",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = "选填",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            state.positions.forEach { position ->
+                AppChip(
+                    label = position.name,
+                    selected = state.selectedPositionId == position.id,
+                    tint = accent,
+                    // 再点一次取消：允许「本来选了、想想还是不归类」
+                    onClick = {
+                        viewModel.selectPosition(
+                            if (state.selectedPositionId == position.id) null else position.id
+                        )
+                    }
+                )
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = "选中后这笔钱会计入该品种的成本（转入算买入、转出算卖出），之后在投资页看盈亏。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
 }
 
 /**

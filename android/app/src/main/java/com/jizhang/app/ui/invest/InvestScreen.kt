@@ -1,8 +1,10 @@
 package com.jizhang.app.ui.invest
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -15,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -46,9 +49,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -131,6 +139,7 @@ fun InvestScreen(
                                 }
                             )
                         }
+                        AllocationCard(overview.positions, hideAmounts)
                         overview.positions.forEach { position ->
                             PositionCard(
                                 position = position,
@@ -141,8 +150,9 @@ fun InvestScreen(
                         }
                         Spacer(Modifier.height(2.dp))
                         Text(
-                            text = "市值需要手动更新（每周或每月一次就够）。这里不接行情：记账是按月看的，" +
-                                "天天盯盘只会让你更容易追涨杀跌。",
+                            text = "记账时从储蓄卡转账到投资账户、顺手选中品种，成本会自动累计；" +
+                                "市值需要手动更新（每周或每月一次就够）。这里不接行情：" +
+                                "记账是按月看的，天天盯盘只会让你更容易追涨杀跌。",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -273,6 +283,85 @@ private fun UnallocatedCard(unallocatedFen: Long, hideAmounts: Boolean, onClaim:
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+    }
+}
+
+/**
+ * 品种占比环形图。
+ * <p>
+ * 只在有 2 个以上品种时出现：一个品种画个整圆不传递任何信息，纯占地方。
+ * 占比按**市值**算（未估值的品种按成本），所以它回答的是「我的钱现在压在哪儿」，
+ * 而不是「我过去买了多少」—— 后者看成本列。
+ */
+@Composable
+private fun AllocationCard(positions: List<PositionWithValue>, hideAmounts: Boolean) {
+    if (positions.size < 2) return
+    val total = positions.sumOf { it.marketValueFen }
+    if (total <= 0L) return
+    val sorted = positions.sortedByDescending { it.marketValueFen }
+
+    CardBox {
+        Text("配置", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = "按最新市值算的占比",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(12.dp))
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Canvas(modifier = Modifier.size(104.dp)) {
+                val thickness = 16.dp.toPx()
+                val inset = thickness / 2f
+                var start = -90f
+                sorted.forEachIndexed { index, position ->
+                    val sweep = position.marketValueFen.toFloat() / total * 360f
+                    if (sweep <= 0f) return@forEachIndexed
+                    drawArc(
+                        color = ringColor(index),
+                        startAngle = start,
+                        // 留 1.5° 缝隙，相邻两块颜色才分得开
+                        sweepAngle = (sweep - 1.5f).coerceAtLeast(0.5f),
+                        useCenter = false,
+                        topLeft = Offset(inset, inset),
+                        size = Size(size.width - thickness, size.height - thickness),
+                        style = Stroke(width = thickness)
+                    )
+                    start += sweep
+                }
+            }
+            Spacer(Modifier.width(16.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                sorted.forEachIndexed { index, position ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(ringColor(index))
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = position.name,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            text = shareText(position.marketValueFen.toDouble() / total),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -416,10 +505,11 @@ private fun PositionEditorDialog(
         mutableStateOf(editing?.accountId ?: accounts.firstOrNull()?.id ?: 0L)
     }
     var costText by remember {
-        // 回填输入框必须用无千分位口径，否则 toDoubleOrNull() 解析不出来
+        // 回填输入框必须用无千分位口径，否则 toDoubleOrNull() 解析不出来。
+        // 编辑时回填的是「期初成本」：转账自动累计的那部分不该被手改成静态值
         mutableStateOf(
             when {
-                editing != null -> formatAmountInput(editing.costFen)
+                editing != null -> formatAmountInput(editing.manualCostFen)
                 costPrefillFen != null && costPrefillFen > 0L -> formatAmountInput(costPrefillFen)
                 else -> ""
             }
@@ -507,12 +597,22 @@ private fun PositionEditorDialog(
                 OutlinedTextField(
                     value = costText,
                     onValueChange = { costText = it },
-                    label = { Text("投入成本（元）") },
+                    label = { Text(if (editing == null) "投入成本（元）" else "期初成本（元）") },
                     placeholder = { Text("0") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     modifier = Modifier.fillMaxWidth()
                 )
+                // 转账挂过品种时，成本里有一部分是自动累计的：说清楚，免得用户以为填错了
+                if (editing != null && editing.flowCostFen != 0L) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = "另有 ${money(editing.flowCostFen, hideAmounts)} 由转账自动累计，" +
+                            "合计 ${money(editing.costFen, hideAmounts)}。这里只填没有对应转账的部分。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 if (editing == null) {
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
@@ -696,4 +796,32 @@ private fun kindIcon(kind: Int): ImageVector = when (kind) {
     LocalInvestPosition.KIND_BOND -> Icons.Filled.AccountBalance
     LocalInvestPosition.KIND_WEALTH -> Icons.Filled.Savings
     else -> Icons.Filled.MoreHoriz
+}
+
+/**
+ * 环形图的固定色板。
+ * <p>
+ * 不用主题色：accent 在每块扇形上都用一遍，图表会退化成一片同色。
+ * 这 6 个色相在深浅两套主题下都能区分，第 7 个品种开始循环复用。
+ */
+private val RING_COLORS = listOf(
+    Color(0xFF4E9F5B),
+    Color(0xFF3D7BBF),
+    Color(0xFFC98A2E),
+    Color(0xFF8A5BB8),
+    Color(0xFF2E9AA6),
+    Color(0xFFC4557A)
+)
+
+private fun ringColor(index: Int): Color = RING_COLORS[index % RING_COLORS.size]
+
+/** 占比文案：不足 1% 时说「<1%」，别显示成 0% 让人以为这笔钱不存在 */
+private fun shareText(ratio: Double): String {
+    val percent = ratio * 100.0
+    return when {
+        percent <= 0.0 -> "0%"
+        percent < 1.0 -> "<1%"
+        percent >= 99.95 -> "100%"
+        else -> "${percent.roundToInt()}%"
+    }
 }

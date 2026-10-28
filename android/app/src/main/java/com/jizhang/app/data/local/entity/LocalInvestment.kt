@@ -98,6 +98,46 @@ data class LocalInvestValuation(
 )
 
 /**
+ * 投资成本流水：把「一笔转账」记账成「某个品种的买入 / 卖出」。
+ * <p>
+ * 为什么单独一张表而不是给 `local_transaction` 加 `positionId` 列：
+ * 加列要一路改到服务端的 `TransactionSaveDto / VO / Entity`，动的是同步协议；
+ * 而这张表纯本地，列一加就能用。代价是改/删账单时要按 [transactionId] 反查回退，
+ * 这一条在 `InvestmentRepository.syncTransfer` 里统一处理。
+ * <p>
+ * [transactionId] 唯一：一笔转账最多只能算到一个品种头上，重复记账会让成本凭空翻倍。
+ */
+@Entity(
+    tableName = "local_invest_flow",
+    indices = [
+        Index("positionId"),
+        Index("bookId"),
+        Index(value = ["transactionId"], unique = true)
+    ]
+)
+data class LocalInvestFlow(
+    @PrimaryKey val id: Long,
+    val bookId: Long,
+    val positionId: Long,
+    /** 关联的转账流水 id（`local_transaction.id`）；改/删那笔转账时按它反查 */
+    val transactionId: Long,
+    /** 1 = 买入（钱转入投资账户） 2 = 卖出（钱从投资账户转出） */
+    val side: Int,
+    /** 计入成本的金额（分） */
+    val amountFen: Long,
+    /** 发生时间：算历史时点的成本要用 */
+    val occurredAt: Long,
+    val pendingSync: Boolean = true,
+    val pendingDelete: Boolean = false,
+    val clientUpdatedAt: Long = System.currentTimeMillis()
+) {
+    companion object {
+        const val SIDE_BUY = 1
+        const val SIDE_SELL = 2
+    }
+}
+
+/**
  * 持仓 + 最新市值的只读投影（Room 查询结果，非数据库表）。
  * <p>
  * [valueFen] / [valuedAt] 为 null 表示这个品种**从未估值过**——此时一律按成本计，
@@ -110,6 +150,7 @@ data class PositionWithValue(
     val name: String,
     val code: String?,
     val kind: Int,
+    /** 总成本 = 期初成本 + 转账自动累计（买入 − 卖出） */
     val costFen: Long,
     val sharesScaled: Long?,
     val targetPercent: Int,
@@ -117,7 +158,11 @@ data class PositionWithValue(
     val note: String?,
     val archived: Boolean,
     val valueFen: Long?,
-    val valuedAt: Long?
+    val valuedAt: Long?,
+    /** 编辑弹窗回填用的「期初成本」：转账自动记的那部分不该被手改覆盖 */
+    val manualCostFen: Long = 0L,
+    /** 转账自动累计的成本（可为负：卖出多于买入时） */
+    val flowCostFen: Long = 0L
 ) {
     /** 计入总市值：没估过值就按成本计，不当作 0 */
     val marketValueFen: Long get() = valueFen ?: costFen
@@ -128,3 +173,14 @@ data class PositionWithValue(
     /** 收益率；成本为 0 时没有意义，返回 null */
     val profitRate: Double? get() = if (costFen > 0L) profitFen.toDouble() / costFen else null
 }
+
+/**
+ * 按账户汇总的持仓市值（Room 只读投影）。
+ * <p>
+ * 统计页要把投资账户的「余额（本金）」换成市值，否则浮盈永远不进净资产，
+ * FI 进度会长期偏低。没有持仓的账户不会出现在结果里，调用方回落到原余额。
+ */
+data class AccountMarketValue(
+    val accountId: Long,
+    val valueFen: Long
+)

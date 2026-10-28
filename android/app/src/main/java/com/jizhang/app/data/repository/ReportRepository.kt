@@ -5,6 +5,7 @@ import com.jizhang.app.data.local.dao.AccountDao
 import com.jizhang.app.data.local.entity.AccountWithBalance
 import com.jizhang.app.data.local.dao.BookMemberDao
 import com.jizhang.app.data.local.dao.CategoryDao
+import com.jizhang.app.data.local.dao.InvestmentDao
 import com.jizhang.app.data.local.dao.TagAmountRow
 import com.jizhang.app.data.local.dao.TransactionDao
 import com.jizhang.app.data.remote.dto.AccountAssetDto
@@ -33,12 +34,16 @@ class ReportRepository @Inject constructor(
     private val transactionDao: TransactionDao,
     private val categoryDao: CategoryDao,
     private val accountDao: AccountDao,
-    private val bookMemberDao: BookMemberDao
+    private val bookMemberDao: BookMemberDao,
+    private val investmentDao: InvestmentDao
 ) {
 
     private companion object {
         const val EXPENSE_TYPE = 1
         const val INCOME_TYPE = 2
+
+        /** 投资账户类型：余额是本金，有持仓时要换成市值 */
+        const val INVEST_ACCOUNT_TYPE = 6
 
         /** 排行默认取前几名：再多用户也不会看，反而把卡片撑长 */
         const val RANK_LIMIT = 5
@@ -448,13 +453,22 @@ class ReportRepository @Inject constructor(
      */
     suspend fun assets(bookId: Long): AssetSummary {
         val accounts = accountDao.listWithBalance(bookId)
+        // 投资账户的 balance 是「本金」——浮盈浮亏不是流水，永远不会出现在里面。
+        // 名下有持仓时换成最新市值，否则净资产长期低估，FI 进度跟着一起偏低。
+        // 没有持仓（或从未建过品种）的账户回落到原余额，行为与升级前完全一致。
+        val investValues = investmentDao.accountMarketValues(bookId)
+            .associate { it.accountId to it.valueFen }
         val items = accounts.map {
             AccountAssetDto(
                 accountId = it.id,
                 name = it.name,
                 type = it.type,
                 icon = it.icon,
-                balance = it.balance,
+                balance = if (it.type == INVEST_ACCOUNT_TYPE) {
+                    investValues[it.id] ?: it.balance
+                } else {
+                    it.balance
+                },
                 includeInTotal = it.includeInTotal
             )
         }

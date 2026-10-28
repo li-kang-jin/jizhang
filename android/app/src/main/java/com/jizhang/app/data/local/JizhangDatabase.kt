@@ -17,6 +17,7 @@ import com.jizhang.app.data.local.entity.LocalBook
 import com.jizhang.app.data.local.entity.LocalBookMember
 import com.jizhang.app.data.local.entity.LocalBudget
 import com.jizhang.app.data.local.entity.LocalCategory
+import com.jizhang.app.data.local.entity.LocalInvestFlow
 import com.jizhang.app.data.local.entity.LocalInvestPosition
 import com.jizhang.app.data.local.entity.LocalInvestValuation
 import com.jizhang.app.data.local.entity.LocalRecurringExpense
@@ -32,7 +33,8 @@ import com.jizhang.app.data.local.entity.LocalTransaction
         LocalBookMember::class,
         LocalRecurringExpense::class,
         LocalInvestPosition::class,
-        LocalInvestValuation::class
+        LocalInvestValuation::class,
+        LocalInvestFlow::class
     ],
     // v2：local_transaction 增加 pendingDelete（离线删除支持）
     // v3：local_account 改为 initialBalance（余额实时聚合）+ 本地账本模式
@@ -45,7 +47,8 @@ import com.jizhang.app.data.local.entity.LocalTransaction
     // v10：local_budget / local_recurring_expense 增加 pendingDelete（离线删除的墓碑）
     // v11：local_account 增加 includeInTotal（是否计入总资产，统计页资产口径要用）
     // v12：新增 local_invest_position / local_invest_valuation（投资持仓与估值快照）
-    version = 12,
+    // v13：新增 local_invest_flow（转账挂品种的成本流水）
+    version = 13,
     exportSchema = false
 )
 abstract class JizhangDatabase : RoomDatabase() {
@@ -318,6 +321,42 @@ abstract class JizhangDatabase : RoomDatabase() {
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS `index_local_invest_valuation_bookId` " +
                         "ON `local_invest_valuation` (`bookId`)"
+                )
+            }
+        }
+
+        /**
+         * 12 -> 13：新增 local_invest_flow（转账挂品种的成本流水）。
+         * <p>
+         * 纯新增表。`transactionId` 上的**唯一索引**是硬约束：一笔转账只能算到一个品种头上，
+         * 否则同一笔钱会被累计两次，成本与盈亏全错。
+         */
+        val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `local_invest_flow` (" +
+                        "`id` INTEGER NOT NULL PRIMARY KEY, " +
+                        "`bookId` INTEGER NOT NULL, " +
+                        "`positionId` INTEGER NOT NULL, " +
+                        "`transactionId` INTEGER NOT NULL, " +
+                        "`side` INTEGER NOT NULL, " +
+                        "`amountFen` INTEGER NOT NULL, " +
+                        "`occurredAt` INTEGER NOT NULL, " +
+                        "`pendingSync` INTEGER NOT NULL, " +
+                        "`pendingDelete` INTEGER NOT NULL, " +
+                        "`clientUpdatedAt` INTEGER NOT NULL)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_local_invest_flow_positionId` " +
+                        "ON `local_invest_flow` (`positionId`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_local_invest_flow_bookId` " +
+                        "ON `local_invest_flow` (`bookId`)"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_local_invest_flow_transactionId` " +
+                        "ON `local_invest_flow` (`transactionId`)"
                 )
             }
         }
