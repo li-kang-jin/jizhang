@@ -20,6 +20,7 @@ class SyncManager @Inject constructor(
     private val transactionRepository: TransactionRepository,
     private val ledgerRepository: LedgerRepository,
     private val budgetRepository: BudgetRepository,
+    private val investmentRepository: InvestmentRepository,
     private val bookDao: BookDao
 ) {
 
@@ -39,6 +40,7 @@ class SyncManager @Inject constructor(
         val push = pushWithRepair(bookId)
         pushPendingExtras(bookId)
         val pulled = ledgerRepository.fullPull(bookId)
+        pullExtras(bookId)
         SyncOutcome(
             pushed = push.updated,
             deleted = push.deleted,
@@ -56,6 +58,20 @@ class SyncManager @Inject constructor(
     private suspend fun pushPendingExtras(bookId: Long) {
         runCatching { budgetRepository.pushPending(bookId) }
         runCatching { budgetRepository.pushPendingRecurring(bookId) }
+        runCatching { investmentRepository.pushPending(bookId) }
+    }
+
+    /**
+     * 拉取附属数据。
+     * <p>
+     * 投资持仓不在 `syncPull` 的响应里（账户 / 分类 / 账单才是），所以单独请求一次。
+     * 必须放在 [LedgerRepository.pull] **之后**：持仓挂着 `accountId`，账户先到位才不会
+     * 出现「持仓指向一个本地还不存在的账户」，进而把未分配资金算成负数。
+     * <p>
+     * 失败不影响交易同步（属于附属数据），异常直接吞掉。
+     */
+    private suspend fun pullExtras(bookId: Long) {
+        runCatching { investmentRepository.pullRemote(bookId) }
     }
 
     /**
@@ -124,6 +140,7 @@ class SyncManager @Inject constructor(
         }
         pushPendingExtras(bookId)
         val pulled = ledgerRepository.pull(bookId)
+        pullExtras(bookId)
         return SyncOutcome(
             pushed = push.updated,
             deleted = push.deleted,

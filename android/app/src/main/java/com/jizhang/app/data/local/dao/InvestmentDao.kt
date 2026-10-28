@@ -21,10 +21,17 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface InvestmentDao {
 
-    @Query(POSITION_SELECT + "WHERE p.bookId = :bookId AND p.archived = 0 ORDER BY p.sort, p.id")
+    // pendingDelete = 1 是「已删除、等服务端确认」的墓碑：界面上必须立刻消失
+    @Query(
+        POSITION_SELECT + "WHERE p.bookId = :bookId AND p.archived = 0 AND p.pendingDelete = 0 " +
+            "ORDER BY p.sort, p.id"
+    )
     fun observeWithValue(bookId: Long): Flow<List<PositionWithValue>>
 
-    @Query(POSITION_SELECT + "WHERE p.bookId = :bookId AND p.archived = 0 ORDER BY p.sort, p.id")
+    @Query(
+        POSITION_SELECT + "WHERE p.bookId = :bookId AND p.archived = 0 AND p.pendingDelete = 0 " +
+            "ORDER BY p.sort, p.id"
+    )
     suspend fun listWithValue(bookId: Long): List<PositionWithValue>
 
     @Query("SELECT * FROM local_invest_position WHERE id = :id")
@@ -33,11 +40,15 @@ interface InvestmentDao {
     /** 某账户下的在仓品种：算「未分配资金」与删除账户时的引用检查用 */
     @Query(
         "SELECT * FROM local_invest_position " +
-            "WHERE accountId = :accountId AND archived = 0 ORDER BY sort, id"
+            "WHERE accountId = :accountId AND archived = 0 AND pendingDelete = 0 ORDER BY sort, id"
     )
     suspend fun listByAccount(accountId: Long): List<LocalInvestPosition>
 
-    @Query("SELECT COUNT(*) FROM local_invest_position WHERE accountId = :accountId")
+    /** 墓碑不算「挂着品种」，否则删掉的持仓会让账户永远删不掉 */
+    @Query(
+        "SELECT COUNT(*) FROM local_invest_position " +
+            "WHERE accountId = :accountId AND pendingDelete = 0"
+    )
     suspend fun countByAccount(accountId: Long): Int
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -121,6 +132,57 @@ interface InvestmentDao {
     /** 挂在某笔转账上的所有品种（理论上最多一条，唯一索引兜住重复） */
     @Query("SELECT positionId FROM local_invest_flow WHERE transactionId = :transactionId LIMIT 1")
     suspend fun positionIdOfTransaction(transactionId: Long): Long?
+
+    /* ==================== 同步（待推 / 合并） ==================== */
+
+    @Query(
+        "SELECT * FROM local_invest_position " +
+            "WHERE bookId = :bookId AND pendingSync = 1 AND pendingDelete = 0"
+    )
+    suspend fun listPending(bookId: Long): List<LocalInvestPosition>
+
+    @Query("SELECT * FROM local_invest_position WHERE bookId = :bookId AND pendingDelete = 1")
+    suspend fun listPendingDelete(bookId: Long): List<LocalInvestPosition>
+
+    /** 标记为待推：成本流水变了而持仓本身没变时，用这个把它顶上去（推送按持仓全量覆盖流水） */
+    @Query("UPDATE local_invest_position SET pendingSync = 1 WHERE id = :id")
+    suspend fun markPendingSync(id: Long)
+
+    @Query("UPDATE local_invest_position SET pendingSync = 0 WHERE id IN (:ids)")
+    suspend fun markSynced(ids: List<Long>)
+
+    @Query("UPDATE local_invest_position SET pendingDelete = 1 WHERE id = :id")
+    suspend fun markPendingDelete(id: Long)
+
+    @Query("DELETE FROM local_invest_position WHERE id IN (:ids)")
+    suspend fun deleteByIds(ids: List<Long>)
+
+    @Query(
+        "SELECT * FROM local_invest_valuation " +
+            "WHERE bookId = :bookId AND pendingSync = 1 AND pendingDelete = 0"
+    )
+    suspend fun listPendingValuations(bookId: Long): List<LocalInvestValuation>
+
+    @Query("UPDATE local_invest_valuation SET pendingSync = 0 WHERE id IN (:ids)")
+    suspend fun markValuationsSynced(ids: List<Long>)
+
+    @Query("DELETE FROM local_invest_valuation WHERE id IN (:ids)")
+    suspend fun deleteValuationsByIds(ids: List<Long>)
+
+    @Query("DELETE FROM local_invest_valuation WHERE positionId IN (:ids)")
+    suspend fun deleteValuationsByPositionIds(ids: List<Long>)
+
+    @Query("DELETE FROM local_invest_flow WHERE positionId IN (:ids)")
+    suspend fun deleteFlowsByPositionIds(ids: List<Long>)
+
+    /**
+     * 合并服务端流水时用 IGNORE 而不是 REPLACE。
+     * <p>
+     * `transactionId` 上有唯一索引：本机刚挂上的流水（还没推上去）如果被服务端的旧记录
+     * REPLACE 掉，成本会当场回到修改前；IGNORE 让本地的先手赢，等推送时服务端再被覆盖。
+     */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertFlowIgnore(flow: LocalInvestFlow)
 
     companion object {
         /**

@@ -292,3 +292,78 @@ COMMENT ON COLUMN t_recurring_expense.amount IS '金额（分）';
 COMMENT ON COLUMN t_recurring_expense.start_date IS '生效首日（含）';
 COMMENT ON COLUMN t_recurring_expense.end_date IS '失效日（含），空表示长期有效';
 COMMENT ON COLUMN t_recurring_expense.enabled IS '1=启用 0=停用，停用的不参与预算预留';
+
+-- ---------------------------------------------------------------------------
+-- 投资持仓（基金 / 股票 / 理财）
+-- ---------------------------------------------------------------------------
+-- 买入卖出**不在这里记**：仍然是普通的转账账单（储蓄卡 → 投资账户），
+-- 所以买股票不会让支出统计暴涨，预算与宠物建议都不受影响。
+-- 这三张表只补两个维度：钱落在哪个品种上、它现在值多少。
+--
+-- 主键由客户端生成，服务端按 id 幂等写入 —— 与 t_recurring_expense 同一套约定。
+CREATE TABLE IF NOT EXISTS t_invest_position
+(
+    id             BIGINT      PRIMARY KEY,
+    book_id        BIGINT      NOT NULL,
+    -- 挂在哪个投资账户下（t_account.type = 6）
+    account_id     BIGINT      NOT NULL,
+    name           VARCHAR(64) NOT NULL,
+    code           VARCHAR(32),
+    -- 1=股票 2=基金 3=债券 4=理财 5=其他
+    kind           SMALLINT    NOT NULL DEFAULT 2,
+    -- **期初成本**（分）：转账自动累计的部分由 t_invest_flow 表达，两者相加才是总成本
+    cost_fen       BIGINT      NOT NULL DEFAULT 0,
+    -- 份额 × 10000，可空
+    shares_scaled  BIGINT,
+    target_percent SMALLINT    NOT NULL DEFAULT 0,
+    sort           INTEGER     NOT NULL DEFAULT 0,
+    note           VARCHAR(255),
+    archived       SMALLINT    NOT NULL DEFAULT 0,
+    created_by     BIGINT,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by     BIGINT,
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted        SMALLINT    NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_invest_position_book
+    ON t_invest_position (book_id) WHERE deleted = 0;
+
+-- 估值快照：只增不改。存历史而不是只存当前值，净值曲线才能回填。
+-- valued_at 用 epoch millis：它是客户端本地产生的瞬间，转成带时区的字符串再解析会漂。
+CREATE TABLE IF NOT EXISTS t_invest_valuation
+(
+    id          BIGINT      PRIMARY KEY,
+    book_id     BIGINT      NOT NULL,
+    position_id BIGINT      NOT NULL,
+    value_fen   BIGINT      NOT NULL,
+    valued_at   BIGINT      NOT NULL,
+    created_by  BIGINT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by  BIGINT,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted     SMALLINT    NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_invest_valuation_position
+    ON t_invest_valuation (position_id);
+
+-- 成本流水：一笔转账记到了哪个品种上。
+-- **按持仓全量覆盖写入**（同步时先删后插），所以不需要删除标记。
+-- transaction_id 唯一：一笔转账最多算到一个品种头上，重复入库会让成本凭空翻倍。
+CREATE TABLE IF NOT EXISTS t_invest_flow
+(
+    id             BIGINT   PRIMARY KEY,
+    book_id        BIGINT   NOT NULL,
+    position_id    BIGINT   NOT NULL,
+    transaction_id BIGINT   NOT NULL,
+    -- 1=买入（钱转入投资账户） 2=卖出（钱从投资账户转出）
+    side           SMALLINT NOT NULL DEFAULT 1,
+    amount_fen     BIGINT   NOT NULL,
+    occurred_at    BIGINT   NOT NULL,
+    created_by     BIGINT,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by     BIGINT,
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted        SMALLINT NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_invest_flow_position ON t_invest_flow (position_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_invest_flow_transaction ON t_invest_flow (transaction_id);

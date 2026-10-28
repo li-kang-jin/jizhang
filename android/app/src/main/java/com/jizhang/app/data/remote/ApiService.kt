@@ -12,6 +12,8 @@ import com.jizhang.app.data.remote.dto.BudgetDto
 import com.jizhang.app.data.remote.dto.BudgetOverviewDto
 import com.jizhang.app.data.remote.dto.BudgetSaveDto
 import com.jizhang.app.data.remote.dto.CategoryDto
+import com.jizhang.app.data.remote.dto.InvestDataDto
+import com.jizhang.app.data.remote.dto.InvestSyncRequest
 import com.jizhang.app.data.remote.dto.CategoryReportDto
 import com.jizhang.app.data.remote.dto.CategorySaveDto
 import com.jizhang.app.data.remote.dto.InviteCreateDto
@@ -249,4 +251,19 @@ interface ApiService {
         @Path("id") id: Long,
         @Query("bookId") bookId: Long
     ): ApiResult<Unit>
+
+    /* ---------------- 投资持仓 ---------------- */
+
+    /**
+     * 全量拉取某账本的投资数据（持仓 / 估值 / 成本流水）。
+     * <p>
+     * 不做增量：一个账本的持仓几十条、估值一年几百条，全量一次几百 KB，
+     * 为它再维护一套游标和分页不值得。客户端按 id 合并且跳过未变化的记录。
+     */
+    @GET("app/invest")
+    suspend fun investData(@Query("bookId") bookId: Long): ApiResult<InvestDataDto>
+
+    /** 批量推送本地变更；服务端按客户端 id 幂等写入（同 id 重复提交视为修改） */
+    @POST("app/invest/sync")
+    suspend fun syncInvest(@Body request: InvestSyncRequest): ApiResult<Unit>
 }

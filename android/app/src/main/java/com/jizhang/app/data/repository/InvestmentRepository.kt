@@ -1,5 +1,6 @@
 package com.jizhang.app.data.repository
 
+import com.jizhang.app.data.local.JizhangDatabase
 import com.jizhang.app.data.local.dao.AccountDao
 import com.jizhang.app.data.local.dao.InvestmentDao
 import com.jizhang.app.data.local.entity.AccountWithBalance
@@ -8,8 +9,16 @@ import com.jizhang.app.data.local.entity.LocalInvestPosition
 import com.jizhang.app.data.local.entity.LocalInvestValuation
 import com.jizhang.app.data.local.entity.PositionWithValue
 import com.jizhang.app.data.local.newClientId
+import com.jizhang.app.data.prefs.TokenStore
+import com.jizhang.app.data.remote.ApiService
+import com.jizhang.app.data.remote.dto.InvestDataDto
+import com.jizhang.app.data.remote.dto.InvestFlowDto
+import com.jizhang.app.data.remote.dto.InvestPositionDto
+import com.jizhang.app.data.remote.dto.InvestSyncRequest
+import com.jizhang.app.data.remote.dto.InvestValuationDto
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -18,6 +27,14 @@ private const val ACCOUNT_TYPE_INVEST = 6
 
 /** 转账的账单类型（1=支出 2=收入 3=转账）；只有转账才可能挂到投资品种上 */
 private const val TRANSFER_TYPE = 3
+
+/**
+ * 「顺手推一次服务端」的等待上限。
+ * <p>
+ * 数据已经落在本地了，推送只是同步的一部分：断网或后端没发版时不能让保存按钮一直转圈，
+ * 超时就留给下次同步（[pushPending] 会补推）。
+ */
+private const val PUSH_TIMEOUT_MS = 2_000L
 
 /**
  * 投资总览：一次算清「投了多少、现在值多少、还有多少没分配」。
@@ -62,14 +79,25 @@ data class InvestmentOverview(
 /**
  * 投资持仓仓库。
  * <p>
- * V1 只在本机使用，不参与云同步：改这张表不影响服务端，也不必发版。
- * 表里已经按同步表的样式留好 `pendingSync` / `clientUpdatedAt` 等列，
- * 将来接 [SyncManager] 时只需加 DTO + 端点，不用再写一次数据库迁移。
+ * ### 读写路径（离线优先，与预算/固定支出同一套约定）
+ * - **读**：本地 Room 聚合，离线照常可用。
+ * - **写**：先落本地并标记 `pendingSync`，界面立刻生效；随后尽力推一次服务端（REST），
+ *   推不上去就留在待同步队列，由 [pushPending] 补推。
+ * - **删**：已经同步过的品种打**墓碑**（`pendingDelete`），界面立刻消失，推成功后再物理删 ——
+ *   否则断网时删掉的品种会在下次拉取时「复活」。从没推上去过的直接物理删。
+ * - **拉**：跨设备变更由 [mergeFromServer] 带回，本地待推的改动优先，不被服务端旧值覆盖。
+ *
+ * ### 为什么流水不推墓碑
+ * 服务端对每个持仓的流水是**全量覆盖**（先删该持仓的所有流水再插入客户端这份）。
+ * 因此本地删掉一笔流水不需要单独通知服务端，只要把持仓标记为待推，下次推送自然消失 ——
+ * 省掉一张墓碑表，也避免了「墓碑和新流水抢 `transactionId` 唯一索引」的难题。
  */
 @Singleton
 class InvestmentRepository @Inject constructor(
     private val investmentDao: InvestmentDao,
-    private val accountDao: AccountDao
+    private val accountDao: AccountDao,
+    private val tokenStore: TokenStore,
+    private val api: ApiService
 ) {
 
     fun observe(bookId: Long): Flow<InvestmentOverview> = combine(
@@ -137,6 +165,7 @@ class InvestmentRepository @Inject constructor(
         if (id == null && initialValueFen != null) {
             insertValuation(positionId, bookId, initialValueFen, now)
         }
+        tryPush(bookId)
         return positionId
     }
 
@@ -149,11 +178,13 @@ class InvestmentRepository @Inject constructor(
                 clientUpdatedAt = System.currentTimeMillis()
             )
         )
+        tryPush(existing.bookId)
     }
 
     /** 更新市值：只追加一条估值快照，不改持仓本身（历史曲线要留着） */
     suspend fun updateValue(bookId: Long, positionId: Long, valueFen: Long) {
         insertValuation(positionId, bookId, valueFen, System.currentTimeMillis())
+        tryPush(bookId)
     }
 
     private suspend fun insertValuation(positionId: Long, bookId: Long, valueFen: Long, at: Long) {
@@ -169,11 +200,22 @@ class InvestmentRepository @Inject constructor(
         )
     }
 
-    /** 删除品种：连同估值快照与成本流水一起清掉（纯本地，不保留墓碑） */
+    /**
+     * 删除品种。
+     * <p>
+     * 已经同步过的打**墓碑**（界面立刻消失，推送成功后再物理删），否则下次拉取会把它「复活」；
+     * 从没推上去过的（或纯本地账本）直接物理删，不给服务端添垃圾。
+     */
     suspend fun deletePosition(positionId: Long) {
-        investmentDao.deleteFlowsOf(positionId)
-        investmentDao.deleteValuationsOf(positionId)
-        investmentDao.deleteById(positionId)
+        val existing = investmentDao.findById(positionId) ?: return
+        if (existing.pendingSync || !useRemote(existing.bookId)) {
+            investmentDao.deleteFlowsOf(positionId)
+            investmentDao.deleteValuationsOf(positionId)
+            investmentDao.deleteById(positionId)
+        } else {
+            investmentDao.markPendingDelete(positionId)
+        }
+        tryPush(existing.bookId)
     }
 
     /** 某账户下还挂着几个品种：删除投资账户前要先拦下来 */
@@ -208,8 +250,15 @@ class InvestmentRepository @Inject constructor(
         toAccountId: Long?,
         occurredAt: Long
     ): Boolean {
+        // 改账单时可能换了品种：原来挂的那个也要标回待推，否则服务端还留着旧流水
+        val previous = investmentDao.findFlowByTransaction(transactionId)
         investmentDao.deleteFlowByTransaction(transactionId)
-        if (positionId == null || type != TRANSFER_TYPE || amountFen <= 0L) return false
+        previous?.let { investmentDao.markPendingSync(it.positionId) }
+
+        if (positionId == null || type != TRANSFER_TYPE || amountFen <= 0L) {
+            tryPush(bookId)
+            return false
+        }
         val position = investmentDao.findById(positionId) ?: return false
         val side = investSideOf(
             positionAccountId = position.accountId,
@@ -228,19 +277,209 @@ class InvestmentRepository @Inject constructor(
                 clientUpdatedAt = System.currentTimeMillis()
             )
         )
+        // 服务端按持仓「全量覆盖」流水，所以只要把持仓标回待推，这次增删就会被一并带上去
+        investmentDao.markPendingSync(positionId)
+        tryPush(bookId)
         return true
     }
 
     /** 账单被删除时解除关联：成本必须跟着回退，否则删了账成本还挂着 */
     suspend fun detachTransfer(transactionId: Long) {
+        val previous = investmentDao.findFlowByTransaction(transactionId) ?: return
         investmentDao.deleteFlowByTransaction(transactionId)
+        investmentDao.markPendingSync(previous.positionId)
+        tryPush(previous.bookId)
     }
 
     /** 清空账本时一并清掉成本流水（账单没了，挂在上面的成本也没有意义） */
     suspend fun clearFlows(bookId: Long) {
         investmentDao.deleteFlowsOfBook(bookId)
     }
+
+    /* ==================== 与同步协作 ==================== */
+
+    /**
+     * 把本地待同步的投资数据补推到服务端。
+     * <p>
+     * 一个请求带齐三张表：服务端先删本批持仓的流水再按这份重建，所以客户端永远只推
+     * 「当前状态」，不需要为流水单独维护删除标记。
+     * <p>
+     * 单条失败不影响交易同步（属于附属数据），异常与业务失败一律吞掉并返回 0，
+     * 记录留在 `pendingSync` 里等下一轮。
+     *
+     * @return 成功推送（含删除、含估值）的条数
+     */
+    suspend fun pushPending(bookId: Long): Int {
+        if (!useRemote(bookId)) return 0
+        val pendingDelete = investmentDao.listPendingDelete(bookId)
+        val pending = investmentDao.listPending(bookId)
+        val pendingValues = investmentDao.listPendingValuations(bookId)
+        if (pending.isEmpty() && pendingDelete.isEmpty() && pendingValues.isEmpty()) return 0
+
+        val request = InvestSyncRequest(
+            bookId = bookId,
+            positions = pending.map { it.toDto() },
+            valuations = pendingValues.map { it.toDto() },
+            // 每个待推持仓带上它的**全部**流水：删掉的那几笔自然不会出现在请求里
+            flows = pending.flatMap { position ->
+                investmentDao.listFlows(position.id).map { it.toDto() }
+            },
+            deletedPositionIds = pendingDelete.map { it.id }
+        )
+        val result = runCatching { api.syncInvest(request) }.getOrNull() ?: return 0
+        if (!result.isSuccess) return 0
+
+        val deletedIds = pendingDelete.map { it.id }
+        if (deletedIds.isNotEmpty()) {
+            // 服务端已级联删掉它们的估值与流水，本地跟着清干净
+            investmentDao.deleteValuationsByPositionIds(deletedIds)
+            investmentDao.deleteFlowsByPositionIds(deletedIds)
+            investmentDao.deleteByIds(deletedIds)
+        }
+        if (pending.isNotEmpty()) {
+            investmentDao.markSynced(pending.map { it.id })
+        }
+        if (pendingValues.isNotEmpty()) {
+            investmentDao.markValuationsSynced(pendingValues.map { it.id })
+        }
+        return pending.size + deletedIds.size + pendingValues.size
+    }
+
+    /**
+     * 合并拉取回来的投资数据。
+     * <p>
+     * 本地待推的改动优先：等 [pushPending] 推上去之后再接受服务端版本，
+     * 否则刚建好的品种会被服务端的旧值盖掉。
+     *
+     * @return 实际写入本地的条数
+     */
+    suspend fun mergeFromServer(bookId: Long, data: InvestDataDto): Int {
+        if (data.isEmpty) return 0
+        val pendingIds = investmentDao.listPending(bookId).mapTo(mutableSetOf()) { it.id }
+        val pendingDeleteIds = investmentDao.listPendingDelete(bookId).mapTo(mutableSetOf()) { it.id }
+        val pendingValueIds = investmentDao.listPendingValuations(bookId).mapTo(mutableSetOf()) { it.id }
+        var changed = 0
+
+        for (dto in data.positions) {
+            if (dto.id in pendingIds || dto.id in pendingDeleteIds) continue
+            investmentDao.upsert(dto.toLocal(bookId))
+            changed++
+        }
+        for (dto in data.valuations) {
+            if (dto.id in pendingValueIds) continue
+            // 估值只增不改，同 id 重复写入是幂等的
+            investmentDao.insertValuation(dto.toLocal(bookId))
+            changed++
+        }
+        for (dto in data.flows) {
+            // IGNORE：本地刚挂上的流水不能被服务端的旧记录顶掉（transactionId 上有唯一索引）
+            investmentDao.insertFlowIgnore(dto.toLocal(bookId))
+            changed++
+        }
+        return changed
+    }
+
+    /**
+     * 拉取服务端的投资数据并合并。
+     * <p>
+     * 后端没发版（接口 404）或断网时返回 0，不影响本地使用 ——
+     * 投资模块在服务端就绪前必须是「纯本地也能跑」的状态，否则一次发版事故会让整页打不开。
+     */
+    suspend fun pullRemote(bookId: Long): Int {
+        if (!useRemote(bookId)) return 0
+        val result = runCatching { api.investData(bookId) }.getOrNull() ?: return 0
+        val data = result.data ?: return 0
+        return mergeFromServer(bookId, data)
+    }
+
+    /** 尽力推一次：失败不影响本地，留给下次同步 */
+    private suspend fun tryPush(bookId: Long) {
+        if (!useRemote(bookId)) return
+        withTimeoutOrNull(PUSH_TIMEOUT_MS) { runCatching { pushPending(bookId) } }
+    }
+
+    /** 本地账本 / 未登录时不同步：所有写入只留在本机 */
+    private suspend fun useRemote(bookId: Long): Boolean =
+        bookId != JizhangDatabase.LOCAL_BOOK_ID && !tokenStore.accessToken().isNullOrBlank()
 }
+
+/* ==================== DTO 映射 ==================== */
+
+private fun LocalInvestPosition.toDto() = InvestPositionDto(
+    id = id,
+    bookId = bookId,
+    accountId = accountId,
+    name = name,
+    code = code,
+    kind = kind,
+    costFen = costFen,
+    sharesScaled = sharesScaled,
+    targetPercent = targetPercent,
+    sort = sort,
+    note = note,
+    archived = archived
+)
+
+private fun LocalInvestValuation.toDto() = InvestValuationDto(
+    id = id,
+    bookId = bookId,
+    positionId = positionId,
+    valueFen = valueFen,
+    valuedAt = valuedAt
+)
+
+private fun LocalInvestFlow.toDto() = InvestFlowDto(
+    id = id,
+    bookId = bookId,
+    positionId = positionId,
+    transactionId = transactionId,
+    side = side,
+    amountFen = amountFen,
+    occurredAt = occurredAt
+)
+
+/** 服务端版本落本地时 `pendingSync` 必须是 false，否则下次又被推一遍 */
+private fun InvestPositionDto.toLocal(bookId: Long) = LocalInvestPosition(
+    id = id,
+    bookId = bookId,
+    accountId = accountId,
+    name = name,
+    code = code,
+    kind = kind,
+    costFen = costFen,
+    sharesScaled = sharesScaled,
+    targetPercent = targetPercent,
+    sort = sort,
+    note = note,
+    archived = archived,
+    pendingSync = false,
+    pendingDelete = false,
+    clientUpdatedAt = System.currentTimeMillis()
+)
+
+private fun InvestValuationDto.toLocal(bookId: Long) = LocalInvestValuation(
+    id = id,
+    bookId = bookId,
+    positionId = positionId,
+    valueFen = valueFen,
+    valuedAt = valuedAt,
+    pendingSync = false,
+    pendingDelete = false,
+    clientUpdatedAt = System.currentTimeMillis()
+)
+
+private fun InvestFlowDto.toLocal(bookId: Long) = LocalInvestFlow(
+    id = id,
+    bookId = bookId,
+    positionId = positionId,
+    transactionId = transactionId,
+    side = side,
+    amountFen = amountFen,
+    occurredAt = occurredAt,
+    pendingSync = false,
+    pendingDelete = false,
+    clientUpdatedAt = System.currentTimeMillis()
+)
 
 /**
  * 判定一笔转账相对某个品种是买入还是卖出。
