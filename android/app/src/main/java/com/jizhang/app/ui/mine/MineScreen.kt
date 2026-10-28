@@ -414,6 +414,8 @@ fun MineScreen(
     onOpenBooks: () -> Unit,
     /** 「财务自由测算」入口：全屏页挂在 MainScreen 根部 */
     onOpenWealth: () -> Unit = {},
+    /** 「投资持仓」入口：同样挂在 MainScreen 根部 */
+    onOpenInvest: () -> Unit = {},
     importDone: Int,
     onLoginChanged: (String?) -> Unit,
     onLoggedOut: () -> Unit,
@@ -532,7 +534,8 @@ fun MineScreen(
                 Text("财富规划", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    text = "用账本里的真实支出推算 FI 资产与达标概率：不是设一个目标数字，而是看「按现在的节奏还差多远」。",
+                    text = "用账本里的真实支出推算 FI 资产与达标概率：不是设一个目标数字，" +
+                        "而是看「按现在的节奏还差多远」。投资持仓则回答「钱押在哪些品种上、现在值多少」。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -543,6 +546,14 @@ fun MineScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("财务自由测算")
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = onOpenInvest,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("投资持仓")
                 }
             }
         }

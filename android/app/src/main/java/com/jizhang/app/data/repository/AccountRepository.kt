@@ -2,6 +2,7 @@ package com.jizhang.app.data.repository
 
 import com.jizhang.app.data.local.JizhangDatabase
 import com.jizhang.app.data.local.dao.AccountDao
+import com.jizhang.app.data.local.dao.InvestmentDao
 import com.jizhang.app.data.local.entity.AccountWithBalance
 import com.jizhang.app.data.local.entity.LocalAccount
 import com.jizhang.app.data.prefs.TokenStore
@@ -27,7 +28,8 @@ class AccountRepository @Inject constructor(
     private val tokenStore: TokenStore,
     private val api: ApiService,
     private val categoryRepository: CategoryRepository,
-    private val transactionRepository: TransactionRepository
+    private val transactionRepository: TransactionRepository,
+    private val investmentDao: InvestmentDao
 ) {
 
     fun observeAccounts(bookId: Long): Flow<List<AccountWithBalance>> =
@@ -194,6 +196,11 @@ class AccountRepository @Inject constructor(
         val used = transactionRepository.countByAccount(id)
         if (used > 0) {
             error("这个账户下还有 $used 笔账单：先把它们改到别的账户，或者改成「归档」停用")
+        }
+        // 投资品种挂在账户上：账户一删，持仓就变成孤儿（未分配资金会算成负数），先拦下来
+        val positions = investmentDao.countByAccount(id)
+        if (positions > 0) {
+            error("这个账户下还挂着 $positions 个投资品种：先去「投资」页删掉或归档它们，再删账户")
         }
         // 本地账本 / 导入生成的账户在服务端不存在，直接删本地，否则会报「账户不存在」
         val bookId = accountDao.findById(id)?.bookId

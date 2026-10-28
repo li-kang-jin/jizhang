@@ -32,8 +32,10 @@ import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.Insights
+import androidx.compose.material.icons.filled.TrendingUp
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -168,6 +170,8 @@ fun ReportScreen(
     onOpenAccounts: (() -> Unit)? = null,
     /** 「财务自由」入口：把净资产换成一个"还差多远"的进度 */
     onOpenWealth: (() -> Unit)? = null,
+    /** 「投资」入口：持仓品种与市值（资产分布卡片底部） */
+    onOpenInvest: (() -> Unit)? = null,
     /** 点分类 / 账户 / 标签看明细：切到账单页并带上筛选条件 */
     onOpenBills: (BillPreset) -> Unit = {},
     /** 日历卡片的「在日历里按月翻看」：切到日历 Tab */
@@ -311,7 +315,14 @@ fun ReportScreen(
                             onOpenTag = { openBills(keyword = it) }
                         )
                     }
-                    item { AssetCard(state.assets, hideAmounts, onOpenAccounts) }
+                    item {
+                        AssetCard(
+                            assets = state.assets,
+                            hideAmounts = hideAmounts,
+                            onManage = onOpenAccounts,
+                            onOpenInvest = onOpenInvest
+                        )
+                    }
                     state.habit?.let { habit ->
                         item {
                             HabitCard(
@@ -2571,8 +2582,11 @@ private fun MemberCard(
 private fun AssetCard(
     assets: AssetSummary,
     hideAmounts: Boolean,
-    onManage: (() -> Unit)?
+    onManage: (() -> Unit)?,
+    onOpenInvest: (() -> Unit)? = null
 ) {
+    // 投资账户（type = 6）：有才显示持仓入口，没投资账户的用户不该被这个入口打扰
+    val hasInvestAccount = assets.accounts.any { it.type == 6 && it.includeInTotal == 1 }
     CardBox {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("资产分布", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
@@ -2665,6 +2679,40 @@ private fun AssetCard(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+
+        if (hasInvestAccount && onOpenInvest != null) {
+            Spacer(Modifier.height(8.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable(onClick = onOpenInvest)
+                    .padding(vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.TrendingUp,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = AppColors.accent
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("投资持仓", style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.weight(1f))
+                Text(
+                    text = "品种与市值",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Icon(
+                    imageVector = Icons.Filled.ChevronRight,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }

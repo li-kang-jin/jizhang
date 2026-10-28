@@ -8,6 +8,7 @@ import com.jizhang.app.data.local.dao.BookDao
 import com.jizhang.app.data.local.dao.BookMemberDao
 import com.jizhang.app.data.local.dao.BudgetDao
 import com.jizhang.app.data.local.dao.CategoryDao
+import com.jizhang.app.data.local.dao.InvestmentDao
 import com.jizhang.app.data.local.dao.RecurringExpenseDao
 import com.jizhang.app.data.local.dao.TransactionDao
 import dagger.Module
@@ -36,7 +37,8 @@ object DatabaseModule {
                 JizhangDatabase.MIGRATION_7_8,
                 JizhangDatabase.MIGRATION_8_9,
                 JizhangDatabase.MIGRATION_9_10,
-                JizhangDatabase.MIGRATION_10_11
+                JizhangDatabase.MIGRATION_10_11,
+                JizhangDatabase.MIGRATION_11_12
             )
             .fallbackToDestructiveMigration()
             .build()
@@ -62,4 +64,7 @@ object DatabaseModule {
 
     @Provides
     fun provideBookMemberDao(database: JizhangDatabase): BookMemberDao = database.bookMemberDao()
+
+    @Provides
+    fun provideInvestmentDao(database: JizhangDatabase): InvestmentDao = database.investmentDao()
 }

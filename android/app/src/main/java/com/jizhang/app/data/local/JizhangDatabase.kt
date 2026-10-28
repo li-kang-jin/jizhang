@@ -9,6 +9,7 @@ import com.jizhang.app.data.local.dao.BookDao
 import com.jizhang.app.data.local.dao.BookMemberDao
 import com.jizhang.app.data.local.dao.BudgetDao
 import com.jizhang.app.data.local.dao.CategoryDao
+import com.jizhang.app.data.local.dao.InvestmentDao
 import com.jizhang.app.data.local.dao.RecurringExpenseDao
 import com.jizhang.app.data.local.dao.TransactionDao
 import com.jizhang.app.data.local.entity.LocalAccount
@@ -16,6 +17,8 @@ import com.jizhang.app.data.local.entity.LocalBook
 import com.jizhang.app.data.local.entity.LocalBookMember
 import com.jizhang.app.data.local.entity.LocalBudget
 import com.jizhang.app.data.local.entity.LocalCategory
+import com.jizhang.app.data.local.entity.LocalInvestPosition
+import com.jizhang.app.data.local.entity.LocalInvestValuation
 import com.jizhang.app.data.local.entity.LocalRecurringExpense
 import com.jizhang.app.data.local.entity.LocalTransaction
 
@@ -27,7 +30,9 @@ import com.jizhang.app.data.local.entity.LocalTransaction
         LocalBudget::class,
         LocalBook::class,
         LocalBookMember::class,
-        LocalRecurringExpense::class
+        LocalRecurringExpense::class,
+        LocalInvestPosition::class,
+        LocalInvestValuation::class
     ],
     // v2：local_transaction 增加 pendingDelete（离线删除支持）
     // v3：local_account 改为 initialBalance（余额实时聚合）+ 本地账本模式
@@ -39,7 +44,8 @@ import com.jizhang.app.data.local.entity.LocalTransaction
     // v9：local_account 增加 note / archived（账户备注与归档停用）
     // v10：local_budget / local_recurring_expense 增加 pendingDelete（离线删除的墓碑）
     // v11：local_account 增加 includeInTotal（是否计入总资产，统计页资产口径要用）
-    version = 11,
+    // v12：新增 local_invest_position / local_invest_valuation（投资持仓与估值快照）
+    version = 12,
     exportSchema = false
 )
 abstract class JizhangDatabase : RoomDatabase() {
@@ -57,6 +63,8 @@ abstract class JizhangDatabase : RoomDatabase() {
     abstract fun bookDao(): BookDao
 
     abstract fun bookMemberDao(): BookMemberDao
+
+    abstract fun investmentDao(): InvestmentDao
 
     companion object {
         const val NAME = "jizhang.db"
@@ -251,6 +259,65 @@ abstract class JizhangDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
                     "ALTER TABLE `local_account` ADD COLUMN `includeInTotal` INTEGER NOT NULL DEFAULT 1"
+                )
+            }
+        }
+
+        /**
+         * 11 -> 12：新增投资持仓与估值快照两张表。
+         * <p>
+         * 纯新增表，不动既有数据。投资模块当前**只在本机使用**，不参与同步
+         * （`pendingSync` 等列先留着，将来接 SyncManager 时不用再改表）。
+         */
+        val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // 列定义必须与 LocalInvestPosition 严格一致：Room 在迁移后会比对表结构，
+                // 多写一个 DEFAULT 而与实体声明不符，就会在升级那一刻崩溃
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `local_invest_position` (" +
+                        "`id` INTEGER NOT NULL PRIMARY KEY, " +
+                        "`bookId` INTEGER NOT NULL, " +
+                        "`accountId` INTEGER NOT NULL, " +
+                        "`name` TEXT NOT NULL, " +
+                        "`code` TEXT, " +
+                        "`kind` INTEGER NOT NULL, " +
+                        "`costFen` INTEGER NOT NULL, " +
+                        "`sharesScaled` INTEGER, " +
+                        "`targetPercent` INTEGER NOT NULL, " +
+                        "`sort` INTEGER NOT NULL, " +
+                        "`note` TEXT, " +
+                        "`archived` INTEGER NOT NULL, " +
+                        "`pendingSync` INTEGER NOT NULL, " +
+                        "`pendingDelete` INTEGER NOT NULL, " +
+                        "`clientUpdatedAt` INTEGER NOT NULL, " +
+                        "`serverUpdatedAt` INTEGER)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_local_invest_position_bookId` " +
+                        "ON `local_invest_position` (`bookId`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_local_invest_position_accountId` " +
+                        "ON `local_invest_position` (`accountId`)"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `local_invest_valuation` (" +
+                        "`id` INTEGER NOT NULL PRIMARY KEY, " +
+                        "`bookId` INTEGER NOT NULL, " +
+                        "`positionId` INTEGER NOT NULL, " +
+                        "`valueFen` INTEGER NOT NULL, " +
+                        "`valuedAt` INTEGER NOT NULL, " +
+                        "`pendingSync` INTEGER NOT NULL, " +
+                        "`pendingDelete` INTEGER NOT NULL, " +
+                        "`clientUpdatedAt` INTEGER NOT NULL)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_local_invest_valuation_positionId` " +
+                        "ON `local_invest_valuation` (`positionId`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_local_invest_valuation_bookId` " +
+                        "ON `local_invest_valuation` (`bookId`)"
                 )
             }
         }

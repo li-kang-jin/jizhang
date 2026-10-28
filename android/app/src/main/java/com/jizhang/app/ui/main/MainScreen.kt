@@ -63,6 +63,7 @@ import com.jizhang.app.ui.budget.RecurringExpenseDialog
 import com.jizhang.app.ui.calendar.CalendarScreen
 import com.jizhang.app.ui.category.CategoryListDialog
 import com.jizhang.app.ui.importer.ImportDialog
+import com.jizhang.app.ui.invest.InvestScreen
 import com.jizhang.app.ui.mine.MineScreen
 import com.jizhang.app.ui.record.RecordScreen
 import com.jizhang.app.ui.report.BudgetDialog
@@ -93,6 +94,8 @@ fun MainScreen(appViewModel: AppViewModel) {
     var showRecurring by remember { mutableStateOf(false) }
     // 财务自由页：从统计页的净资产行或「我的」进入，属于全局覆盖层
     var showWealthPlan by remember { mutableStateOf(false) }
+    // 投资页：统计页资产分布卡片底部 / 「我的」进入
+    var showInvest by remember { mutableStateOf(false) }
     // 财富页里改过假设 → +1，统计页的进度条按新口径重算
     var wealthVersion by remember { mutableIntStateOf(0) }
     // 非空表示账户详情覆盖层打开着（账户管理页点某一行进来）
@@ -273,6 +276,7 @@ fun MainScreen(appViewModel: AppViewModel) {
                     wealthVersion = wealthVersion,
                     onOpenAccounts = { showAccounts = true },
                     onOpenWealth = { showWealthPlan = true },
+                    onOpenInvest = { showInvest = true },
                     onOpenBills = { preset ->
                         pendingBillPreset = preset
                         tab = 0
@@ -301,6 +305,7 @@ fun MainScreen(appViewModel: AppViewModel) {
                     onOpenImport = { showImport = true },
                     onOpenBooks = { showBooks = true },
                     onOpenWealth = { showWealthPlan = true },
+                    onOpenInvest = { showInvest = true },
                     importDone = importDone,
                     onLoginChanged = { tip ->
                         appViewModel.onLoggedIn(tip)
@@ -360,6 +365,20 @@ fun MainScreen(appViewModel: AppViewModel) {
                 showWealthPlan = false
                 wealthVersion++
             }
+        )
+    }
+
+    if (showInvest) {
+        InvestScreen(
+            bookId = state.bookId,
+            hideAmounts = state.hideAmounts,
+            // 投资页空状态的出口：先收起自己，再把资产管理叠上来。
+            // 两个覆盖层同时挂着的层级顺序不好保证，退一步换确定性。
+            onOpenAccounts = {
+                showInvest = false
+                showAccounts = true
+            },
+            onDismiss = { showInvest = false }
         )
     }
 
