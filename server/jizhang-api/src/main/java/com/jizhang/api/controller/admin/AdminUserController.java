@@ -14,6 +14,7 @@ import jakarta.validation.constraints.Min;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -45,5 +46,12 @@ public class AdminUserController {
     public Result<UserVO> updateStatus(@PathVariable Long id,
                                        @RequestParam @Min(0) @Max(1) Integer status) {
         return Result.success(adminService.updateUserStatus(id, status));
+    }
+
+    @Operation(summary = "重置用户密码",
+            description = "生成一次性临时密码并在本次响应里返回，服务端只存哈希；用户登录后应自行修改")
+    @PostMapping("/{id}/reset-password")
+    public Result<String> resetPassword(@PathVariable Long id) {
+        return Result.success(adminService.resetUserPassword(id));
     }
 }

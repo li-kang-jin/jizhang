@@ -62,10 +62,42 @@ data class AccountAmountRow(
     val txCount: Long
 )
 
-/** 账户被用过的次数：记账页只铺三个常用账户，靠它排序 */
-data class AccountUsageRow(
+/**
+ * 一笔账单用到的账户（转账时要看两边）：记账页只铺三个常用账户，靠它统计频次。
+ * <p>
+ * 只取统计需要的三列，不把整行账单捞出来 —— 最近 N 笔可能是几百行，没必要。
+ */
+data class AccountUseRow(
+    /** 账户方（转出方） */
     val accountId: Long,
-    val cnt: Long
+    /** 转入方，只有转账有 */
+    val toAccountId: Long?,
+    /** 1=支出 2=收入 3=转账 */
+    val type: Int
+)
+
+/**
+ * 分类的用量：笔数与金额合计。
+ * <p>
+ * 记账页只用 [cnt]（挑默认分类），分类管理页两个都用：金额更能说明「这个分类值不值得留」，
+ * 一笔 3000 的房租和一笔记 3 元的补差分类，笔数一样时看金额才知道该合并哪个。
+ */
+data class CategoryUsageRow(
+    val categoryId: Long,
+    val cnt: Long,
+    val total: Long
+)
+
+/**
+ * 一条带备注或标签的历史账单（只取猜分类需要的几列），记账页据此把备注 / 标签映射回分类。
+ * <p>
+ * 两列都可空：只要有一边有内容就够用（用户可能只打标签、从不写备注）。
+ */
+data class NoteRow(
+    val remark: String?,
+    val tags: String?,
+    val categoryId: Long,
+    val tradeTime: Long
 )
 
 /** 按星期聚合（0=周日 … 6=周六），不含转账 */
@@ -130,20 +162,65 @@ interface TransactionDao {
     suspend fun recentTagsByCategory(bookId: Long, categoryId: Long, limit: Int): List<String>
 
     /**
-     * 每个账户被用过的次数，记账页据此只铺三个常用账户。
+     * 最近若干笔账单用到的账户，记账页据此算「常用账户」。
      * <p>
-     * 转出方记在 `accountId`、转入方记在 `toAccountId`，两边都算使用（否则常收款的账户永远排不上）。
-     * 排序交给 Kotlin：SQL 只负责聚合。
+     * 只取最近一段（按记账时间倒序）而不是全历史：半年前用得多的卡现在早就不用了，
+     * 全历史计数会让它长期霸着三个芯片的位置。转出方与转入方两列原样返回，
+     * 由调用方决定都算一次使用（否则常收款的账户永远排不上）；聚合与排序都交给 Kotlin。
      */
     @Query(
-        "SELECT accountId, COUNT(*) AS cnt FROM local_transaction " +
-            "WHERE bookId = :bookId AND pendingDelete = 0 GROUP BY accountId " +
-            "UNION ALL " +
-            "SELECT toAccountId AS accountId, COUNT(*) AS cnt FROM local_transaction " +
-            "WHERE bookId = :bookId AND pendingDelete = 0 AND type = 3 AND toAccountId IS NOT NULL " +
-            "GROUP BY toAccountId"
+        "SELECT accountId, toAccountId, type FROM local_transaction " +
+            "WHERE bookId = :bookId AND pendingDelete = 0 " +
+            "ORDER BY tradeTime DESC, id DESC LIMIT :limit"
     )
-    suspend fun accountUsage(bookId: Long): List<AccountUsageRow>
+    suspend fun recentAccountUses(bookId: Long, limit: Int): List<AccountUseRow>
+
+    /**
+     * 每个分类的用量（笔数 + 金额合计，按收支类型分开）。
+     * <p>
+     * 记账页只用笔数挑默认分类，分类管理页两个都要（见 [CategoryUsageRow]）。
+     * 只聚合、不排序：选谁当默认由调用方按自己的列表顺序决胜，SQL 里排序反而会
+     * 让「次数相同时保持分类管理里的手工顺序」这条规则失效。
+     */
+    @Query(
+        "SELECT categoryId, COUNT(*) AS cnt, COALESCE(SUM(amount), 0) AS total " +
+            "FROM local_transaction WHERE bookId = :bookId AND pendingDelete = 0 AND type = :type " +
+            "AND categoryId IS NOT NULL GROUP BY categoryId"
+    )
+    suspend fun categoryUsage(bookId: Long, type: Int): List<CategoryUsageRow>
+
+    /**
+     * 把某个分类下的账单整体改到另一个分类（分类合并用）。
+     * <p>
+     * 必须重新打上 `pendingSync`：合并是一次真实的账单修改，登录状态下要靠常规同步推到服务端。
+     * `clientUpdatedAt` 一起更新，否则服务端按「谁更新」判断冲突时会把这批旧时间戳当成过期数据。
+     * 只动未删除的账单：已标记删除的行不参与统计，也不需要再推一次。
+     */
+    @Query(
+        "UPDATE local_transaction SET categoryId = :toCategoryId, pendingSync = 1, " +
+            "clientUpdatedAt = :now " +
+            "WHERE bookId = :bookId AND categoryId = :fromCategoryId AND pendingDelete = 0"
+    )
+    suspend fun reassignCategory(
+        bookId: Long,
+        fromCategoryId: Long,
+        toCategoryId: Long,
+        now: Long
+    ): Int
+
+    /**
+     * 最近若干条带备注或标签的账单，记账页用它做「备注 / 标签 → 分类」的猜测。
+     * <p>
+     * 只看备注、标签与它们当时落在哪个分类，「金额」之类的列一概不读。
+     * 备注和标签有一边非空即可：不少用户只打标签、从不写备注，按备注单边过滤会让这批人永远猜不出来。
+     */
+    @Query(
+        "SELECT remark, tags, categoryId, tradeTime FROM local_transaction " +
+            "WHERE bookId = :bookId AND pendingDelete = 0 AND categoryId IS NOT NULL " +
+            "AND ((remark IS NOT NULL AND remark != '') OR (tags IS NOT NULL AND tags != '')) " +
+            "ORDER BY tradeTime DESC, id DESC LIMIT :limit"
+    )
+    suspend fun recentNotes(bookId: Long, limit: Int): List<NoteRow>
 
     /**
      * 最近记过的几笔账（最新在前），供记账页「再来一笔」照抄。
@@ -391,6 +468,18 @@ interface TransactionDao {
     )
     suspend fun minTradeTime(bookId: Long): Long?
 
+    /**
+     * 区间内某个分类的笔数（左闭右开，按账本隔离）。
+     * <p>
+     * 与上面那个按分类查引用的 [countByCategory] 分开命名：财富页用它判断区间里有没有
+     * 「余额调整」这类一次性校准，好在算收益时剔掉——一笔人工校准不是市场涨跌。
+     */
+    @Query(
+        "SELECT COUNT(*) FROM local_transaction WHERE bookId = :bookId AND pendingDelete = 0 " +
+            "AND tradeTime >= :start AND tradeTime < :end AND categoryId = :categoryId"
+    )
+    suspend fun countByCategoryInRange(bookId: Long, start: Long, end: Long, categoryId: Long): Int
+
     /** 按自然月聚合（年视图的 12 根柱），period 为 yyyy-MM */
     @Query(
         "SELECT strftime('%Y-%m', tradeTime / 1000, 'unixepoch', 'localtime') AS period, " +
@@ -400,6 +489,28 @@ interface TransactionDao {
             "AND tradeTime >= :start AND tradeTime < :end GROUP BY period ORDER BY period"
     )
     suspend fun sumByMonth(bookId: Long, start: Long, end: Long): List<PeriodAmountRow>
+
+    /**
+     * 按自然月聚合，排除某个分类。
+     * <p>
+     * 财富规划用近 24 个月的样本估年支出，必须剔掉「余额调整」：
+     * 一次 5000 元的余额校准会把年支出拉高一大截，FI 数字跟着虚高。
+     */
+    @Query(
+        "SELECT strftime('%Y-%m', tradeTime / 1000, 'unixepoch', 'localtime') AS period, " +
+            "COALESCE(SUM(CASE WHEN type = 2 THEN amount ELSE 0 END), 0) AS income, " +
+            "COALESCE(SUM(CASE WHEN type = 1 THEN amount ELSE 0 END), 0) AS expense " +
+            "FROM local_transaction WHERE bookId = :bookId AND pendingDelete = 0 " +
+            "AND tradeTime >= :start AND tradeTime < :end " +
+            "AND (categoryId IS NULL OR categoryId != :excludeCategoryId) " +
+            "GROUP BY period ORDER BY period"
+    )
+    suspend fun sumByMonthExcluding(
+        bookId: Long,
+        start: Long,
+        end: Long,
+        excludeCategoryId: Long
+    ): List<PeriodAmountRow>
 
     /** 按小时聚合（日视图的 24 根柱），period 为 00-23 */
     @Query(

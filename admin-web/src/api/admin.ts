@@ -54,6 +54,11 @@ export function updateUserStatus(id: string, status: number): Promise<UserInfo> 
   return put<UserInfo>(`/admin/users/${id}/status`, null, { status })
 }
 
+/** 重置用户密码：服务端只返回这一次明文临时密码，关掉弹窗就再也看不到了 */
+export function resetUserPassword(id: string): Promise<string> {
+  return post<string>(`/admin/users/${id}/reset-password`)
+}
+
 /* ---------------- 账本 ---------------- */
 
 export interface BookQuery {

@@ -6,8 +6,13 @@ import com.jizhang.app.data.local.entity.LocalAccount
 import com.jizhang.app.data.local.entity.LocalCategory
 import com.jizhang.app.data.local.entity.LocalTransaction
 import com.jizhang.app.data.prefs.SettingsStore
+import com.jizhang.app.data.prefs.SuggestionEvent
+import com.jizhang.app.data.repository.AccountRepository
+import com.jizhang.app.data.repository.CategoryGuess
 import com.jizhang.app.data.repository.CategoryRepository
+import com.jizhang.app.data.repository.CategorySuggester
 import com.jizhang.app.data.repository.LedgerRepository
+import com.jizhang.app.data.repository.NoteSample
 import com.jizhang.app.data.repository.TransactionRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
@@ -60,7 +65,14 @@ class RecordViewModel @Inject constructor(
         /** 非空表示正在改这笔账单（保存时走更新而不是新增） */
         val editing: LocalTransaction? = null,
         /** 标签的快捷候选：历史高频标签在前，后面跟几个内置兜底 */
-        val tagSuggestions: List<String> = emptyList()
+        val tagSuggestions: List<String> = emptyList(),
+        /**
+         * 由备注或标签推出来的分类（见 [CategorySuggester]）。
+         * 非空且与当前选中不同时，分类区下方出一次提示。
+         * <p>
+         * 不是「一定要采纳的建议」，只是一次可省点击的机会：用户自己选过分类后就不再提示。
+         */
+        val categorySuggestion: CategoryGuess? = null
     ) {
         val expressionText: String get() = CalcEngine.expressionText(tokens)
         val resultYuan: BigDecimal? get() = CalcEngine.evaluate(tokens)
@@ -77,12 +89,26 @@ class RecordViewModel @Inject constructor(
 
     private var loadedBookId = -1L
 
+    /**
+     * 「备注 / 标签 → 分类」的样本缓存：打开记账页时取一次，保存后再刷新。
+     * <p>
+     * 不做逐字查询：备注是弹窗确认、标签是点一下就落地，一次操作最多算一次，
+     * 放在内存里反而省掉一次数据库往返。
+     */
+    private var noteSamples: List<NoteSample> = emptyList()
+
+    /** 用户自己点过分类：本次表单里不再用备注去猜，免得刚选好又被提示改回去 */
+    private var categoryTouched = false
+
     private companion object {
         /** 计算「常用标签」时回看多少条带标签的历史账单 */
         const val TAG_HISTORY_LIMIT = 200
 
         /** 快捷标签最多给几个（含内置兜底） */
         const val TAG_SUGGESTION_LIMIT = 8
+
+        /** 猜分类时回看多少条带备注或标签的历史账单：再往前的写法参考价值很小 */
+        const val NOTE_HISTORY_LIMIT = 300
     }
 
     /** 历史标签还不够用时的兜底候选，保证新用户第一次进来也有得点 */
@@ -147,20 +173,27 @@ class RecordViewModel @Inject constructor(
             //（列表第一项往往是没人用的「现金」，靠它兜底等于每笔多点一次）
             val remembered = runCatching { settingsStore.lastAccountId(bookId) }.getOrNull()
             val usage = loadAccountUsage(bookId)
+            val defaultCategory = defaultCategoryId(bookId, type, categories)
+            refreshNoteSamples(bookId)
+            categoryTouched = false
             _state.update { current ->
                 current.copy(
                     accounts = accounts,
                     accountUsage = usage,
                     lastAccountId = remembered,
-                    // 保留仍然有效的选中项 → 记住的账户 → 第一项；被删掉/归档的自动跳过
+                    // 保留仍然有效的选中项 → 记住的账户 → 最常用的账户 → 第一项；被删掉/归档的自动跳过。
+                    // 兜底也不能直接取列表第一项：那往往是没人用过的「现金」，选中它等于把它硬塞进
+                    // 常用账户芯片里，还要顶掉一个真正常用的账户。
                     selectedAccountId = current.selectedAccountId
                         ?.takeIf { id -> accounts.any { it.id == id } }
                         ?: remembered?.takeIf { id -> accounts.any { it.id == id } }
-                        ?: accounts.firstOrNull()?.id,
+                        ?: pickQuickAccounts(accounts, usage, null, 1).firstOrNull()?.id,
+
                     categories = categories,
                     selectedCategoryId = current.selectedCategoryId
                         ?.takeIf { id -> categories.any { it.id == id } }
-                        ?: categories.firstOrNull()?.id
+                        ?: defaultCategory,
+                    categorySuggestion = null
                 )
             }
             refreshTagSuggestions()
@@ -190,7 +223,9 @@ class RecordViewModel @Inject constructor(
                     .atZone(ZoneId.systemDefault())
                     .toLocalDate(),
                 remark = transaction.remark.orEmpty(),
-                tags = transaction.tags.orEmpty()
+                tags = transaction.tags.orEmpty(),
+                // 编辑已有账单时不猜分类：这笔账的分类是用户当初定的，不要劝他改
+                categorySuggestion = null
             )
         }
 
@@ -200,6 +235,7 @@ class RecordViewModel @Inject constructor(
             val categories = ledgerRepository.cachedCategories(bookId, transaction.type)
             val remembered = runCatching { settingsStore.lastAccountId(bookId) }.getOrNull()
             val usage = loadAccountUsage(bookId)
+            val defaultCategory = defaultCategoryId(bookId, transaction.type, categories)
             _state.update { current ->
                 current.copy(
                     accounts = accounts,
@@ -213,7 +249,7 @@ class RecordViewModel @Inject constructor(
                     categories = categories,
                     selectedCategoryId = current.selectedCategoryId
                         ?.takeIf { id -> categories.any { it.id == id } }
-                        ?: categories.firstOrNull()?.id
+                        ?: defaultCategory
                 )
             }
             // 编辑态同样要刷新：用户可能刚在账单页改过标签、或新记了一笔
@@ -304,6 +340,79 @@ class RecordViewModel @Inject constructor(
     private suspend fun loadAccountUsage(bookId: Long): Map<Long, Long> =
         runCatching { transactionRepository.accountUsage(bookId) }.getOrDefault(emptyMap())
 
+    /**
+     * 拉一份「备注 / 标签 → 当时记的分类」的样本。
+     * <p>
+     * 「余额调整」的备注（余额校准自动生成的那些）要剔掉：它们不是用户为消费写的备注，
+     * 让「补差额」这类词去参与推测，只会把下一笔账往校准单上带。
+     * 查询失败当成「没有历史」：猜不出来只是少省一次点击，不该挡住记账。
+     */
+    private suspend fun refreshNoteSamples(bookId: Long) {
+        noteSamples = runCatching {
+            val adjustId = ledgerRepository.allCategories(bookId)
+                .firstOrNull { it.name == AccountRepository.ADJUST_CATEGORY_NAME }?.id
+            transactionRepository.noteSamples(bookId, NOTE_HISTORY_LIMIT)
+                .filter { it.categoryId != adjustId }
+        }.getOrDefault(emptyList())
+    }
+
+    /**
+     * 算一次「这笔像记在哪个分类」，结果只用于提示，不改任何已选值。
+     * <p>
+     * [note] 是刚写上来的那段文本：备注原文，或者刚点上的那个标签 —— 两者走同一套匹配规则，
+     * 区别只在 [CategoryGuess.source]（用户看文案时能分辨依据是备注还是标签）。
+     * <p>
+     * 四种情况不猜：用户已经亲手点过分类（[categoryTouched]）、正在改旧账（分类是他当初定的）、
+     * 转账（没有分类）、以及刚清空了备注。猜到与当前选中同一个分类时也不提示——那就等于什么也没省。
+     */
+    private fun suggestCategory(note: String) {
+        val current = _state.value
+        val guess = if (categoryTouched || current.editing != null || current.type == 3) {
+            null
+        } else {
+            CategorySuggester.guess(
+                note = note,
+                samples = noteSamples,
+                allowedCategoryIds = current.categories.mapTo(HashSet()) { it.id }
+            )
+        }
+        val shown = guess?.takeIf { it.categoryId != current.selectedCategoryId }
+        if (shown != current.categorySuggestion) {
+            _state.update { it.copy(categorySuggestion = shown) }
+        }
+        if (shown != null) {
+            track(SuggestionEvent.SHOWN)
+        }
+    }
+
+    /**
+     * 记一次统计（设置页「记账建议」卡片读的就是这三个计数）：只累加次数，不记录备注原文。
+     * <p>
+     * 丢到协程里做、失败也不管：统计坏了不该影响记账，何况落盘延迟一点无所谓。
+     */
+    private fun track(event: SuggestionEvent) {
+        viewModelScope.launch { runCatching { settingsStore.recordSuggestion(event) } }
+    }
+
+    /**
+     * 新建一笔时的默认分类：该收支类型下**历史上用得最多**的那个。
+     * <p>
+     * 分类列表是按分类管理页的手工顺序排的，第一项常常整年没人用，拿它兜底等于每笔都多点一次
+     * ——和账户区「列表第一项往往是没人用的现金」是同一个坑，所以这里用频次而不是顺序。
+     * 挑选规则见 [pickDefaultCategoryId]；查询失败不该挡住记账，失败就当成「都没用过」，
+     * 退回列表第一项（新账本的行为与改动前一致）。
+     */
+    private suspend fun defaultCategoryId(
+        bookId: Long,
+        type: Int,
+        categories: List<LocalCategory>
+    ): Long? = pickDefaultCategoryId(
+        categories = categories,
+        usage = runCatching { transactionRepository.categoryUsage(bookId, type) }
+            .getOrDefault(emptyMap()),
+        excludedName = AccountRepository.ADJUST_CATEGORY_NAME
+    )
+
     /** 标签原文列表 → 按出现次数降序的词表 */
     private fun List<String>.rankByFrequency(): List<String> = flatMap { parseTags(it) }
         .groupingBy { it }
@@ -323,10 +432,13 @@ class RecordViewModel @Inject constructor(
 
     private suspend fun loadCategories(bookId: Long, type: Int) {
         val categories = ledgerRepository.cachedCategories(bookId, type)
+        val defaultCategory = defaultCategoryId(bookId, type, categories)
         _state.update {
             it.copy(
                 categories = categories,
-                selectedCategoryId = categories.firstOrNull()?.id
+                selectedCategoryId = defaultCategory,
+                // 分类集合换了，旧的猜测可能指向别的类型，直接作废
+                categorySuggestion = null
             )
         }
     }
@@ -335,6 +447,8 @@ class RecordViewModel @Inject constructor(
         if (_state.value.type == type) {
             return
         }
+        // 换了收支类型等于重新做一次选择：之前「用户已亲手选过分类」的判断作废
+        categoryTouched = false
         _state.update { it.copy(type = type) }
         viewModelScope.launch {
             loadCategories(_state.value.bookId, type)
@@ -371,19 +485,53 @@ class RecordViewModel @Inject constructor(
 
     fun selectCategory(id: Long) {
         if (_state.value.selectedCategoryId == id) return
-        _state.update { it.copy(selectedCategoryId = id) }
+        val suggestion = _state.value.categorySuggestion
+        // 用户亲手选过分类：本次表单不再猜，否则刚选完又被提示「要不改成餐饮」很讨厌
+        categoryTouched = true
+        _state.update { it.copy(selectedCategoryId = id, categorySuggestion = null) }
+        if (suggestion != null) {
+            // 命中率口径：点的正是猜的那个算「采纳」，点了别的算「改选」。
+            // 两个数一除就知道这套规则值不值得留着，也是决定要不要上模型的那把尺子
+            track(
+                if (suggestion.categoryId == id) SuggestionEvent.ACCEPTED
+                else SuggestionEvent.OVERRIDDEN
+            )
+        }
         // 换分类就换一套标签候选：同类的标签直接铺在表单上，一下就能点到
         viewModelScope.launch { refreshTagSuggestions() }
+    }
+
+    /**
+     * 点「按备注记为 XX」。
+     * <p>
+     * 专门走 [selectCategory]，不自己复制一份选中逻辑：埋点口径必须与「点分类格子」完全一致，
+     * 否则统计出来的采纳率是假的。
+     */
+    fun acceptCategorySuggestion() {
+        _state.value.categorySuggestion?.let { selectCategory(it.categoryId) }
     }
 
     fun setTradeDate(date: LocalDate) {
         _state.update { it.copy(tradeDate = date) }
     }
 
+    /**
+     * 备注（从弹窗确认）变了就重算一次分类猜测。
+     * <p>
+     * 备注是弹窗点「确定」才写回状态，不是边打边存，所以这里不需要防抖：
+     * 一次输入最多算一次，纯内存计算，比再开一条协程去 debounce 更简单。
+     */
     fun setRemark(text: String) {
         _state.update { it.copy(remark = text) }
+        suggestCategory(text)
     }
 
+    /**
+     * 标签编辑弹窗确认。
+     * <p>
+     * 这里**不重新猜**：用户手改的是一整段文本，可能是加一个、删一个、或者全删重打，
+     * 拿整段去匹配只会得到「包含某个片段」这种含糊结论，不如只认「点标签」这一个明确动作。
+     */
     fun setTags(text: String) {
         _state.update { it.copy(tags = text) }
     }
@@ -394,9 +542,24 @@ class RecordViewModel @Inject constructor(
      * 表单里的标签就是一段逗号分隔的文本，所以这里直接按文本增删，不再引一份「已选集合」状态
      * —— 否则用户手动改过标签文本之后，点选状态会和实际内容对不上。
      * 文本增删的具体规则与页面里的标签弹窗共用（[toggleTagText]）。
+     * <p>
+     * 点上一个标签顺带猜一次分类：标签是用户从候选里挑的、语义受控，比自由文本硬得多。
+     * 只在「加上」时猜——点掉一个标签往往是在清理，此时弹一个分类建议只会碍事。
      */
     fun toggleTag(tag: String) {
         _state.update { it.copy(tags = toggleTagText(it.tags, tag)) }
+        if (tag in parseTags(_state.value.tags)) {
+            suggestCategory(tag)
+        } else {
+            clearSuggestion()
+        }
+    }
+
+    /** 新输入不足以支撑猜测时，把上一次的提示撤掉，别让旧结论挂在那儿 */
+    private fun clearSuggestion() {
+        if (_state.value.categorySuggestion != null) {
+            _state.update { it.copy(categorySuggestion = null) }
+        }
     }
 
     /** 保存到本地（离线可用），返回错误信息或 null（成功） */
@@ -450,6 +613,8 @@ class RecordViewModel @Inject constructor(
                 _state.update { it.copy(accountUsage = usage) }
                 // 刚记完的这笔立刻进「常用标签 / 最近记过」：连着记下一笔时不用重新打
                 refreshTagSuggestions()
+                // 同理，这笔的备注与标签马上成为下一条的参考样本（连着记同类账时最有用）
+                refreshNoteSamples(current.bookId)
             }
             onDone(error)
         }
@@ -525,7 +690,7 @@ class RecordViewModel @Inject constructor(
         viewModelScope.launch {
             categoryRepository.create(bookId, name, type, icon)
                 .onSuccess { created ->
-                    // 先按类型重查（会默认选中第一个），再覆盖成本次新建的那个
+                    // 先按类型重查（会默认选中常用分类），再覆盖成本次新建的那个
                     loadCategories(bookId, type)
                     _state.update { it.copy(selectedCategoryId = created.id) }
                     onDone(null)
@@ -542,7 +707,7 @@ class RecordViewModel @Inject constructor(
      * 否则下次打开会看到上一次的金额表达式、备注、标签、分类选择（「记完账旧数据没清零」）。
      *
      * @param preserveType 保留「支出/收入」与分类选择（连续记同类账时更顺手）；
-     *                     为 false 时回到默认：支出 + 第一个分类。
+     *                     为 false 时回到默认：支出 + 常用的分类。
      */
     fun resetForm(preserveType: Boolean = false) {
         val snapshot = _state.value
@@ -564,9 +729,12 @@ class RecordViewModel @Inject constructor(
                 // 补记的那天）偷偷改回今天；下次打开记账页时 load() 会重新落到今天
                 editing = null,
                 // 页面关闭时可能还有一次保存在飞：清掉转圈，别把它带进下一次打开
-                saving = false
+                saving = false,
+                // 备注被清空了，基于它的猜测与「已亲手选过」都该归零
+                categorySuggestion = null
             )
         }
+        categoryTouched = false
 
         // 分类是按类型缓存的：类型变了必须重查一次，否则保留的 categoryId 会落在错误的类型上
         val bookId = snapshot.bookId
@@ -576,14 +744,78 @@ class RecordViewModel @Inject constructor(
         viewModelScope.launch {
             val categories = ledgerRepository.cachedCategories(bookId, type)
             val kept = categories.firstOrNull { it.id == keepCategoryId }?.id
+            val defaultCategory = defaultCategoryId(bookId, type, categories)
             _state.update {
                 it.copy(
                     categories = categories,
-                    selectedCategoryId = kept ?: categories.firstOrNull()?.id
+                    selectedCategoryId = kept ?: defaultCategory
                 )
             }
         }
     }
+}
+
+/* -------------------- 默认分类 -------------------- */
+
+/**
+ * 按历史使用次数挑一个默认分类（纯函数，便于单测）。
+ *
+ * 规则只有两条，但都必须说清楚：
+ * 1. **次数最多者胜**；次数相同时取列表里靠前的那个（[maxByOrNull] 返回第一个最大值），
+ *    即保持分类管理页的手工顺序，用户对「常点的分类在哪」有肌肉记忆；
+ * 2. `excludedName` 命中时直接排除 —— 「余额调整」是余额校准自动生成的分类，
+ *    被选成默认会让下一笔账莫名其妙记成一笔校准单。
+ *    整张列表都被排除时（只建了这么一个分类）不去钻牛角尖，仍然返回它，否则就没有默认值了。
+ *
+ * @return 没有可选分类时为 null
+ */
+internal fun pickDefaultCategoryId(
+    categories: List<LocalCategory>,
+    usage: Map<Long, Long>,
+    excludedName: String? = null
+): Long? {
+    val candidates = categories
+        .filterNot { excludedName != null && it.name == excludedName }
+        .ifEmpty { categories }
+    return candidates.maxByOrNull { usage[it.id] ?: 0L }?.id
+}
+
+/* -------------------- 常用账户 -------------------- */
+
+/**
+ * 记账页铺哪几个账户芯片（纯函数，便于单测）。规则按优先级：
+ *
+ * 1. **只有真正记过账的账户才占位置**：从没被用过的账户不参与竞争，否则账户管理里排在
+ *    前面的闲置账户（账本初始化时自动建的那几个）会白白补进芯片行，看着像「常用」其实一次没用过；
+ * 2. **用得多的在前**，次数相同保持账户管理里的手工顺序（[sortedByDescending] 是稳定排序）；
+ * 3. **当前选中的账户必须可见**：从「更多」里挑过冷门账户后，前三里没有它就顶掉最后一名，
+ *    否则用户会以为没选上；
+ * 4. 一笔都没用过（新账本、刚导入还没记）时退回手工顺序的前 [limit] 个 ——
+ *    宁可回到老行为，也不要一个芯片都不给。
+ *
+ * 归档账户不占芯片位；但它如果是当前选中（编辑旧账），由规则 3 补回来，不能把原账户藏掉。
+ */
+internal fun pickQuickAccounts(
+    accounts: List<LocalAccount>,
+    usage: Map<Long, Long>,
+    selectedAccountId: Long?,
+    limit: Int
+): List<LocalAccount> {
+    if (limit <= 0) return emptyList()
+    val candidates = accounts.filterNot { it.archived }
+    val used = candidates
+        .filter { (usage[it.id] ?: 0L) > 0L }
+        .sortedByDescending { usage[it.id] ?: 0L }
+    val top = (used.ifEmpty { candidates }).take(limit).toMutableList()
+    val selected = accounts.firstOrNull { it.id == selectedAccountId }
+    if (selected != null && top.none { it.id == selected.id }) {
+        if (top.size >= limit) {
+            top[top.lastIndex] = selected
+        } else {
+            top.add(selected)
+        }
+    }
+    return top
 }
 
 /* -------------------- 标签文本 ⇄ 标签列表 -------------------- */

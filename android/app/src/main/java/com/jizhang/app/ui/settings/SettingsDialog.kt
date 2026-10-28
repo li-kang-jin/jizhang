@@ -35,6 +35,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -54,36 +55,61 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import com.jizhang.app.data.prefs.SuggestionTally
+import com.jizhang.app.data.repository.PetInsightRepository
 import com.jizhang.app.data.repository.PetRepository
 import com.jizhang.app.ui.AppViewModel
 import com.jizhang.app.ui.common.AppFullScreenDialog
 import com.jizhang.app.ui.common.safeDialogContent
 import com.jizhang.app.ui.pet.PetAvatar
+import com.jizhang.app.ui.pet.PetInsight
 import com.jizhang.app.ui.pet.PetMood
 import com.jizhang.app.ui.pet.PetState
 import com.jizhang.app.ui.pet.PetType
-import com.jizhang.app.ui.theme.AppColors
+import com.jizhang.app.ui.pet.tint
 import com.jizhang.app.ui.theme.AppTheme
 import com.jizhang.app.ui.theme.paletteOf
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 import javax.inject.Inject
 
 @HiltViewModel
 class PetSettingsViewModel @Inject constructor(
-    private val petRepository: PetRepository
+    private val petRepository: PetRepository,
+    private val petInsightRepository: PetInsightRepository
 ) : ViewModel() {
 
     private val _pet = MutableStateFlow(PetState())
     val pet: StateFlow<PetState> = _pet.asStateFlow()
 
+    /** 跟账单页同源的结论：这里只用它的心情，保证三处表情一致 */
+    private val _insight = MutableStateFlow(PetInsight.EMPTY)
+    val insight: StateFlow<PetInsight> = _insight.asStateFlow()
+
+    private var insightJob: Job? = null
+    private var boundBookId = -1L
+
     init {
         viewModelScope.launch {
             petRepository.state.collect { _pet.value = it }
+        }
+    }
+
+    /** 跟随当前账本；设置页由外部传 bookId（它自己不知道账本，AppViewModel 才知道） */
+    fun bind(bookId: Long) {
+        if (bookId <= 0L || bookId == boundBookId) {
+            return
+        }
+        boundBookId = bookId
+        insightJob?.cancel()
+        insightJob = viewModelScope.launch {
+            petInsightRepository.observe(bookId).collect { _insight.value = it }
         }
     }
 
@@ -108,7 +134,10 @@ fun SettingsDialog(
 ) {
     val appState by appViewModel.state.collectAsStateWithLifecycle()
     val pet by petViewModel.pet.collectAsStateWithLifecycle()
+    val insight by petViewModel.insight.collectAsStateWithLifecycle()
     var nameInput by remember { mutableStateOf(pet.name) }
+
+    LaunchedEffect(appState.bookId) { petViewModel.bind(appState.bookId) }
 
     val context = LocalContext.current
     // 用户同意通知权限后才真正打开开关，避免「开了却收不到提醒」
@@ -151,20 +180,19 @@ fun SettingsDialog(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             PetAvatar(
                                 type = pet.type,
-                                mood = PetMood.HAPPY,
-                                modifier = Modifier.size(72.dp),
-                                bodyColor = AppColors.accent
+                                mood = insight.mood,
+                                modifier = Modifier.size(72.dp)
                             )
                             Spacer(Modifier.size(14.dp))
                             Column {
                                 Text(
-                                    "${pet.name} · Lv.${pet.level}",
+                                    pet.name,
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold
                                 )
                                 Spacer(Modifier.height(4.dp))
                                 Text(
-                                    "金币 ${pet.coins} · 连续记账 ${pet.streakDays} 天",
+                                    "已连续记账 ${pet.streakDays} 天",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -179,7 +207,6 @@ fun SettingsDialog(
                                 PetTypeItem(
                                     type = type,
                                     selected = pet.type == type,
-                                    accent = AppColors.accent,
                                     onClick = { petViewModel.changeType(type) }
                                 )
                             }
@@ -205,12 +232,12 @@ fun SettingsDialog(
 
                     Spacer(Modifier.height(14.dp))
 
-                    SectionCard("玩法") {
+                    SectionCard("它会帮你做什么") {
                         Text(
-                            text = "· 每记一笔账，${pet.name} 获得 ${PetState.COINS_PER_RECORD} 金币\n" +
-                                "· 每 ${PetState.COINS_PER_LEVEL} 金币升一级\n" +
-                                "· 每天记账可累计连续天数\n" +
-                                "· 本月超支时它会露出担心的表情",
+                            text = "· 读完本地账单算出当月近况，给出可以照着做的建议（不联网、不上传）\n" +
+                                "· 发现某类开销比上月同期涨得快、月底可能超支时提醒你\n" +
+                                "· 大额单笔、深夜消费这类容易忽略的开销会被单独点出来\n" +
+                                "· 本月超支时它会露出担心的表情；结余不错时会给你正向反馈",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -312,10 +339,59 @@ fun SettingsDialog(
                             onSelect = appViewModel::setBillTemplate
                         )
                     }
+
+                    Spacer(Modifier.height(14.dp))
+
+                    SectionCard("记账建议") {
+                        Text(
+                            text = "备注或标签里出现以前记过的说法时，记账页会在分类下方提示一个分类，" +
+                                "点一下即可套用；不会自动改动你已经选好的分类。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("猜得准不准", style = MaterialTheme.typography.bodyMedium)
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    text = tallyText(appState.suggestionTally),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if (appState.suggestionTally.shown > 0) {
+                                TextButton(onClick = appViewModel::resetSuggestionTally) {
+                                    Text("清零")
+                                }
+                            }
+                        }
+                    }
                 }
         }
     }
 }
+
+/**
+ * 统计文案。
+ * <p>
+ * 样本太少时**不给百分比**：提示过 3 次、蒙对 2 次也能算出 67%，
+ * 那个数字除了误导没有别的作用。少于 [MIN_TALLY_FOR_PERCENT] 次只报次数。
+ */
+private fun tallyText(tally: SuggestionTally): String {
+    if (tally.shown == 0) {
+        return "还没有提示过：记几笔带备注的账，这里就会出现统计。"
+    }
+    val percent = tally.acceptance
+        ?.takeIf { tally.answered >= MIN_TALLY_FOR_PERCENT }
+        ?.let { "（${(it * 100).roundToInt()}%）" }
+        .orEmpty()
+    return "提示 ${tally.shown} 次，直接采纳 ${tally.accepted} 次$percent，" +
+        "改选 ${tally.overridden} 次"
+}
+
+/** 至少这么多次选择才显示采纳率 */
+private const val MIN_TALLY_FOR_PERCENT = 5
 
 /** Android 13 起通知需要运行时授权 */
 private fun needsNotificationPermission(context: Context): Boolean =
@@ -448,15 +524,15 @@ private fun TemplatePicker(
 private fun PetTypeItem(
     type: PetType,
     selected: Boolean,
-    accent: Color,
     onClick: () -> Unit
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
             .clip(RoundedCornerShape(14.dp))
+            // 选中底色用该形象自己的主题色：三个选项一眼就能分出是谁
             .background(
-                if (selected) accent.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surfaceVariant
+                if (selected) type.tint.copy(alpha = 0.20f) else MaterialTheme.colorScheme.surfaceVariant
             )
             .clickable(onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 8.dp)
@@ -465,7 +541,6 @@ private fun PetTypeItem(
             type = type,
             mood = PetMood.HAPPY,
             modifier = Modifier.size(48.dp),
-            bodyColor = accent,
             animated = false
         )
         Spacer(Modifier.height(4.dp))

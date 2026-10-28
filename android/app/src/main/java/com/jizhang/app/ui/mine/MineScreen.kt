@@ -57,6 +57,7 @@ import com.jizhang.app.data.repository.AuthRepository
 import com.jizhang.app.data.repository.BudgetCycle
 import com.jizhang.app.data.repository.BudgetPeriods
 import com.jizhang.app.data.repository.LedgerRepository
+import com.jizhang.app.data.repository.PetInsightRepository
 import com.jizhang.app.data.repository.PetRepository
 import com.jizhang.app.data.repository.ReportGranularity
 import com.jizhang.app.data.repository.ReportPeriod
@@ -65,9 +66,8 @@ import com.jizhang.app.data.repository.TransactionRepository
 import com.jizhang.app.ui.common.DateRangeDialog
 import com.jizhang.app.ui.login.LoginDialog
 import com.jizhang.app.ui.pet.PetAvatar
-import com.jizhang.app.ui.pet.PetMood
+import com.jizhang.app.ui.pet.PetInsight
 import com.jizhang.app.ui.pet.PetState
-import com.jizhang.app.ui.theme.AppColors
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -98,6 +98,7 @@ class MineViewModel @Inject constructor(
     private val transactionRepository: TransactionRepository,
     private val ledgerRepository: LedgerRepository,
     private val petRepository: PetRepository,
+    private val petInsightRepository: PetInsightRepository,
     private val syncManager: SyncManager,
     private val authRepository: AuthRepository,
     private val settingsStore: SettingsStore
@@ -110,6 +111,8 @@ class MineViewModel @Inject constructor(
         val pendingCount: Int = 0,
         val localCount: Int = 0,
         val pet: PetState = PetState(),
+        /** 宠物读完账的结论：这里只用来决定表情，跟账单页同源 */
+        val insight: PetInsight = PetInsight.EMPTY,
         val syncing: Boolean = false,
         val message: String? = null
     )
@@ -133,6 +136,11 @@ class MineViewModel @Inject constructor(
             }
             launch {
                 petRepository.state.collect { pet -> _state.update { it.copy(pet = pet) } }
+            }
+            launch {
+                petInsightRepository.observe(bookId).collect { insight ->
+                    _state.update { it.copy(insight = insight) }
+                }
             }
             launch {
                 tokenStore.nicknameFlow.collect { name -> _state.update { it.copy(nickname = name) } }
@@ -404,6 +412,8 @@ fun MineScreen(
     onOpenSettings: () -> Unit,
     onOpenImport: () -> Unit,
     onOpenBooks: () -> Unit,
+    /** 「财务自由测算」入口：全屏页挂在 MainScreen 根部 */
+    onOpenWealth: () -> Unit = {},
     importDone: Int,
     onLoginChanged: (String?) -> Unit,
     onLoggedOut: () -> Unit,
@@ -450,9 +460,9 @@ fun MineScreen(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     PetAvatar(
                         type = state.pet.type,
-                        mood = PetMood.HAPPY,
-                        modifier = Modifier.size(72.dp),
-                        bodyColor = AppColors.accent
+                        // 跟账单页同一份结论：超支时这里也是担心的脸，不会这边笑那边皱眉
+                        mood = state.insight.mood,
+                        modifier = Modifier.size(72.dp)
                     )
                     Spacer(Modifier.size(14.dp))
                     Column(modifier = Modifier.weight(1f)) {
@@ -463,7 +473,7 @@ fun MineScreen(
                         )
                         Spacer(Modifier.height(2.dp))
                         Text(
-                            text = "Lv.${state.pet.level} · 金币 ${state.pet.coins} · 连续 ${state.pet.streakDays} 天",
+                            text = "已连续记账 ${state.pet.streakDays} 天",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -513,6 +523,26 @@ fun MineScreen(
                     Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.size(8.dp))
                     Text("账本与成员管理")
+                }
+            }
+        }
+
+        item {
+            SectionBox {
+                Text("财富规划", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = "用账本里的真实支出推算 FI 资产与达标概率：不是设一个目标数字，而是看「按现在的节奏还差多远」。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(
+                    onClick = onOpenWealth,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("财务自由测算")
                 }
             }
         }

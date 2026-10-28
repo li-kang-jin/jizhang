@@ -3,6 +3,7 @@ package com.jizhang.app.ui.bill
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -48,6 +49,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -73,18 +75,25 @@ import com.jizhang.app.ui.common.AppChip
 import com.jizhang.app.ui.common.CategoryBadge
 import com.jizhang.app.ui.common.DateRangeDialog
 import com.jizhang.app.ui.common.TagChips
+import com.jizhang.app.ui.common.billTitle
 import com.jizhang.app.ui.common.categoryIconOf
 import com.jizhang.app.ui.common.formatAmount
 import com.jizhang.app.ui.common.formatDateTime
+import com.jizhang.app.data.repository.WealthPlanner
 import com.jizhang.app.ui.common.formatSignedAmount
+import com.jizhang.app.ui.common.money
 import com.jizhang.app.ui.common.inlineTags
 import com.jizhang.app.ui.common.parseTagList
-import com.jizhang.app.ui.common.quoteOfDay
+import com.jizhang.app.ui.common.tagsUsedAsTitle
 import com.jizhang.app.ui.common.transactionTypeLabel
 import com.jizhang.app.ui.common.typeColor
+import com.jizhang.app.ui.pet.PetAdvice
 import com.jizhang.app.ui.pet.PetAvatar
+import com.jizhang.app.ui.pet.PetInsight
 import com.jizhang.app.ui.pet.PetMood
 import com.jizhang.app.ui.pet.PetState
+import com.jizhang.app.ui.pet.PetTip
+import com.jizhang.app.ui.pet.PetTipKind
 import com.jizhang.app.ui.pet.PetType
 import com.jizhang.app.ui.theme.AppColors
 import com.jizhang.app.ui.theme.JizhangTheme
@@ -92,6 +101,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.util.Locale
+import kotlin.math.roundToInt
 
 /**
  * 账单页。
@@ -123,6 +133,8 @@ fun BillScreen(
     onOpenCategories: () -> Unit,
     /** 点条目进「编辑账单」；记账页由 MainScreen 以编辑模式打开 */
     onEdit: (LocalTransaction) -> Unit,
+    /** 机会成本卡里的「看财务自由进度」：全屏页挂在 MainScreen 根部 */
+    onOpenWealth: () -> Unit = {},
     /** 从统计页等地方跳进来时带的筛选预设（用完即弃） */
     preset: BillPreset? = null,
     onPresetConsumed: () -> Unit = {},
@@ -134,6 +146,8 @@ fun BillScreen(
     var showCustomRange by remember { mutableStateOf(false) }
     // 非空表示正在确认删除这笔账（误点删除的代价太高，必须二次确认）
     var deleting by remember { mutableStateOf<LocalTransaction?>(null) }
+    // 非空表示正在看这一笔的机会成本（长按触发）
+    var costItem by remember { mutableStateOf<LocalTransaction?>(null) }
 
     // 账本变化（登录 / 退出）时重新绑定数据源
     LaunchedEffect(bookId) { viewModel.bind(bookId) }
@@ -194,11 +208,13 @@ fun BillScreen(
                     Box(Modifier.padding(horizontal = 12.dp)) {
                         PetCard(
                             pet = state.pet,
-                            mood = state.petMood,
+                            insight = state.petInsight,
+                            tipIndex = state.tipIndex,
                             monthIncome = state.monthIncome,
                             monthExpense = state.monthExpense,
                             pendingCount = state.pendingCount,
                             syncing = state.syncing,
+                            onNextTip = viewModel::nextTip,
                             onSync = viewModel::sync,
                             onOpenAccounts = onOpenAccounts,
                             onOpenCategories = onOpenCategories
@@ -244,7 +260,14 @@ fun BillScreen(
                                     // 「这笔钱从哪个账户出的」：转账显示「转出 → 转入」
                                     accountName = accountText(item, state.accountLabels),
                                     onDelete = { deleting = item },
-                                    onEdit = { onEdit(item) }
+                                    onEdit = { onEdit(item) },
+                                    // 转账没有"消费的时间成本"，长按留给真正花掉的钱
+                                    onLongPress = {
+                                        if (item.type != 3) {
+                                            viewModel.refreshFiAssumptions()
+                                            costItem = item
+                                        }
+                                    }
                                 )
                             }
                         }
@@ -278,9 +301,10 @@ fun BillScreen(
             onDismissRequest = { deleting = null },
             title = { Text("删除这笔账单") },
             text = {
-                val label = target.remark?.takeIf { it.isNotBlank() }
-                    ?: target.categoryId?.let { state.categoryById[it] }?.name
-                    ?: transactionTypeLabel(target.type)
+                val label = billTitle(
+                    target,
+                    target.categoryId?.let { state.categoryById[it] }?.name
+                )
                 Text(
                     "$label ${formatSignedAmount(target.type, target.amount)}\n" +
                         "删除后无法恢复；已登录的账本，账户余额会随下一次同步回滚。"
@@ -303,6 +327,75 @@ fun BillScreen(
             }
         )
     }
+
+    // 长按某笔 → 把它折成「未来值」：不是记账功能，是把时间维度摊开给你看
+    costItem?.let { target ->
+        OpportunityCostDialog(
+            label = billTitle(target, target.categoryId?.let { state.categoryById[it] }?.name),
+            amountFen = target.amount,
+            type = target.type,
+            realReturn = state.fiRealReturn,
+            years = state.fiTargetYears,
+            onOpenWealth = {
+                costItem = null
+                onOpenWealth()
+            },
+            onDismiss = { costItem = null }
+        )
+    }
+}
+
+/**
+ * 机会成本卡。
+ * <p>
+ * 只做一件事：把「今天这笔钱」按用户自己的实际收益率假设折到目标年数，
+ * 让一笔 38 元的午饭在时间维度上有一个具体数字。措辞上刻意不劝人省钱——
+ * 记账工具一旦开始说教，用户就不记了。
+ */
+@Composable
+private fun OpportunityCostDialog(
+    label: String,
+    amountFen: Long,
+    type: Int,
+    realReturn: Double,
+    years: Int,
+    onOpenWealth: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val future = WealthPlanner.opportunityCost(amountFen, realReturn, years)
+    val rateText = "${(realReturn * 1000).roundToInt() / 10.0}%"
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("这笔钱的机会成本") },
+        text = {
+            Column {
+                Text(
+                    text = "$label · ${formatSignedAmount(type, amountFen)}",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    text = "按 $rateText 的实际收益率、$years 年折算，" +
+                        // 账单页本来就逐笔显示金额，这里不需要再走隐私打码
+                        "这笔钱如果留在组合里，届时约值 ${money(future, hideAmounts = false)}（今天的购买力）。",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "这不是让你别花——只是把它放回时间里看一眼。假设与「财务自由」页同源。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onOpenWealth) { Text("看财务自由进度") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("知道了") }
+        }
+    )
 }
 
 /* ==================== 筛选栏 ==================== */
@@ -546,20 +639,27 @@ private fun FilterMenuChip(
 
 /* ==================== 顶部卡片 ==================== */
 
-/** 顶部宠物卡片：宠物 + 本月收支 + 账户入口 */
+/**
+ * 顶部宠物卡片：宠物 + 本月收支 + 账户入口。
+ *
+ * 宠物在这里的职责是**替你把账读一遍**：名字下面一行是它算出来的近况，再往下是一条
+ * 能对这笔钱起作用的具体建议（点一下换下一条）。
+ * 原先那行「再记 N 笔升级」是纯粹的数值游戏——既不反映真实数据，对记账也没有帮助，已移除。
+ */
 @Composable
 private fun PetCard(
     pet: PetState,
-    mood: PetMood,
+    insight: PetInsight,
+    tipIndex: Int,
     monthIncome: Long,
     monthExpense: Long,
     pendingCount: Int,
     syncing: Boolean,
+    onNextTip: () -> Unit,
     onSync: () -> Unit,
     onOpenAccounts: () -> Unit,
     onOpenCategories: () -> Unit
 ) {
-    val quote = quoteOfDay()
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),
@@ -570,35 +670,30 @@ private fun PetCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 PetAvatar(
                     type = pet.type,
-                    mood = mood,
-                    modifier = Modifier.size(64.dp),
-                    bodyColor = AppColors.accent
+                    mood = insight.mood,
+                    modifier = Modifier.size(64.dp)
                 )
                 Spacer(Modifier.size(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "${pet.name} · Lv.${pet.level}",
+                        text = pet.name,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        text = moodText(mood),
+                        text = moodText(insight.mood),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Spacer(Modifier.height(6.dp))
-                    LinearProgressIndicator(
-                        progress = { pet.levelProgress },
-                        modifier = Modifier.fillMaxWidth(),
-                        trackColor = MaterialTheme.colorScheme.surfaceVariant
-                    )
-                    Spacer(Modifier.height(3.dp))
-                    Text(
-                        text = "再记 ${if (pet.coinsToNextLevel % PetState.COINS_PER_RECORD == 0) pet.coinsToNextLevel / PetState.COINS_PER_RECORD else pet.coinsToNextLevel / PetState.COINS_PER_RECORD + 1} 笔升级 · 连续 ${pet.streakDays} 天",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    if (insight.statusLine.isNotBlank()) {
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            text = insight.statusLine,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
+                        )
+                    }
                 }
                 if (syncing) {
                     CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
@@ -609,15 +704,17 @@ private fun PetCard(
                 }
             }
 
-            // 每天一句：卡片本来就是记账的情绪入口，一行短句比再堆一行数字轻松
-            Spacer(Modifier.height(10.dp))
-            Text(
-                text = "「${quote.text}」 — ${quote.author}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
+            // 宠物的结论区：本地算出来的建议，一次一条，点一下换下一句
+            val tip = insight.tips.getOrNull(tipIndex) ?: insight.tips.firstOrNull()
+            if (tip != null) {
+                Spacer(Modifier.height(10.dp))
+                TipBubble(
+                    tip = tip,
+                    index = tipIndex,
+                    count = insight.tips.size,
+                    onNext = onNextTip
+                )
+            }
 
             Spacer(Modifier.height(14.dp))
             HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
@@ -721,11 +818,76 @@ private fun ManageEntry(
     }
 }
 
+/**
+ * 宠物的建议气泡。
+ *
+ * 一次只放一条：三条挤在一起等于一条都没读。左侧色条按建议性质着色，
+ * 多条时右下角给「序号 + 刷新」提示，暗示还能点。
+ */
+@Composable
+private fun TipBubble(
+    tip: PetTip,
+    index: Int,
+    count: Int,
+    onNext: () -> Unit
+) {
+    val accent = when (tip.kind) {
+        PetTipKind.ALERT -> MaterialTheme.colorScheme.error
+        PetTipKind.SAVING -> MaterialTheme.colorScheme.primary
+        PetTipKind.CHEER -> AppColors.income
+        PetTipKind.HABIT -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(enabled = count > 1, onClick = onNext)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(3.dp)
+                    .height(30.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(accent)
+            )
+            Spacer(Modifier.size(10.dp))
+            Text(
+                text = tip.text,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f)
+            )
+            if (count > 1) {
+                Spacer(Modifier.size(8.dp))
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        Icons.Filled.Refresh,
+                        contentDescription = "换一句",
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = "${index + 1}/$count",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
 private fun moodText(mood: PetMood): String = when (mood) {
     PetMood.HAPPY -> "本月有结余，它很开心～"
-    PetMood.NORMAL -> "今天也来记一笔吧"
-    PetMood.WORRIED -> "本月支出有点多，它有点担心"
-    PetMood.EXCITED -> "太棒了！"
+    PetMood.NORMAL -> "看了一遍你的账，没什么异常"
+    PetMood.WORRIED -> "账有点不对劲，它皱起了眉头"
+    PetMood.EXCITED -> "表现不错，它兴奋得直转圈～"
 }
 
 @Composable
@@ -952,12 +1114,14 @@ private fun TransactionRow(
     /** 这一笔的账户展示文本（转账为「转出 → 转入」）；查不到名字时为 null */
     accountName: String? = null,
     onDelete: () -> Unit,
-    onEdit: () -> Unit
+    onEdit: () -> Unit,
+    /** 长按：看这笔钱的机会成本；默认什么都不做（预览里不会误触） */
+    onLongPress: () -> Unit = {}
 ) {
     when (template) {
-        2 -> InfoCardRow(item, category, shared, creatorName, accountName, onDelete, onEdit)
-        3 -> CompactRow(item, category, shared, creatorName, accountName, onDelete, onEdit)
-        else -> ListRow(item, category, shared, creatorName, accountName, onDelete, onEdit)
+        2 -> InfoCardRow(item, category, shared, creatorName, accountName, onDelete, onEdit, onLongPress)
+        3 -> CompactRow(item, category, shared, creatorName, accountName, onDelete, onEdit, onLongPress)
+        else -> ListRow(item, category, shared, creatorName, accountName, onDelete, onEdit, onLongPress)
     }
 }
 
@@ -1027,25 +1191,26 @@ private fun InfoCardRow(
     creatorName: String?,
     accountName: String?,
     onDelete: () -> Unit,
-    onEdit: () -> Unit
+    onEdit: () -> Unit,
+    onLongPress: () -> Unit
 ) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onEdit() },
+            .combinedClickable(onClick = onEdit, onLongClick = onLongPress),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+            val title = billTitle(item, category?.name)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 CategoryBadge(type = item.type, category = category, size = 34.dp)
                 Spacer(Modifier.width(10.dp))
                 TypeTag(item.type)
                 Spacer(Modifier.size(8.dp))
                 Text(
-                    text = item.remark?.takeIf { it.isNotBlank() } ?: category?.name
-                    ?: transactionTypeLabel(item.type),
+                    text = title,
                     style = MaterialTheme.typography.bodyMedium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -1063,8 +1228,7 @@ private fun InfoCardRow(
                 Text(
                     text = subtitle(
                         item = item,
-                        title = item.remark?.takeIf { it.isNotBlank() } ?: category?.name
-                        ?: transactionTypeLabel(item.type),
+                        title = title,
                         categoryName = category?.name,
                         accountName = accountName,
                         shared = shared,
@@ -1086,7 +1250,8 @@ private fun InfoCardRow(
                 }
             }
             val cardTags = parseTagList(item.tags)
-            if (cardTags.isNotEmpty()) {
+            // 标签已经顶上标题时不再重复一排：同一串字在一张卡里出现两次很吵
+            if (cardTags.isNotEmpty() && !tagsUsedAsTitle(item)) {
                 Spacer(Modifier.height(6.dp))
                 TagChips(cardTags)
             }
@@ -1103,12 +1268,13 @@ private fun CompactRow(
     creatorName: String?,
     accountName: String?,
     onDelete: () -> Unit,
-    onEdit: () -> Unit
+    onEdit: () -> Unit,
+    onLongPress: () -> Unit
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onEdit() }
+            .combinedClickable(onClick = onEdit, onLongClick = onLongPress)
             .padding(horizontal = 4.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -1122,15 +1288,15 @@ private fun CompactRow(
         Spacer(Modifier.size(10.dp))
         Text(
             text = buildString {
-                append(
-                    item.remark?.takeIf { it.isNotBlank() } ?: category?.name
-                    ?: transactionTypeLabel(item.type)
-                )
-                // 紧凑模板只有一行：分类和标签都压进这行文本里
-                category?.name?.takeIf { it.isNotBlank() && it != item.remark }?.let {
+                val title = billTitle(item, category?.name)
+                append(title)
+                // 紧凑模板只有一行：分类（和标签）都压进这行文本里，标签已经当标题时不再重复
+                category?.name?.takeIf { it.isNotBlank() && it != title }?.let {
                     append(" · $it")
                 }
-                inlineTags(item.tags)?.let { append(" · $it") }
+                if (!tagsUsedAsTitle(item)) {
+                    inlineTags(item.tags)?.let { append(" · $it") }
+                }
                 accountName?.takeIf { it.isNotBlank() }?.let { append(" · $it") }
                 if (shared && !creatorName.isNullOrBlank()) append(" · $creatorName")
                 if (item.pendingSync) append(" · 待同步")
@@ -1166,13 +1332,14 @@ private fun ListRow(
     creatorName: String?,
     accountName: String?,
     onDelete: () -> Unit,
-    onEdit: () -> Unit
+    onEdit: () -> Unit,
+    onLongPress: () -> Unit
 ) {
     Card(
-        // 整卡可点 = 改这笔账（删除按钮会自己消费点击，不会误触发）
+        // 整卡可点 = 改这笔账，长按 = 看机会成本（删除按钮会自己消费点击，不会误触发）
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onEdit() },
+            .combinedClickable(onClick = onEdit, onLongClick = onLongPress),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
@@ -1186,8 +1353,7 @@ private fun ListRow(
         ) {
             CategoryBadge(type = item.type, category = category, size = 38.dp)
             Spacer(Modifier.width(12.dp))
-            val title = item.remark?.takeIf { it.isNotBlank() } ?: category?.name
-            ?: transactionTypeLabel(item.type)
+            val title = billTitle(item, category?.name)
             val tags = parseTagList(item.tags)
             Column(modifier = Modifier.weight(1f)) {
                 Text(
@@ -1211,7 +1377,7 @@ private fun ListRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                if (tags.isNotEmpty()) {
+                if (tags.isNotEmpty() && !tagsUsedAsTitle(item)) {
                     Spacer(Modifier.height(4.dp))
                     TagChips(tags)
                 }
@@ -1238,7 +1404,6 @@ private fun ListRow(
 private fun previewPetState() = PetState(
     name = "小锦锦",
     type = PetType.CAT,
-    coins = 130,
     streakDays = 6,
     lastRecordDate = "2026-10-14"
 )
@@ -1261,10 +1426,10 @@ private fun previewTransactions(): List<LocalTransaction> {
             id = 2L, bookId = 1L, type = 1, amount = 12800, accountId = 2L, categoryId = 3L,
             tradeTime = now - 3_600_000, remark = "超市采购", pendingSync = true
         ),
-        // 无备注时回落到分类名 / 类型文案
+        // 无备注时用标签当标题（标签也没有才回落到分类名 / 类型文案）
         LocalTransaction(
             id = 3L, bookId = 1L, type = 1, amount = 3500, accountId = 1L, categoryId = 1L,
-            tradeTime = now, remark = null, pendingSync = true
+            tradeTime = now, remark = null, tags = "早餐,楼下", pendingSync = true
         ),
         LocalTransaction(
             id = 4L, bookId = 1L, type = 1, amount = 2600, accountId = 1L, categoryId = 2L,
@@ -1330,7 +1495,14 @@ private fun previewUiState(
         monthIncome = 1850000,
         monthExpense = 1234500,
         pet = previewPetState(),
-        petMood = PetMood.HAPPY
+        petInsight = PetAdvice.analyze(
+            PetAdvice.factsOf(
+                transactions = transactions,
+                categoryNames = previewCategories.associate { it.id to it.name },
+                today = LocalDate.now(),
+                streakDays = 6
+            )
+        )
     )
 }
 
@@ -1364,11 +1536,13 @@ private fun BillPreviewContent(
                 Box(Modifier.padding(horizontal = 12.dp)) {
                     PetCard(
                         pet = state.pet,
-                        mood = state.petMood,
+                        insight = state.petInsight,
+                        tipIndex = state.tipIndex,
                         monthIncome = state.monthIncome,
                         monthExpense = state.monthExpense,
                         pendingCount = 2,
                         syncing = false,
+                        onNextTip = {},
                         onSync = {},
                         onOpenAccounts = {},
                         onOpenCategories = {}
@@ -1441,16 +1615,29 @@ private fun BillScreenFilteredEmptyPreview() {
     }
 }
 
-/** 本月超支：宠物变担心表情，结余为负 */
+/** 本月超支：宠物变担心表情，建议走预警配色 */
 @Preview(name = "账单页 · 超支", showBackground = true, widthDp = 380, heightDp = 860)
 @Composable
 private fun BillScreenWorriedPreview() {
     JizhangTheme {
         BillPreviewContent(
             state = previewUiState().copy(
-                petMood = PetMood.WORRIED,
                 monthIncome = 320000,
-                monthExpense = 1580000
+                monthExpense = 1580000,
+                petInsight = PetInsight(
+                    mood = PetMood.WORRIED,
+                    tips = listOf(
+                        PetTip(
+                            PetTipKind.ALERT,
+                            "本月支出 ¥15,800.00 已经超过收入 ¥3,200.00，倒挂 ¥12,600.00"
+                        ),
+                        PetTip(
+                            PetTipKind.SAVING,
+                            "「餐饮」占了本月支出的 52%（¥8,200.00），想省钱先从它下手"
+                        )
+                    ),
+                    statusLine = "本月日均支出 ¥526.67 · 还剩 11 天 · 连续记账 6 天"
+                )
             )
         )
     }
@@ -1465,15 +1652,21 @@ private fun BillScreenEmptyPreview() {
     }
 }
 
-/** 升到 Lv.10 的兴奋态 + 深色主题 */
+/** 连续记账很久的兴奋态 + 深色主题 */
 @Preview(name = "账单页 · 深色", showBackground = true, widthDp = 380, heightDp = 860)
 @Composable
 private fun BillScreenDarkPreview() {
     JizhangTheme(darkTheme = true) {
         BillPreviewContent(
             state = previewUiState().copy(
-                pet = previewPetState().copy(coins = 480),
-                petMood = PetMood.EXCITED
+                petInsight = PetInsight(
+                    mood = PetMood.EXCITED,
+                    tips = listOf(
+                        PetTip(PetTipKind.CHEER, "本月结余 ¥6,155.00，收入的 33% 存下来了"),
+                        PetTip(PetTipKind.CHEER, "已经连续记账 12 天了，稳住")
+                    ),
+                    statusLine = "本月日均支出 ¥205.75 · 还剩 11 天 · 连续记账 12 天"
+                )
             )
         )
     }

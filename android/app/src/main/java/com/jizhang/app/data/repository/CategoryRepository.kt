@@ -28,7 +28,8 @@ class CategoryRepository @Inject constructor(
     private val categoryDao: CategoryDao,
     private val transactionDao: TransactionDao,
     private val tokenStore: TokenStore,
-    private val api: ApiService
+    private val api: ApiService,
+    private val transactionRepository: TransactionRepository
 ) {
 
     fun observeCategories(bookId: Long): Flow<List<LocalCategory>> = categoryDao.observeByBook(bookId)
@@ -120,6 +121,40 @@ class CategoryRepository @Inject constructor(
         } else {
             categoryDao.upsert(existing.copy(name = name, type = type, icon = icon))
         }
+    }
+
+    /**
+     * 把一个分类合并到另一个分类：先把它名下的账单整体搬过去，再删掉这个空分类。
+     * <p>
+     * 典型来源：从别的记账软件导入时，对方的细分类会被原样建成这边的分类，
+     * 于是「餐饮」旁边多出「午餐」「晚餐」「外卖」好几个平行分类，统计被切碎、默认分类也被稀释。
+     * <p>
+     * 顺序不能反：服务端与本地都禁止删除「还有账单」的分类，所以必须先搬家。
+     * 搬家成功但删除失败时（例如离线账本删不掉服务端的分类）不回滚——账单改到目标分类
+     * 本身就是用户要的结果，报错里会说明「已经搬了多少笔」，用户可以稍后再删空壳。
+     *
+     * @return 搬过去的账单笔数
+     */
+    suspend fun mergeInto(sourceId: Long, targetId: Long, bookId: Long): Result<Int> = runCatching {
+        if (sourceId == targetId) {
+            error("不能把分类合并到自己")
+        }
+        val all = categoryDao.listByBook(bookId)
+        val source = all.firstOrNull { it.id == sourceId } ?: error("分类不存在")
+        val target = all.firstOrNull { it.id == targetId } ?: error("目标分类不存在")
+        if (source.type != target.type) {
+            error("只能在同一收支类型下合并：支出不能并到收入")
+        }
+
+        val moved = transactionRepository.reassignCategory(bookId, sourceId, targetId)
+
+        delete(sourceId, bookId).onFailure { e ->
+            error(
+                "$moved 笔账单已改到「${target.name}」，但「${source.name}」没能删掉：" +
+                    (e.message ?: "删除失败")
+            )
+        }
+        moved
     }
 
     suspend fun delete(id: Long, bookId: Long): Result<Unit> = runCatching {

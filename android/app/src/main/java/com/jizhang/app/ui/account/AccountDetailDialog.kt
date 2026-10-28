@@ -64,6 +64,7 @@ import com.jizhang.app.ui.common.formatAmount
 import com.jizhang.app.ui.common.formatAmountInput
 import com.jizhang.app.ui.common.formatDate
 import com.jizhang.app.ui.common.formatSignedAmount
+import com.jizhang.app.ui.common.inlineTags
 import com.jizhang.app.ui.common.monthStartMillis
 import com.jizhang.app.ui.common.safeDialogContent
 import com.jizhang.app.ui.common.transactionTypeLabel
@@ -434,12 +435,13 @@ private fun TransactionRow(
     val outgoing = transaction.accountId == accountId
     val title = category?.name
         ?: if (isTransfer) (if (outgoing) "转账转出" else "转账转入") else transactionTypeLabel(transaction.type)
-    val remark = transaction.remark.orEmpty()
-    val subtitle = if (remark.isBlank()) {
+    // 这里主标题是分类，副标题就用「备注 → 标签」补上「这笔钱具体用在哪」；
+    // 只打标签不写备注时，副标题不该只剩一个日期
+    val detail = transaction.remark?.takeIf { it.isNotBlank() } ?: inlineTags(transaction.tags)
+    val subtitle = listOfNotNull(
+        detail?.takeIf { it.isNotBlank() },
         formatDate(transaction.tradeTime)
-    } else {
-        "$remark · ${formatDate(transaction.tradeTime)}"
-    }
+    ).joinToString(" · ")
 
     Row(
         modifier = Modifier

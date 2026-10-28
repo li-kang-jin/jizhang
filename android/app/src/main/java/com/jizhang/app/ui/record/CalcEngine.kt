@@ -15,7 +15,8 @@ data class CalcNum(val raw: String) : CalcToken {
 
 /** 四则运算符 */
 data class CalcOp(val symbol: Char) : CalcToken {
-    override val text: String get() = symbol.toString()
+    // 内部统一存 ASCII '-'，展示时换成排版减号（U+2212），跟键盘上的「−」保持一致
+    override val text: String get() = if (symbol == '-') "−" else symbol.toString()
 }
 
 /**
@@ -33,6 +34,11 @@ object CalcEngine {
     private const val MAX_DIGITS = 9
     private const val MAX_DECIMALS = 2
     private val OPS = charArrayOf('+', '-', '×', '÷')
+
+    /** 键盘上印的是排版减号（U+2212），输入法/粘贴还可能带连字符变体，统一归一成 ASCII '-' */
+    private val MINUS_ALIASES = charArrayOf('−', '–', '—')
+
+    private fun canonicalOp(op: Char): Char = if (op in MINUS_ALIASES) '-' else op
 
     fun appendDigit(tokens: List<CalcToken>, digit: Char): List<CalcToken> {
         if (!digit.isDigit() && digit != '.') return tokens
@@ -65,11 +71,12 @@ object CalcEngine {
     }
 
     fun appendOp(tokens: List<CalcToken>, op: Char): List<CalcToken> {
-        if (op !in OPS || tokens.isEmpty()) return tokens
-        return when (val last = tokens.last()) {
-            is CalcNum -> (tokens + CalcOp(op)).take(MAX_TOKENS)
+        val symbol = canonicalOp(op)
+        if (symbol !in OPS || tokens.isEmpty()) return tokens
+        return when (tokens.last()) {
+            is CalcNum -> (tokens + CalcOp(symbol)).take(MAX_TOKENS)
             // 运算符可直接替换，方便改错
-            is CalcOp -> tokens.dropLast(1) + CalcOp(op)
+            is CalcOp -> tokens.dropLast(1) + CalcOp(symbol)
         }
     }
 

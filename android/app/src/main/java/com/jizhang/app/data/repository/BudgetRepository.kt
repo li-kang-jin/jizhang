@@ -482,6 +482,118 @@ class BudgetRepository @Inject constructor(
         return FixedReservation(total = total, items = items.sortedBy { it.nextDate })
     }
 
+    /* ---------------- 智能预算建议 ---------------- */
+
+    /**
+     * 按历史账单算一份预算建议（纯本地统计，见 [BudgetAdvisor]）。
+     *
+     * ### 取数口径
+     * - 历史窗口是目标周期**之前**的 6 个周期，绝不含当前周期：半月的数据会把基准压低；
+     * - 子分类归并到父分类：否则「餐饮」和「早餐」各拿一份预算，加总就重复了；
+     * - 剔除「余额校准」生成的调整单：它是把账户余额对到真实值，不是消费；
+     * - 固定支出按目标周期整段展开（不是 [reservedFixed] 的「今天之后」），
+     *   因为建议要覆盖整个周期，而且它同时充当分类预算的下限。
+     *
+     * @param savingsRate 目标储蓄率 0..1，决定「支出上限」
+     */
+    suspend fun suggest(
+        bookId: Long,
+        period: String,
+        savingsRate: Double = BudgetAdvisor.DEFAULT_SAVINGS_RATE
+    ): BudgetAdvice {
+        val cycle = BudgetPeriods.cycleOf(period)
+        val expenseCategories = categoryDao.listByBook(bookId).filter { it.type == typeExpense }
+        val adjustId = expenseCategories
+            .firstOrNull { it.name == AccountRepository.ADJUST_CATEGORY_NAME }?.id ?: 0L
+
+        // 子分类 -> 父分类；父分类不在本类型里（改过类型的历史数据）就按自己算
+        val parentOf = HashMap<Long, Long>(expenseCategories.size)
+        val expenseIds = expenseCategories.map { it.id }.toSet()
+        expenseCategories.forEach { category ->
+            val parent = category.parentId.takeIf { it != 0L && it in expenseIds }
+            parentOf[category.id] = parent ?: category.id
+        }
+        val nameOf = expenseCategories.associate { it.id to it.name }
+        val adviseIds = parentOf.values.distinct().filter { it != adjustId }
+
+        // 近 6 个完整周期：[0] 是目标周期的前一个
+        val periods = (1..BudgetAdvisor.HISTORY_MONTHS).map { BudgetPeriods.plus(period, -it.toLong()) }
+        val monthlyByCategory = adviseIds.associateWith { mutableListOf<Long>() }
+        periods.forEach { historyPeriod ->
+            val sums = transactionDao
+                .sumByCategory(
+                    bookId,
+                    typeExpense,
+                    BudgetPeriods.startMillis(historyPeriod),
+                    BudgetPeriods.endMillis(historyPeriod)
+                )
+                .fold(HashMap<Long, Long>()) { acc, row ->
+                    val categoryId = row.categoryId ?: return@fold acc
+                    if (categoryId == adjustId) return@fold acc
+                    val parentId = parentOf[categoryId] ?: categoryId
+                    acc[parentId] = (acc[parentId] ?: 0L) + row.total
+                    acc
+                }
+            adviseIds.forEach { id -> monthlyByCategory.getValue(id).add(sums[id] ?: 0L) }
+        }
+
+        // 去年同期：有就做季节校准，没有就跳过（不拿别的月份硬凑）
+        val lastYearPeriod = BudgetPeriods.of(cycle, BudgetPeriods.startDate(period).minusYears(1))
+        val lastYearSums = transactionDao.sumByCategory(
+            bookId,
+            typeExpense,
+            BudgetPeriods.startMillis(lastYearPeriod),
+            BudgetPeriods.endMillis(lastYearPeriod)
+        ).fold(HashMap<Long, Long>()) { acc, row ->
+            val categoryId = row.categoryId ?: return@fold acc
+            if (categoryId == adjustId) return@fold acc
+            val parentId = parentOf[categoryId] ?: categoryId
+            acc[parentId] = (acc[parentId] ?: 0L) + row.total
+            acc
+        }
+
+        val income = periods.map { historyPeriod ->
+            transactionDao.sumBetweenExcluding(
+                bookId,
+                BudgetPeriods.startMillis(historyPeriod),
+                BudgetPeriods.endMillis(historyPeriod),
+                adjustId
+            ).income
+        }
+
+        val recurringByCategory = HashMap<Long, Long>()
+        val periodStart = BudgetPeriods.startDate(period)
+        val periodEnd = BudgetPeriods.endDate(period)
+        recurringExpenseDao.listEnabled(bookId).forEach { item ->
+            val dates = RecurringExpenses.occurrences(item, periodStart, periodEnd)
+            if (dates.isEmpty()) {
+                return@forEach
+            }
+            val parentId = parentOf[item.categoryId] ?: item.categoryId
+            if (parentId <= 0L) {
+                return@forEach
+            }
+            recurringByCategory[parentId] =
+                (recurringByCategory[parentId] ?: 0L) + item.amount * dates.size
+        }
+
+        val histories = adviseIds.map { id ->
+            CategoryHistory(
+                categoryId = id,
+                name = nameOf[id] ?: "未分类",
+                monthlyFen = monthlyByCategory.getValue(id),
+                samePeriodLastYearFen = lastYearSums[id]
+            )
+        }
+
+        return BudgetAdvisor.advise(
+            categories = histories,
+            monthlyIncomeFen = income,
+            recurringByCategoryFen = recurringByCategory,
+            savingsRate = savingsRate
+        )
+    }
+
     /* ---------------- 预算趋势预测 ---------------- */
 
     /**

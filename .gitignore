@@ -61,3 +61,8 @@ docker/data/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ---------- 本地数据备份 / 一次性脚本 ----------
+# backup/ 是线上库的导出快照（.db + csv），体积大且含真实账单，不入库
+backup/
+/_strip_old.py

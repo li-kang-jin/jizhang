@@ -8,11 +8,13 @@ import com.jizhang.app.data.local.entity.LocalTransaction
 import com.jizhang.app.data.prefs.SettingsStore
 import com.jizhang.app.data.repository.BookRepository
 import com.jizhang.app.data.repository.LedgerRepository
+import com.jizhang.app.data.repository.PetInsightRepository
 import com.jizhang.app.data.repository.PetRepository
 import com.jizhang.app.data.repository.ReportRepository
 import com.jizhang.app.data.repository.SyncManager
 import com.jizhang.app.data.repository.TransactionRepository
-import com.jizhang.app.ui.pet.PetMood
+import com.jizhang.app.data.repository.WealthPlanner
+import com.jizhang.app.ui.pet.PetInsight
 import com.jizhang.app.ui.pet.PetState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -31,6 +33,7 @@ class BillViewModel @Inject constructor(
     private val reportRepository: ReportRepository,
     private val bookRepository: BookRepository,
     private val petRepository: PetRepository,
+    private val petInsightRepository: PetInsightRepository,
     private val ledgerRepository: LedgerRepository,
     private val syncManager: SyncManager,
     private val settingsStore: SettingsStore
@@ -57,11 +60,23 @@ class BillViewModel @Inject constructor(
         val monthIncome: Long = 0L,
         val monthExpense: Long = 0L,
         val pet: PetState = PetState(),
-        val petMood: PetMood = PetMood.NORMAL,
+        /**
+         * 宠物读完本地账单的产出：建议 + 心情。
+         * 直接派生自 [transactions]，所以每记一笔、删一笔它都会跟着变。
+         */
+        val petInsight: PetInsight = PetInsight.EMPTY,
+        /** 当前展示第几条建议（用户点「换一句」时滚动） */
+        val tipIndex: Int = 0,
         /** 记账人 userId → 展示名（家庭账本里显示「谁记的」） */
         val memberLabels: Map<Long, String> = emptyMap(),
         /** 账户 id → 名称（列表里显示「从哪个账户出的」） */
         val accountLabels: Map<Long, String> = emptyMap(),
+        /**
+         * 长按账单看「机会成本」时的两个假设。
+         * 与财富页同源（DataStore），否则同一笔钱在两个页面折算出的未来值会对不上。
+         */
+        val fiRealReturn: Double = WealthPlanner.DEFAULT_REAL_RETURN,
+        val fiTargetYears: Int = 20,
         val syncing: Boolean = false,
         val message: String? = null
     )
@@ -71,6 +86,20 @@ class BillViewModel @Inject constructor(
 
     private var observeJob: Job? = null
     private var lastBookId: Long = -1L
+
+    /**
+     * 重读财富页的两个假设。
+     * <p>
+     * 长按账单时才调用：用户可能刚在财富页把收益率 / 目标年数拖过，
+     * bind() 早就跑完了，不重读就会拿旧参数算机会成本。
+     */
+    fun refreshFiAssumptions() {
+        viewModelScope.launch {
+            val realReturn = settingsStore.fiRealReturn()
+            val targetYears = settingsStore.fiTargetYears()
+            _state.update { it.copy(fiRealReturn = realReturn, fiTargetYears = targetYears) }
+        }
+    }
 
     /** 账本切换（登录 / 退出登录）时重新绑定数据源 */
     fun bind(bookId: Long) {
@@ -102,8 +131,22 @@ class BillViewModel @Inject constructor(
                 }
             }
             launch {
+                // 连续天数变了建议也要跟着变（成就感那类建议直接从这里来）
                 petRepository.state.collect { pet ->
                     _state.update { it.copy(pet = pet) }
+                }
+            }
+            launch {
+                // 结论由仓库统一算：我的页 / 设置页看的是同一条流，三处永远是同一只宠物
+                petInsightRepository.observe(bookId).collect { insight ->
+                    _state.update {
+                        it.copy(
+                            petInsight = insight,
+                            // 建议重排后当前下标可能越界，回落到第一条
+                            tipIndex = it.tipIndex
+                                .coerceAtMost((insight.tips.size - 1).coerceAtLeast(0))
+                        )
+                    }
                 }
             }
             launch {
@@ -138,7 +181,12 @@ class BillViewModel @Inject constructor(
         sync()
     }
 
-    /** 重新计算本月收支与宠物心情 */
+    /**
+     * 重新拉取本月收支。
+     *
+     * 宠物心情不在这里算：它由 [UiState.petInsight] 派生（见 [withDerived]），
+     * 两处各算一套迟早打架。
+     */
     fun refresh() {
         val bookId = _state.value.bookId
         viewModelScope.launch {
@@ -149,16 +197,10 @@ class BillViewModel @Inject constructor(
                     _state.update { it.copy(message = "本月汇总刷新失败：${error.message ?: "未知错误"}") }
                     return@launch
                 }
-            val mood = when {
-                overview.balance < 0 -> PetMood.WORRIED
-                overview.income > 0 -> PetMood.HAPPY
-                else -> PetMood.NORMAL
-            }
             _state.update {
                 it.copy(
                     monthIncome = overview.income,
-                    monthExpense = overview.expense,
-                    petMood = mood
+                    monthExpense = overview.expense
                 )
             }
         }
@@ -310,6 +352,20 @@ class BillViewModel @Inject constructor(
             .take(CHART_CATEGORIES)
 
         return BillChart(type = chartType, days = days, topCategories = topCategories, total = total)
+    }
+
+    /**
+     * 卡片上的「换一句」：几条建议轮着看。
+     *
+     * 顺序由引擎定优先级，这里只负责翻页 —— 一次只展示一条是为了让那条真的被读到，
+     * 但用户不该看不到排在第二位的那条。
+     */
+    fun nextTip() {
+        val size = _state.value.petInsight.tips.size
+        if (size <= 1) {
+            return
+        }
+        _state.update { it.copy(tipIndex = (it.tipIndex + 1) % size) }
     }
 
     /** 记账成功：喂宠物 + 刷新汇总 */

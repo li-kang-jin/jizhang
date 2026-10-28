@@ -30,6 +30,8 @@ export interface UserInfo {
   status: number
   createdAt?: string
   lastLoginAt?: string
+  /** 1=密码已被管理员重置，用户还没自己改过 */
+  mustChangePassword?: number
 }
 
 export interface TokenInfo {

@@ -69,6 +69,7 @@ import com.jizhang.app.ui.report.BudgetDialog
 import com.jizhang.app.ui.report.ReportScreen
 import com.jizhang.app.ui.report.ReportViewModel
 import com.jizhang.app.ui.settings.SettingsDialog
+import com.jizhang.app.ui.wealth.WealthPlanScreen
 import java.time.LocalDate
 
 /**
@@ -90,6 +91,10 @@ fun MainScreen(appViewModel: AppViewModel) {
     var showImport by remember { mutableStateOf(false) }
     var showBooks by remember { mutableStateOf(false) }
     var showRecurring by remember { mutableStateOf(false) }
+    // 财务自由页：从统计页的净资产行或「我的」进入，属于全局覆盖层
+    var showWealthPlan by remember { mutableStateOf(false) }
+    // 财富页里改过假设 → +1，统计页的进度条按新口径重算
+    var wealthVersion by remember { mutableIntStateOf(0) }
     // 非空表示账户详情覆盖层打开着（账户管理页点某一行进来）
     var detailAccountId by remember { mutableStateOf<Long?>(null) }
     // 非空表示记账页以「编辑这笔账单」的方式打开（账单页点条目进来）
@@ -231,6 +236,8 @@ fun MainScreen(appViewModel: AppViewModel) {
                         recordDate = null
                         showRecord = true
                     },
+                    // 长按某笔账单 → 机会成本卡 →「看财务自由进度」
+                    onOpenWealth = { showWealthPlan = true },
                     preset = pendingBillPreset,
                     onPresetConsumed = { pendingBillPreset = null }
                 )
@@ -263,7 +270,9 @@ fun MainScreen(appViewModel: AppViewModel) {
                     hideAmounts = state.hideAmounts,
                     // 导入 / 清空数据后所有聚合要重算（详见 ReportScreen 里的 dataVersion）
                     dataVersion = importDone,
+                    wealthVersion = wealthVersion,
                     onOpenAccounts = { showAccounts = true },
+                    onOpenWealth = { showWealthPlan = true },
                     onOpenBills = { preset ->
                         pendingBillPreset = preset
                         tab = 0
@@ -291,6 +300,7 @@ fun MainScreen(appViewModel: AppViewModel) {
                     onOpenSettings = { showSettings = true },
                     onOpenImport = { showImport = true },
                     onOpenBooks = { showBooks = true },
+                    onOpenWealth = { showWealthPlan = true },
                     importDone = importDone,
                     onLoginChanged = { tip ->
                         appViewModel.onLoggedIn(tip)
@@ -339,6 +349,17 @@ fun MainScreen(appViewModel: AppViewModel) {
             accountId = accountId,
             hideAmounts = state.hideAmounts,
             onDismiss = { detailAccountId = null }
+        )
+    }
+
+    if (showWealthPlan) {
+        WealthPlanScreen(
+            bookId = state.bookId,
+            hideAmounts = state.hideAmounts,
+            onDismiss = {
+                showWealthPlan = false
+                wealthVersion++
+            }
         )
     }
 

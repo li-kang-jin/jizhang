@@ -38,6 +38,9 @@ public class UserVO {
     /** 最后登录时间 */
     private OffsetDateTime lastLoginAt;
 
+    /** 密码是否被管理员重置过（1=建议尽快修改），客户端据此提示用户 */
+    private Integer mustChangePassword;
+
     public static UserVO from(UserEntity entity) {
         if (entity == null) {
             return null;
@@ -53,6 +56,7 @@ public class UserVO {
         vo.setStatus(entity.getStatus());
         vo.setCreatedAt(entity.getCreatedAt());
         vo.setLastLoginAt(entity.getLastLoginAt());
+        vo.setMustChangePassword(entity.getMustChangePassword());
         return vo;
     }
 }

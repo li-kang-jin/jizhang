@@ -28,29 +28,19 @@ enum class PetMood {
 
 /**
  * 宠物状态。全部存在本地，不涉及后端。
+ *
+ * 只有「连续记账天数」这一个指标：它是真实的记账习惯。
+ * 之前还记过金币 / 等级，但一个靠记多少笔算出来的数字对用户没有任何用处，已废弃。
  */
 data class PetState(
     val name: String = DEFAULT_NAME,
     val type: PetType = PetType.CAT,
-    /** 金币：记一笔 +10 */
-    val coins: Int = 0,
     /** 连续记账天数 */
     val streakDays: Int = 0,
     /** 最后一次记账日期，格式 yyyy-MM-dd */
     val lastRecordDate: String = ""
 ) {
-    /** 等级：每 50 金币升一级 */
-    val level: Int get() = coins / COINS_PER_LEVEL + 1
-
-    /** 当前等级内的进度 0f..1f */
-    val levelProgress: Float get() = (coins % COINS_PER_LEVEL) / COINS_PER_LEVEL.toFloat()
-
-    /** 距离下一级还差多少金币 */
-    val coinsToNextLevel: Int get() = COINS_PER_LEVEL - (coins % COINS_PER_LEVEL)
-
     companion object {
         const val DEFAULT_NAME = "小锦锦"
-        const val COINS_PER_LEVEL = 50
-        const val COINS_PER_RECORD = 10
     }
 }

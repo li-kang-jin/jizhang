@@ -12,6 +12,7 @@ import com.jizhang.dao.entity.UserEntity;
 import com.jizhang.dao.mapper.UserMapper;
 import com.jizhang.service.TokenBlacklistService;
 import com.jizhang.service.UserService;
+import com.jizhang.service.dto.ChangePasswordRequest;
 import com.jizhang.service.dto.LoginRequest;
 import com.jizhang.service.dto.RegisterRequest;
 import com.jizhang.service.support.DefaultDataInitializer;
@@ -123,6 +124,30 @@ public class UserServiceImpl implements UserService {
             throw new BizException(ResultCode.USER_NOT_FOUND);
         }
         return UserVO.from(user);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void changePassword(ChangePasswordRequest request) {
+        Long userId = UserContext.requireUserId();
+        UserEntity user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new BizException(ResultCode.USER_NOT_FOUND);
+        }
+        if (!passwordEncoder.matches(request.getOldPassword(), user.getPassword())) {
+            throw new BizException(ResultCode.PARAM_ERROR, "原密码不正确");
+        }
+        if (passwordEncoder.matches(request.getNewPassword(), user.getPassword())) {
+            throw new BizException(ResultCode.PARAM_ERROR, "新密码不能与原密码相同");
+        }
+
+        UserEntity update = new UserEntity();
+        update.setId(userId);
+        update.setPassword(passwordEncoder.encode(request.getNewPassword()));
+        // 自己改过密码，就不需要再提示「密码已被重置」
+        update.setMustChangePassword(0);
+        userMapper.updateById(update);
+        log.info("用户修改密码: userId={}, username={}", userId, user.getUsername());
     }
 
     private TokenVO buildToken(UserEntity user) {

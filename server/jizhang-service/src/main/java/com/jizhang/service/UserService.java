@@ -1,5 +1,6 @@
 package com.jizhang.service;
 
+import com.jizhang.service.dto.ChangePasswordRequest;
 import com.jizhang.service.dto.LoginRequest;
 import com.jizhang.service.dto.RegisterRequest;
 import com.jizhang.service.vo.TokenVO;
@@ -24,4 +25,11 @@ public interface UserService {
 
     /** 当前登录用户信息 */
     UserVO currentUser();
+
+    /**
+     * 当前登录用户修改自己的密码（需校验原密码）。
+     * <p>
+     * 与管理员重置密码配套：重置只会发一个临时密码，用户必须能自己改成记得住的。
+     */
+    void changePassword(ChangePasswordRequest request);
 }

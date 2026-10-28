@@ -22,6 +22,9 @@ import com.jizhang.app.data.repository.ReportOverview
 import com.jizhang.app.data.repository.ReportPeriod
 import com.jizhang.app.data.repository.ReportRepository
 import com.jizhang.app.data.repository.TransactionRepository
+import com.jizhang.app.data.repository.WealthPlanner
+import com.jizhang.app.data.repository.WealthProgress
+import com.jizhang.app.data.repository.WealthRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -57,6 +60,7 @@ class ReportViewModel @Inject constructor(
     private val reportRepository: ReportRepository,
     private val budgetRepository: BudgetRepository,
     private val transactionRepository: TransactionRepository,
+    private val wealthRepository: WealthRepository,
     private val settings: SettingsStore
 ) : ViewModel() {
 
@@ -95,6 +99,12 @@ class ReportViewModel @Inject constructor(
         /** 预算进度（始终按锚点所在月份），未设置时 hasBudget = false */
         val budget: BudgetOverviewDto? = null,
         val assets: AssetSummary = AssetSummary.EMPTY,
+        /**
+         * 财务自由进度（卡片上的一行进度条用）。
+         * <p>
+         * 只有进度 / 缺口 / 自由度，不跑完整模拟：报表首屏不该为了一个入口等几十毫秒。
+         */
+        val wealth: WealthProgress? = null,
         /** 支出分类，供预算设置选择范围 */
         val expenseCategories: List<CategoryStatDto> = emptyList(),
         /**
@@ -133,6 +143,7 @@ class ReportViewModel @Inject constructor(
     private var loadJob: Job? = null
     private var dayJob: Job? = null
     private var dataWatchJob: Job? = null
+    private var wealthJob: Job? = null
     private var granularityRestored = false
 
     fun bind(bookId: Long, shared: Boolean) {
@@ -156,6 +167,7 @@ class ReportViewModel @Inject constructor(
              */
             transactionRepository.observeTransactions(bookId).drop(1).collect {
                 reload()
+                refreshWealth()
             }
         }
         viewModelScope.launch {
@@ -168,6 +180,7 @@ class ReportViewModel @Inject constructor(
                 }
             }
             reload()
+            refreshWealth()
         }
     }
 
@@ -177,6 +190,26 @@ class ReportViewModel @Inject constructor(
             reload(refresh = true)
         } else {
             reload()
+        }
+        refreshWealth()
+    }
+
+    /**
+     * 重算「财务自由进度」。
+     * <p>
+     * 与时间轴无关（用的是近 24 个月 + 当前净资产），所以不挂在 [reload] 里跟着翻页跑；
+     * 记账、导入、清空数据之后由 `load()` 一并刷新。
+     */
+    fun refreshWealth() {
+        val bookId = _state.value.bookId
+        if (bookId <= 0) return
+        wealthJob?.cancel()
+        wealthJob = viewModelScope.launch {
+            // 提取率是用户在财富页里的假设，卡片必须跟着同一口径走（每次都读，免得改完假设这边还停在旧值）
+            val rate = runCatching { settings.fiWithdrawalRate() }
+                .getOrDefault(WealthPlanner.DEFAULT_WITHDRAWAL_RATE)
+            val progress = runCatching { wealthRepository.progress(bookId, rate) }.getOrNull()
+            _state.update { it.copy(wealth = progress) }
         }
     }
 

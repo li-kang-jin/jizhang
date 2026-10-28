@@ -57,10 +57,11 @@ import com.jizhang.app.ui.common.CategoryBadge
 import com.jizhang.app.ui.common.MonthGrid
 import com.jizhang.app.ui.common.SmallAction
 import com.jizhang.app.ui.common.WEEKDAY_SHORT
+import com.jizhang.app.ui.common.billTitle
 import com.jizhang.app.ui.common.formatSignedAmount
 import com.jizhang.app.ui.common.inlineTags
 import com.jizhang.app.ui.common.money
-import com.jizhang.app.ui.common.transactionTypeLabel
+import com.jizhang.app.ui.common.tagsUsedAsTitle
 import com.jizhang.app.ui.common.typeColor
 import com.jizhang.app.ui.theme.AppColors
 import kotlinx.coroutines.launch
@@ -506,10 +507,9 @@ private fun DayBillRow(
     hideAmounts: Boolean,
     onEdit: (LocalTransaction) -> Unit
 ) {
-    val remark = item.remark?.takeIf { it.isNotBlank() }
     val categoryName = category?.name?.takeIf { it.isNotBlank() }
-    // 没写备注时主标题就是分类名，副标题里别再重复一遍「餐饮 · 餐饮」
-    val title = remark ?: categoryName ?: transactionTypeLabel(item.type)
+    // 标题口径与账单页一致：备注 → 标签 → 分类名；副标题里别再重复一遍同样的字
+    val title = billTitle(item, categoryName)
 
     Row(
         modifier = Modifier
@@ -537,7 +537,10 @@ private fun DayBillRow(
                         categoryName?.let { append(" · $it") }
                     }
                     // 标签加 # 前缀：和分类名、账户名区分开，一眼能看出这是标签
-                    inlineTags(item.tags)?.let { append(" · $it") }
+                    // （标签已经当标题时不再重复）
+                    if (!tagsUsedAsTitle(item)) {
+                        inlineTags(item.tags)?.let { append(" · $it") }
+                    }
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

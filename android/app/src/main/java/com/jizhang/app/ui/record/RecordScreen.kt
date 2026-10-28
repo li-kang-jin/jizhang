@@ -69,6 +69,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jizhang.app.data.local.entity.LocalAccount
 import com.jizhang.app.data.local.entity.LocalCategory
 import com.jizhang.app.data.local.entity.LocalTransaction
+import com.jizhang.app.data.repository.CategoryGuess
+import com.jizhang.app.data.repository.GuessSource
 import com.jizhang.app.ui.category.CategoryEditorDialog
 import com.jizhang.app.ui.common.AppChip
 import com.jizhang.app.ui.common.AppFullScreenDialog
@@ -334,6 +336,16 @@ private fun RecordLayout(
             )
         }
 
+        // ②' 备注猜出来的分类：一行高度，只在猜到的不是当前选中时出现（放在网格下方，避免出现时把格子顶走）
+        CategorySuggestionBar(
+            suggestion = state.categorySuggestion,
+            categoryName = state.categorySuggestion?.let { guess ->
+                state.categories.firstOrNull { it.id == guess.categoryId }?.name
+            },
+            accent = accent,
+            onAccept = viewModel::acceptCategorySuggestion
+        )
+
         // ③ 标签：记账基本每笔都要打标签，常用标签直接铺在表单里，点一下就选上，不再进二级弹窗
         TagQuickBar(
             tags = state.tags,
@@ -500,23 +512,16 @@ private fun MetaBar(
 }
 
 /**
- * 三个常用账户：使用次数降序（次数相同按账户管理里的手工顺序）。
- * 当前选中的账户如果不在前三，就顶掉最后一个 —— 从「更多」里选过冷门账户后，
- * 芯片行里必须还能看见它，否则用户会以为没选上。
+ * 三个常用账户：只挑**真正记过账**的账户，按使用次数降序（次数相同按账户管理里的手工顺序），
+ * 当前选中的账户如果不在前三就顶掉最后一个。完整规则见 [pickQuickAccounts]。
  */
-private fun quickAccounts(state: RecordViewModel.UiState): List<LocalAccount> {
-    val ranked = state.accounts.sortedByDescending { state.accountUsage[it.id] ?: 0L }
-    val top = ranked.take(QUICK_ACCOUNT_LIMIT).toMutableList()
-    val selected = state.accounts.firstOrNull { it.id == state.selectedAccountId }
-    if (selected != null && top.none { it.id == selected.id }) {
-        if (top.size >= QUICK_ACCOUNT_LIMIT) {
-            top[top.lastIndex] = selected
-        } else {
-            top.add(selected)
-        }
-    }
-    return top
-}
+private fun quickAccounts(state: RecordViewModel.UiState): List<LocalAccount> =
+    pickQuickAccounts(
+        accounts = state.accounts,
+        usage = state.accountUsage,
+        selectedAccountId = state.selectedAccountId,
+        limit = QUICK_ACCOUNT_LIMIT
+    )
 
 /**
  * 表单里的标签快选行：常用标签直接铺开，点一下加上、再点一下去掉。
@@ -763,6 +768,55 @@ private fun TransferSection(state: RecordViewModel.UiState, viewModel: RecordVie
         excludeId = state.selectedAccountId,
         onSelect = viewModel::selectToAccount
     )
+}
+
+/**
+ * 备注或标签猜出来的分类：一行芯片，点一下等于点了对应的分类格子。
+ *
+ * 三条克制：
+ * 1. **不自动套用**：分类是用户对这笔记账的理解，猜错了再改回来比一开始不猜更烦；
+ * 2. 只在与当前选中不同时出现（相同的话什么也没省，只是多一行噪音）；
+ * 3. 用户自己点过分类后就不再出现（VM 侧的 `categoryTouched`），避免「刚选好又被劝改」。
+ *
+ * 右侧那句「标签「打车」」/「备注「牛肉面」」说明的是**猜的依据**：包含匹配时它与用户当前的输入
+ * 并不相同（输入「午饭牛肉面」、凭历史「牛肉面」猜的餐饮），把差异摆出来，用户才知道这次猜得靠不靠谱。
+ */
+@Composable
+private fun CategorySuggestionBar(
+    suggestion: CategoryGuess?,
+    categoryName: String?,
+    accent: Color,
+    onAccept: () -> Unit
+) {
+    if (suggestion == null || categoryName == null) {
+        return
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 16.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        AppChip(
+            label = "猜你要记「$categoryName」",
+            selected = false,
+            onClick = onAccept,
+            tint = accent,
+            compact = true
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = when (suggestion.source) {
+                GuessSource.TAG -> "标签「${suggestion.matchedText}」"
+                GuessSource.REMARK -> "备注「${suggestion.matchedText}」"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+    }
 }
 
 /**

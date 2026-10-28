@@ -31,6 +31,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -80,6 +81,7 @@ import com.jizhang.app.data.repository.RankItem
 import com.jizhang.app.data.repository.ReportGranularity
 import com.jizhang.app.data.repository.ReportOverview
 import com.jizhang.app.data.repository.ReportPeriod
+import com.jizhang.app.data.repository.WealthProgress
 import com.jizhang.app.ui.bill.BillPreset
 import com.jizhang.app.ui.common.HeatCell
 import com.jizhang.app.ui.common.MonthGrid
@@ -158,8 +160,14 @@ fun ReportScreen(
      * 所以导入这类批量写库之后显式重取一次，避免要重启应用才看到新数字。
      */
     dataVersion: Int = 0,
+    /**
+     * 财富页关闭后 +1：那边改过提取率假设，卡片上的进度要按新口径重算。
+     */
+    wealthVersion: Int = 0,
     /** 「资产管理」入口 */
     onOpenAccounts: (() -> Unit)? = null,
+    /** 「财务自由」入口：把净资产换成一个"还差多远"的进度 */
+    onOpenWealth: (() -> Unit)? = null,
     /** 点分类 / 账户 / 标签看明细：切到账单页并带上筛选条件 */
     onOpenBills: (BillPreset) -> Unit = {},
     /** 日历卡片的「在日历里按月翻看」：切到日历 Tab */
@@ -177,6 +185,12 @@ fun ReportScreen(
     LaunchedEffect(dataVersion) {
         if (dataVersion > 0) {
             viewModel.load()
+        }
+    }
+
+    LaunchedEffect(wealthVersion) {
+        if (wealthVersion > 0) {
+            viewModel.refreshWealth()
         }
     }
 
@@ -233,7 +247,9 @@ fun ReportScreen(
                             hideAmounts = hideAmounts,
                             // 净资产是唯一要在这个位置出现的「存量」：看流量时也得知道身家有多少
                             netAssets = state.assets.netAssets,
+                            wealth = state.wealth,
                             onOpenAssets = onOpenAccounts,
+                            onOpenWealth = onOpenWealth,
                             // 点收入 / 支出 / 结余 → 账单页只看对应的那部分
                             onOpen = { type -> openBills(type = type) }
                         )
@@ -715,8 +731,12 @@ private fun OverviewCard(
     hideAmounts: Boolean,
     /** 当前净资产（实时存量，不属于本期）：流量卡里也要给一根「身家」的锚 */
     netAssets: Long,
+    /** 财务自由进度：只有进度条要用，缺数据时整行退化成入口 */
+    wealth: WealthProgress? = null,
     /** 点净资产 → 资产管理；null 表示这个入口关掉了 */
     onOpenAssets: (() -> Unit)?,
+    /** 点「财务自由」→ 财富规划页 */
+    onOpenWealth: (() -> Unit)? = null,
     /** 点收入 / 支出 / 结余 → 去账单页看对应那部分（type = 2 收入、1 支出、null 全部） */
     onOpen: (Int?) -> Unit
 ) {
@@ -823,6 +843,75 @@ private fun OverviewCard(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+        }
+
+        // 「身家有多少」之后必然接着问「离不用上班还差多远」：
+        // 这里不只是一行文字链接，而是一块带底色的入口 —— 报表页信息密度高，
+        // 纯文字的小链接会被整屏数字淹没（实测确实没人找到）
+        if (onOpenWealth != null) {
+            Spacer(Modifier.height(10.dp))
+            val hasProgress = wealth != null && wealth.fiNumberFen > 0L && wealth.hasEnoughData
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.07f))
+                    .clickable(onClick = onOpenWealth)
+                    .padding(horizontal = 10.dp, vertical = 8.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Filled.Insights,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = AppColors.accent
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "财务自由测算",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(Modifier.weight(1f))
+                    if (hasProgress && wealth != null) {
+                        Text(
+                            text = "${(wealth.progress * 100).roundToInt()}%",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = AppColors.accent
+                        )
+                    }
+                    Text(
+                        text = " ›",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (hasProgress && wealth != null) {
+                    Spacer(Modifier.height(6.dp))
+                    LinearProgressIndicator(
+                        progress = { wealth.progress.coerceIn(0.0, 1.0).toFloat() },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(5.dp)
+                            .clip(RoundedCornerShape(3.dp)),
+                        color = AppColors.accent,
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "还差 ${money(wealth.gapFen, hideAmounts)} · 点这里看概率与所需年限",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    Text(
+                        text = "用账本里的真实支出算 FI 资产与达标概率",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
     }

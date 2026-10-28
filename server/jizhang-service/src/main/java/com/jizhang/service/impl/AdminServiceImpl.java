@@ -42,6 +42,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.security.SecureRandom;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -64,6 +65,12 @@ public class AdminServiceImpl implements AdminService {
     private static final int MAX_TREND_DAYS = 90;
 
     private static final String DEFAULT_CURRENCY = "CNY";
+
+    /** 临时密码字符集：去掉 0/O/1/l/I，避免电话/微信口头传达时听错登不进去 */
+    private static final char[] TEMP_PASSWORD_ALPHABET =
+            "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789".toCharArray();
+
+    private static final int TEMP_PASSWORD_LENGTH = 10;
 
     private final UserMapper userMapper;
     private final BookMapper bookMapper;
@@ -173,6 +180,47 @@ public class AdminServiceImpl implements AdminService {
         userMapper.updateById(user);
         log.info("管理员修改用户状态: userId={}, status={}", userId, status);
         return UserVO.from(userMapper.selectById(userId));
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public String resetUserPassword(Long userId) {
+        UserEntity user = userId == null ? null : userMapper.selectById(userId);
+        if (user == null) {
+            throw new BizException(ResultCode.USER_NOT_FOUND);
+        }
+        // 管理员之间不能互改密码：一个被攻破的管理员账号不该能顺走其他管理员
+        if (CommonConstants.ROLE_ADMIN.equals(user.getRole())) {
+            throw new BizException(ResultCode.PARAM_ERROR,
+                    "不能重置管理员账号的密码，请用该账号登录后自行修改");
+        }
+
+        String tempPassword = randomPassword();
+        UserEntity update = new UserEntity();
+        update.setId(userId);
+        update.setPassword(passwordEncoder.encode(tempPassword));
+        update.setMustChangePassword(1);
+        userMapper.updateById(update);
+
+        // 日志里只留「谁重置了谁」，不记密码：日志经常被转发、归档，比数据库更容易泄漏
+        log.info("管理员重置用户密码: userId={}, username={}, operatorId={}",
+                userId, user.getUsername(), UserContext.requireUserId());
+        return tempPassword;
+    }
+
+    /**
+     * 临时密码：10 位，去掉 0/O/1/l/I 这类口头传达时容易听错的字符。
+     * <p>
+     * 用 [SecureRandom] 而不是 `Math.random()`：后者是可预测的伪随机，
+     * 而这个密码在用户改密之前就是这套账号的唯一凭据。
+     */
+    private static String randomPassword() {
+        SecureRandom random = new SecureRandom();
+        StringBuilder sb = new StringBuilder(TEMP_PASSWORD_LENGTH);
+        for (int i = 0; i < TEMP_PASSWORD_LENGTH; i++) {
+            sb.append(TEMP_PASSWORD_ALPHABET[random.nextInt(TEMP_PASSWORD_ALPHABET.length)]);
+        }
+        return sb.toString();
     }
 
     @Override

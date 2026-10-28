@@ -34,7 +34,6 @@ import com.jizhang.app.data.repository.MigrationSummary
 import com.jizhang.app.ui.pet.PetAvatar
 import com.jizhang.app.ui.pet.PetMood
 import com.jizhang.app.ui.pet.PetType
-import com.jizhang.app.ui.theme.AppColors
 
 /**
  * 登录 / 注册弹窗。
@@ -70,7 +69,6 @@ fun LoginDialog(
                     type = PetType.CAT,
                     mood = if (registerMode) PetMood.EXCITED else PetMood.HAPPY,
                     modifier = Modifier.size(72.dp),
-                    bodyColor = AppColors.accent,
                     animated = false
                 )
                 Spacer(Modifier.height(10.dp))

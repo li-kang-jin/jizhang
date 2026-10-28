@@ -34,6 +34,16 @@ public interface AdminService {
     /** 启用 / 禁用用户 */
     UserVO updateUserStatus(Long userId, Integer status);
 
+    /**
+     * 重置用户密码：服务端生成一次性临时密码。
+     * <p>
+     * 返回明文只此一次（不落库、不打日志），管理员把它交给用户，用户登录后自行修改。
+     * 管理员账号不允许被重置，避免一个管理员接管另一个管理员。
+     *
+     * @return 临时密码
+     */
+    String resetUserPassword(Long userId);
+
     PageResult<BookVO> pageBooks(AdminBookQueryRequest request);
 
     PageResult<TransactionVO> pageTransactions(AdminTransactionQueryRequest request);

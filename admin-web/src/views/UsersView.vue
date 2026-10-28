@@ -1,12 +1,18 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { fetchUsers, updateUserStatus } from '@/api/admin'
+import { fetchUsers, resetUserPassword, updateUserStatus } from '@/api/admin'
 import type { UserInfo } from '@/types'
 
 const loading = ref(false)
 const list = ref<UserInfo[]>([])
 const total = ref(0)
+
+/* 重置密码：临时密码只在这里显示一次，关掉弹窗就没了 */
+const resetTarget = ref<UserInfo | null>(null)
+const tempPassword = ref('')
+const showTemp = ref(false)
+const resetting = ref(false)
 
 const query = reactive({
   page: 1,
@@ -44,6 +50,49 @@ function handleReset() {
   query.role = undefined
   query.page = 1
   loadData()
+}
+
+/**
+ * 重置密码。
+ * <p>
+ * 确认框里必须先说清「旧密码立刻失效」：管理员点下去不会感受到代价，用户那头却会被踢下线。
+ */
+async function resetPassword(row: UserInfo) {
+  try {
+    await ElMessageBox.confirm(
+      `将重置「${row.username}」的密码：旧密码立即失效，用户需要用临时密码重新登录。`,
+      '重置密码',
+      { type: 'warning', confirmButtonText: '确认重置' }
+    )
+  } catch {
+    return
+  }
+  resetting.value = true
+  try {
+    tempPassword.value = await resetUserPassword(row.id)
+    resetTarget.value = row
+    showTemp.value = true
+    // 列表里「待改密」标记跟着变，重新拉一遍
+    loadData()
+  } finally {
+    resetting.value = false
+  }
+}
+
+async function copyPassword() {
+  try {
+    await navigator.clipboard.writeText(tempPassword.value)
+    ElMessage.success('已复制')
+  } catch {
+    // 非 https / 浏览器限制下 clipboard 不可用，提示用户手动选
+    ElMessage.warning('复制失败，请手动选中后复制')
+  }
+}
+
+function closeTemp() {
+  showTemp.value = false
+  tempPassword.value = ''
+  resetTarget.value = null
 }
 
 async function toggleStatus(row: UserInfo) {
@@ -109,10 +158,19 @@ onMounted(loadData)
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="status" label="状态" width="100">
+        <el-table-column prop="status" label="状态" width="150">
           <template #default="{ row }">
             <el-tag :type="row.status === 1 ? 'success' : 'danger'" size="small">
               {{ row.status === 1 ? '正常' : '已禁用' }}
+            </el-tag>
+            <el-tag
+              v-if="row.mustChangePassword === 1"
+              type="warning"
+              size="small"
+              style="margin-left: 6px"
+              title="密码已被管理员重置，用户还没自己改过"
+            >
+              待改密
             </el-tag>
           </template>
         </el-table-column>
@@ -122,16 +180,20 @@ onMounted(loadData)
         <el-table-column label="最后登录" width="180">
           <template #default="{ row }">{{ formatTime(row.lastLoginAt) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="120" fixed="right">
+        <el-table-column label="操作" width="200" fixed="right">
           <template #default="{ row }">
-            <el-button
-              v-if="row.role !== 'ADMIN'"
-              link
-              :type="row.status === 1 ? 'danger' : 'success'"
-              @click="toggleStatus(row)"
-            >
-              {{ row.status === 1 ? '禁用' : '启用' }}
-            </el-button>
+            <template v-if="row.role !== 'ADMIN'">
+              <el-button
+                link
+                :type="row.status === 1 ? 'danger' : 'success'"
+                @click="toggleStatus(row)"
+              >
+                {{ row.status === 1 ? '禁用' : '启用' }}
+              </el-button>
+              <el-button link type="primary" :loading="resetting" @click="resetPassword(row)">
+                重置密码
+              </el-button>
+            </template>
             <span v-else class="muted">-</span>
           </template>
         </el-table-column>
@@ -149,6 +211,29 @@ onMounted(loadData)
         />
       </div>
     </el-card>
+
+    <el-dialog
+      v-model="showTemp"
+      title="临时密码"
+      width="440px"
+      :close-on-click-modal="false"
+      @closed="closeTemp"
+    >
+      <el-alert
+        type="warning"
+        :closable="false"
+        show-icon
+        title="这个密码只显示这一次，关闭后无法再次查看。请通过可靠渠道交给用户，并提醒他登录后立即修改。"
+      />
+      <div class="temp-password">
+        <span class="pwd">{{ tempPassword }}</span>
+        <el-button size="small" @click="copyPassword">复制</el-button>
+      </div>
+      <p class="muted">用户名：{{ resetTarget?.username || '-' }}</p>
+      <template #footer>
+        <el-button type="primary" @click="showTemp = false">我已记录</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -160,5 +245,23 @@ onMounted(loadData)
 
 .muted {
   color: #c0c4cc;
+}
+
+.temp-password {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0 8px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #f5f7fa;
+}
+
+.pwd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 18px;
+  letter-spacing: 1px;
+  /* 双击整段选中，省得手动拖 */
+  user-select: all;
 }
 </style>

@@ -3,8 +3,10 @@ package com.jizhang.app.ui.budget
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jizhang.app.data.local.entity.LocalRecurringExpense
+import com.jizhang.app.data.prefs.SettingsStore
 import com.jizhang.app.data.remote.dto.BudgetOverviewDto
 import com.jizhang.app.data.remote.dto.CategoryStatDto
+import com.jizhang.app.data.repository.BudgetAdvice
 import com.jizhang.app.data.repository.BudgetCycle
 import com.jizhang.app.data.repository.BudgetForecast
 import com.jizhang.app.data.repository.BudgetPeriods
@@ -39,7 +41,8 @@ import javax.inject.Inject
 class BudgetViewModel @Inject constructor(
     private val budgetRepository: BudgetRepository,
     private val reportRepository: ReportRepository,
-    private val transactionRepository: TransactionRepository
+    private val transactionRepository: TransactionRepository,
+    private val settingsStore: SettingsStore
 ) : ViewModel() {
 
     data class UiState(
@@ -57,6 +60,11 @@ class BudgetViewModel @Inject constructor(
         val inheritedCount: Int = 0,
         /** 趋势 / 超支概率预测；没设总预算时为 null */
         val forecast: BudgetForecast? = null,
+        /** 智能预算建议；null 表示还没算（卡片显示入口态） */
+        val advice: BudgetAdvice? = null,
+        val adviceLoading: Boolean = false,
+        /** 建议用的目标储蓄率（%） */
+        val savingsRate: Int = 20,
         val message: String? = null
     ) {
         val periodLabel: String get() = BudgetPeriods.label(period)
@@ -85,8 +93,15 @@ class BudgetViewModel @Inject constructor(
                 bookId = bookId,
                 cycle = BudgetCycle.MONTH,
                 period = BudgetPeriods.of(BudgetCycle.MONTH),
-                inheritedCount = 0
+                inheritedCount = 0,
+                advice = null
             )
+        }
+
+        // 储蓄率是用户的长期偏好，跨账本沿用，只影响建议不影响已设额度
+        viewModelScope.launch {
+            val rate = settingsStore.budgetSavingsRate()
+            _state.update { it.copy(savingsRate = rate) }
         }
 
         // 用 Flow 监听而不是一次性读取：在固定支出弹窗里增删后这里要立刻刷新
@@ -119,7 +134,12 @@ class BudgetViewModel @Inject constructor(
             return
         }
         _state.update {
-            it.copy(cycle = cycle, period = BudgetPeriods.of(cycle), inheritedCount = 0)
+            it.copy(
+                cycle = cycle,
+                period = BudgetPeriods.of(cycle),
+                inheritedCount = 0,
+                advice = null
+            )
         }
         load(autoInherit = true)
     }
@@ -130,7 +150,8 @@ class BudgetViewModel @Inject constructor(
         if (BudgetPeriods.isAfter(next, BudgetPeriods.of(current.cycle))) {
             return
         }
-        _state.update { it.copy(period = next, inheritedCount = 0) }
+        // 建议是跟着周期算的，翻页后旧建议就失效了，别留着一个对不上的数字
+        _state.update { it.copy(period = next, inheritedCount = 0, advice = null) }
         load(autoInherit = false)
     }
 
@@ -140,7 +161,7 @@ class BudgetViewModel @Inject constructor(
         if (current.period == period) {
             return
         }
-        _state.update { it.copy(period = period, inheritedCount = 0) }
+        _state.update { it.copy(period = period, inheritedCount = 0, advice = null) }
         load(autoInherit = true)
     }
 
@@ -275,6 +296,110 @@ class BudgetViewModel @Inject constructor(
                 }
                 .onFailure { error ->
                     _state.update { it.copy(message = error.message ?: "删除失败") }
+                }
+        }
+    }
+
+    /* ---------------- 智能预算建议 ---------------- */
+
+    /**
+     * 生成建议。
+     * <p>
+     * 不自动覆盖用户已设的预算：建议只是候选，必须点「采用」才写入。
+     * 计算在 Default 线程跑（要扫 7 个周期的分类聚合），避免首帧卡一下。
+     */
+    fun suggestBudget() {
+        val current = _state.value
+        if (current.adviceLoading) {
+            return
+        }
+        viewModelScope.launch {
+            _state.update { it.copy(adviceLoading = true) }
+            val advice = withContext(Dispatchers.Default) {
+                runCatching {
+                    budgetRepository.suggest(
+                        bookId = current.bookId,
+                        period = current.period,
+                        savingsRate = current.savingsRate / 100.0
+                    )
+                }
+            }
+            if (_state.value.bookId != current.bookId || _state.value.period != current.period) {
+                // 算的过程中切了账本 / 周期：这次结果作废，但要把 loading 放掉，否则按钮一直转圈
+                _state.update { it.copy(adviceLoading = false) }
+                return@launch
+            }
+            _state.update {
+                it.copy(
+                    adviceLoading = false,
+                    advice = advice.getOrNull(),
+                    message = advice.exceptionOrNull()?.let { error ->
+                        "建议生成失败：${error.message ?: "未知错误"}"
+                    }
+                )
+            }
+        }
+    }
+
+    /** 调整目标储蓄率：落盘并立刻按新比例重算 */
+    fun setSavingsRate(percent: Int) {
+        val value = percent.coerceIn(0, 90)
+        if (_state.value.savingsRate == value) {
+            return
+        }
+        _state.update { it.copy(savingsRate = value) }
+        viewModelScope.launch { settingsStore.setBudgetSavingsRate(value) }
+        if (_state.value.advice != null) {
+            suggestBudget()
+        }
+    }
+
+    fun dismissAdvice() {
+        _state.update { it.copy(advice = null) }
+    }
+
+    /**
+     * 一键采用：总预算 + 每个分类都写入当前周期。
+     * <p>
+     * 已有但不在建议里的分类预算不会被删除 —— 建议只覆盖它算过的分类，
+     * 静默删掉用户自己设的额度比数字不完美更糟。
+     */
+    fun applyAdvice() {
+        val current = _state.value
+        val advice = current.advice ?: return
+        viewModelScope.launch {
+            var failed = 0
+            budgetRepository.save(current.bookId, 0L, current.period, advice.totalFen)
+                .onFailure { failed++ }
+            advice.items.forEach { item ->
+                budgetRepository.save(current.bookId, item.categoryId, current.period, item.amountFen)
+                    .onFailure { failed++ }
+            }
+            load()
+            _state.update {
+                it.copy(
+                    message = if (failed == 0) {
+                        "已按建议设置 ${advice.items.size + 1} 项预算"
+                    } else {
+                        "有 $failed 项没能保存，请重试"
+                    }
+                )
+            }
+        }
+    }
+
+    /** 采用单条分类建议 */
+    fun applyAdviceItem(categoryId: Long) {
+        val current = _state.value
+        val item = current.advice?.items?.firstOrNull { it.categoryId == categoryId } ?: return
+        viewModelScope.launch {
+            budgetRepository.save(current.bookId, item.categoryId, current.period, item.amountFen)
+                .onSuccess {
+                    load()
+                    _state.update { it.copy(message = "已设置「${item.name}」预算") }
+                }
+                .onFailure { error ->
+                    _state.update { it.copy(message = error.message ?: "保存失败") }
                 }
         }
     }

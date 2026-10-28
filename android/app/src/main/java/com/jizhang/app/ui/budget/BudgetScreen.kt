@@ -12,13 +12,17 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Savings
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -37,12 +41,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jizhang.app.data.local.entity.LocalRecurringExpense
 import com.jizhang.app.data.remote.dto.BudgetDto
 import com.jizhang.app.data.remote.dto.BudgetOverviewDto
+import com.jizhang.app.data.repository.BudgetAdvice
+import com.jizhang.app.data.repository.BudgetAdvisor
+import com.jizhang.app.data.repository.BudgetConfidence
 import com.jizhang.app.data.repository.BudgetCycle
 import com.jizhang.app.data.repository.FixedReservation
 import com.jizhang.app.data.repository.uncoveredFixedTotal
@@ -112,6 +120,18 @@ fun BudgetScreen(
                     overview = state.overview,
                     reservation = state.reservation,
                     onEdit = { onOpenBudgetEditor(0L) }
+                )
+            }
+            item {
+                BudgetAdviceCard(
+                    advice = state.advice,
+                    loading = state.adviceLoading,
+                    savingsRate = state.savingsRate,
+                    onGenerate = viewModel::suggestBudget,
+                    onApplyAll = viewModel::applyAdvice,
+                    onApplyItem = viewModel::applyAdviceItem,
+                    onRateChange = viewModel::setSavingsRate,
+                    onDismiss = viewModel::dismissAdvice
                 )
             }
             // 趋势图只在设了总预算时才有意义：没有额度就谈不上超支概率
@@ -211,6 +231,221 @@ private fun PeriodBar(
                 )
             }
         }
+    }
+}
+
+/**
+ * 智能预算建议卡片。
+ *
+ * 收起态只放一句「按什么算」，点一下才算 —— 预算页的核心仍然是当前进度，
+ * 上来就塞八行建议会把它挤到屏幕外。算完再展开成可逐条采用的清单。
+ */
+@Composable
+private fun BudgetAdviceCard(
+    advice: BudgetAdvice?,
+    loading: Boolean,
+    savingsRate: Int,
+    onGenerate: () -> Unit,
+    onApplyAll: () -> Unit,
+    onApplyItem: (Long) -> Unit,
+    onRateChange: (Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    CardBox {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "智能建议",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = "按近 ${BudgetAdvisor.HISTORY_MONTHS} 个月账单 + $savingsRate% 储蓄率推算",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            when {
+                loading -> CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp
+                )
+
+                advice == null -> TextButton(
+                    onClick = onGenerate,
+                    modifier = Modifier.height(48.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp)
+                ) {
+                    Text("算一下")
+                }
+
+                else -> TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.height(48.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp)
+                ) {
+                    Text("收起")
+                }
+            }
+        }
+
+        if (advice == null) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "只做建议，不会自动改你现有的预算。至少需要一个月以上的完整账单。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            return@CardBox
+        }
+
+        // 目标储蓄率：直接改「支出上限 = 收入 × (1 − 储蓄率)」，所以放在最上面
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(10, 20, 30, 40).forEach { rate ->
+                AppChip(
+                    label = "$rate%",
+                    selected = savingsRate == rate,
+                    onClick = { onRateChange(rate) }
+                )
+            }
+        }
+
+        if (advice.items.isEmpty()) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = advice.note ?: "还没有足够的支出记录",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            return@CardBox
+        }
+
+        Spacer(Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.Bottom) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "建议总预算",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "${formatAmount(advice.totalFen)} 元",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Column(horizontalAlignment = Alignment.End) {
+                advice.incomeFen?.let { income ->
+                    Text(
+                        text = "收入基准 ${formatAmount(income)} 元",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                advice.ceilingFen?.let { ceiling ->
+                    Text(
+                        text = "支出上限 ${formatAmount(ceiling)} 元",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(Modifier.height(2.dp))
+                ConfidenceTag(advice.confidence)
+            }
+        }
+
+        Spacer(Modifier.height(10.dp))
+        advice.items.forEach { item ->
+            Row(
+                modifier = Modifier.padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = item.name,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        ConfidenceTag(item.confidence, compact = true)
+                    }
+                    Text(
+                        text = item.reason,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = formatAmount(item.amountFen),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                TextButton(
+                    onClick = { onApplyItem(item.categoryId) },
+                    modifier = Modifier.height(40.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp)
+                ) {
+                    Text("采用", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+        }
+
+        advice.note?.let { note ->
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = note,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Button(
+                onClick = onApplyAll,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("全部采用")
+            }
+            Spacer(Modifier.width(8.dp))
+            TextButton(onClick = onGenerate) {
+                Text("重算")
+            }
+        }
+    }
+}
+
+/** 可信度标签：给用户一个「该信多少」的提示，而不是让数字显得比实际更确定 */
+@Composable
+private fun ConfidenceTag(confidence: BudgetConfidence, compact: Boolean = false) {
+    val color = when (confidence) {
+        BudgetConfidence.HIGH -> AppColors.income
+        BudgetConfidence.MEDIUM -> AppColors.accent
+        BudgetConfidence.LOW -> MaterialTheme.colorScheme.outline
+    }
+    val label = when (confidence) {
+        BudgetConfidence.HIGH -> if (compact) "可信" else "可信度高"
+        BudgetConfidence.MEDIUM -> "参考"
+        BudgetConfidence.LOW -> "样本少"
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(color)
+        )
+        Spacer(Modifier.width(4.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = color
+        )
     }
 }
 

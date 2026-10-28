@@ -20,7 +20,6 @@ private val Context.petDataStore by preferencesDataStore(name = "pet_prefs")
 private object PetKeys {
     val NAME = stringPreferencesKey("pet_name")
     val TYPE = stringPreferencesKey("pet_type")
-    val COINS = intPreferencesKey("pet_coins")
     val STREAK = intPreferencesKey("pet_streak")
     val LAST_DATE = stringPreferencesKey("pet_last_date")
 }
@@ -28,7 +27,6 @@ private object PetKeys {
 private fun Preferences.toPetState(): PetState = PetState(
     name = this[PetKeys.NAME] ?: PetState.DEFAULT_NAME,
     type = PetType.fromKey(this[PetKeys.TYPE]),
-    coins = this[PetKeys.COINS] ?: 0,
     streakDays = this[PetKeys.STREAK] ?: 0,
     lastRecordDate = this[PetKeys.LAST_DATE].orEmpty()
 )
@@ -49,7 +47,6 @@ class PetStore @Inject constructor(
         context.petDataStore.edit { prefs ->
             prefs[PetKeys.NAME] = state.name
             prefs[PetKeys.TYPE] = state.type.key
-            prefs[PetKeys.COINS] = state.coins
             prefs[PetKeys.STREAK] = state.streakDays
             prefs[PetKeys.LAST_DATE] = state.lastRecordDate
         }

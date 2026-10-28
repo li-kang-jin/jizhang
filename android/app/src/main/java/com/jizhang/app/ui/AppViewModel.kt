@@ -7,6 +7,7 @@ import com.jizhang.app.data.local.JizhangDatabase
 import com.jizhang.app.data.local.entity.LocalBook
 import com.jizhang.app.data.notification.BudgetAlertScheduler
 import com.jizhang.app.data.prefs.SettingsStore
+import com.jizhang.app.data.prefs.SuggestionTally
 import com.jizhang.app.data.prefs.TokenStore
 import com.jizhang.app.data.repository.BookRepository
 import com.jizhang.app.data.repository.LocalDataInitializer
@@ -56,6 +57,8 @@ class AppViewModel @Inject constructor(
         val hideAmounts: Boolean = false,
         /** 离线模式：打开后 App 不发起任何网络请求 */
         val offlineMode: Boolean = false,
+        /** 备注猜分类的累计统计：设置页用它说明「猜得准不准」 */
+        val suggestionTally: SuggestionTally = SuggestionTally(),
         /** 登录后是否需要提示用户已迁移数据 */
         val loginTip: String? = null,
         /** 一次性提示（切账本、同步结果等） */
@@ -103,6 +106,12 @@ class AppViewModel @Inject constructor(
         viewModelScope.launch {
             settingsStore.offlineModeFlow.collect { offline ->
                 _state.update { it.copy(offlineMode = offline) }
+            }
+        }
+
+        viewModelScope.launch {
+            settingsStore.suggestionTallyFlow.collect { tally ->
+                _state.update { it.copy(suggestionTally = tally) }
             }
         }
 
@@ -186,6 +195,11 @@ class AppViewModel @Inject constructor(
 
     fun setBillTemplate(value: Int) {
         viewModelScope.launch { settingsStore.setBillTemplate(value) }
+    }
+
+    /** 清零「备注猜分类」的统计：换了一套分类之后，旧样本不该继续算在准确率里 */
+    fun resetSuggestionTally() {
+        viewModelScope.launch { settingsStore.resetSuggestionTally() }
     }
 
     /**

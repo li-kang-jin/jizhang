@@ -4,6 +4,7 @@ import cn.hutool.core.util.StrUtil;
 import com.jizhang.common.api.Result;
 import com.jizhang.common.constant.CommonConstants;
 import com.jizhang.service.UserService;
+import com.jizhang.service.dto.ChangePasswordRequest;
 import com.jizhang.service.dto.LoginRequest;
 import com.jizhang.service.dto.RefreshTokenRequest;
 import com.jizhang.service.dto.RegisterRequest;
@@ -65,5 +66,12 @@ public class AuthController {
     @GetMapping("/me")
     public Result<UserVO> me() {
         return Result.success(userService.currentUser());
+    }
+
+    @Operation(summary = "修改自己的密码", description = "需要原密码；密码被管理员重置过时会顺带清掉提示标记")
+    @PostMapping("/password")
+    public Result<Void> changePassword(@Valid @RequestBody ChangePasswordRequest request) {
+        userService.changePassword(request);
+        return Result.success();
     }
 }

@@ -1,6 +1,7 @@
 package com.jizhang.app.data.repository
 
 import com.jizhang.app.data.local.JizhangDatabase
+import com.jizhang.app.data.local.dao.CategoryUsageRow
 import com.jizhang.app.data.local.dao.SumAmountRow
 import com.jizhang.app.data.local.dao.TransactionDao
 import com.jizhang.app.data.local.entity.LocalTransaction
@@ -12,6 +13,17 @@ import com.jizhang.app.data.remote.dto.TransactionSaveDto
 import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/** 转账的账单类型（1=支出 2=收入 3=转账，与 `LocalTransaction.type` 一致） */
+private const val TRANSFER_TYPE = 3
+
+/**
+ * 「常用账户」的统计窗口：最近这么多笔账单。
+ * <p>
+ * 约等于几个月的日常记账量，既够稳定（不会被某一两笔带偏），又能让半年前的习惯自然退出，
+ * 不必再维护「最近使用时间」之类的额外字段。
+ */
+private const val ACCOUNT_USAGE_WINDOW = 200
 
 /**
  * 交易仓库。离线优先：写操作先落本地，再由 [SyncManager] 统一推送到服务端。
@@ -136,9 +148,61 @@ class TransactionRepository @Inject constructor(
     suspend fun recentTagsByCategory(bookId: Long, categoryId: Long, limit: Int): List<String> =
         transactionDao.recentTagsByCategory(bookId, categoryId, limit)
 
-    /** 每个账户被用过的次数（含转账的转入方），记账页据此只铺三个常用账户 */
+    /**
+     * 每个账户被用过的次数（含转账的转入方），记账页据此只铺三个常用账户。
+     * <p>
+     * 口径是**最近 [ACCOUNT_USAGE_WINDOW] 笔**账单，不是全历史：换过卡、停用旧账户之后，
+     * 全历史次数会长期压住真正在用的账户，芯片上挂着的就不再是「当下常用」的那几个。
+     * 同一笔转账的出账方与入账方各算一次（两边都确实动过这个账户）。
+     */
     suspend fun accountUsage(bookId: Long): Map<Long, Long> =
-        transactionDao.accountUsage(bookId).associate { it.accountId to it.cnt }
+        transactionDao.recentAccountUses(bookId, ACCOUNT_USAGE_WINDOW)
+            .flatMap { row ->
+                val to = row.toAccountId
+                if (row.type == TRANSFER_TYPE && to != null) {
+                    listOf(row.accountId, to)
+                } else {
+                    listOf(row.accountId)
+                }
+            }
+            .groupingBy { it }
+            .eachCount()
+            .mapValues { it.value.toLong() }
+
+    /** 每个分类被用过的次数（按收支类型分开），记账页据此决定新建账单的默认分类 */
+    suspend fun categoryUsage(bookId: Long, type: Int): Map<Long, Long> =
+        transactionDao.categoryUsage(bookId, type).associate { it.categoryId to it.cnt }
+
+    /** 每个分类的笔数与金额合计：分类管理页用它显示用量、判断该把哪个合并掉 */
+    suspend fun categoryUsageDetail(bookId: Long, type: Int): List<CategoryUsageRow> =
+        transactionDao.categoryUsage(bookId, type)
+
+    /**
+     * 把 [fromCategoryId] 下的账单整体改到 [toCategoryId]（分类合并）。
+     * <p>
+     * 逐笔改成 upsert 也能做，但一次 UPDATE 更省事，也不会在合并中途失败时留下「改了一半」的状态；
+     * 待同步标记由 SQL 一并打上，登录状态下走常规同步推到服务端。
+     *
+     * @return 改动的笔数
+     */
+    suspend fun reassignCategory(bookId: Long, fromCategoryId: Long, toCategoryId: Long): Int =
+        transactionDao.reassignCategory(
+            bookId = bookId,
+            fromCategoryId = fromCategoryId,
+            toCategoryId = toCategoryId,
+            now = System.currentTimeMillis()
+        )
+
+    /** 最近的带备注或标签的账单，记账页用它把备注 / 标签映射回分类（见 [CategorySuggester]） */
+    suspend fun noteSamples(bookId: Long, limit: Int): List<NoteSample> =
+        transactionDao.recentNotes(bookId, limit).map {
+            NoteSample(
+                remark = it.remark,
+                tags = it.tags,
+                categoryId = it.categoryId,
+                tradeTime = it.tradeTime
+            )
+        }
 
     /** 最近记过的若干笔账，记账页「再来一笔」模板用它做照抄 */
     suspend fun recentTransactions(bookId: Long, limit: Int): List<LocalTransaction> =

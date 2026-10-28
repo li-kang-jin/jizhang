@@ -112,6 +112,18 @@ class CalcEngineTest {
     }
 
     @Test
+    fun `键盘上的排版减号也能参与运算`() {
+        // 键盘 label 是 U+2212「−」，不是 ASCII '-'，两者都必须是有效运算符
+        val tokens = input('1', '0')
+            .op('−')
+            .type('4')
+
+        assertEquals("10 − 4", CalcEngine.expressionText(tokens))
+        assertEquals(BigDecimal("6"), CalcEngine.evaluate(tokens))
+        assertEquals(600L, CalcEngine.resultFen(tokens))
+    }
+
+    @Test
     fun `不允许以运算符开头`() {
         assertEquals(emptyList<CalcToken>(), CalcEngine.appendOp(emptyList(), '+'))
     }

@@ -18,7 +18,7 @@ class PetRepository @Inject constructor(
 
     val state: Flow<PetState> = petStore.state
 
-    /** 记账成功后调用：获得金币并维护连续记账天数 */
+    /** 记账成功后调用：维护连续记账天数 */
     suspend fun onTransactionRecorded(): PetState {
         val current = petStore.current()
         val today = LocalDate.now().toString()
@@ -31,7 +31,6 @@ class PetRepository @Inject constructor(
         }
 
         val next = current.copy(
-            coins = current.coins + PetState.COINS_PER_RECORD,
             streakDays = streak,
             lastRecordDate = today
         )
