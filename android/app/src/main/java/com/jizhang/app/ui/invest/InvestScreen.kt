@@ -6,6 +6,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -488,6 +490,7 @@ private fun EmptyHint(title: String, body: String) {
  * <p>
  * 成本与市值都是**选填**：先建一个空壳、以后慢慢补，比逼用户当场凑齐数字更能留住人。
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PositionEditorDialog(
     editing: PositionWithValue?,
@@ -528,29 +531,34 @@ private fun PositionEditorDialog(
             )
         },
         text = {
+            // heightIn 必须在外层限定「视口高度」，verticalScroll 在内层才能拿到无限高约束、
+            // 进而产生滚动余量。反过来写的话视口会被内容撑满，等于没法滚。
             Column(
                 modifier = Modifier
-                    .heightIn(max = 420.dp)
+                    .heightIn(max = 460.dp)
                     .verticalScroll(rememberScrollState())
+                    .padding(bottom = 4.dp)
                     .imePadding()
             ) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("名称") },
-                    placeholder = { Text("沪深300ETF") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = code,
-                    onValueChange = { code = it },
-                    label = { Text("代码（选填）") },
-                    placeholder = { Text("510300") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                // 名称 + 代码并排：省一整行，弹窗才不至于一打开就要滚
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text("名称") },
+                        placeholder = { Text("沪深300ETF") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1.4f)
+                    )
+                    OutlinedTextField(
+                        value = code,
+                        onValueChange = { code = it },
+                        label = { Text("代码") },
+                        placeholder = { Text("选填") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
 
                 Spacer(Modifier.height(10.dp))
                 Text(
@@ -559,7 +567,12 @@ private fun PositionEditorDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                // 用 FlowRow 而不是 Row：账户名可能很长（「腾讯理财通基金」），
+                // 固定一行会把最后一个 chip 压成竖排文字
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     listOf(
                         LocalInvestPosition.KIND_STOCK,
                         LocalInvestPosition.KIND_FUND,
@@ -582,7 +595,10 @@ private fun PositionEditorDialog(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(Modifier.height(6.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
                         accounts.forEach { account ->
                             FilterChip(
                                 selected = accountId == account.id,
