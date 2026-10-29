@@ -45,17 +45,26 @@ export interface PlatformOverview {
   userTotal: number
   userToday: number
   bookTotal: number
+  /** 今日有记账行为的账本数（按交易时间去重） */
+  activeBookToday: number
   transactionTotal: number
   transactionToday: number
-  amountTotal: number
-  amountToday: number
+  /** 累计支出（分），不含转账 */
+  expenseTotal: number
+  /** 累计收入（分），不含转账 */
+  incomeTotal: number
+  expenseToday: number
+  incomeToday: number
 }
 
 export interface TrendPoint {
   date: string
   newUsers: number
   newTransactions: number
-  amount: number
+  /** 当日支出（分），不含转账 */
+  expense: number
+  /** 当日收入（分），不含转账 */
+  income: number
 }
 
 export interface BookInfo {
@@ -65,6 +74,12 @@ export interface BookInfo {
   currency: string
   type: number
   ownerId: string
+  /** 所有者登录名 / 昵称（管理后台列表返回） */
+  ownerUsername?: string
+  /** 成员数（含所有者） */
+  memberCount?: number
+  /** 账户数 */
+  accountCount?: number
   remark?: string
   createdAt?: string
 }
@@ -86,6 +101,20 @@ export interface TransactionInfo {
   accountName?: string
   toAccountName?: string
   categoryName?: string
+}
+
+/** 远程搜索下拉项 */
+export interface EntityOption {
+  value: string
+  label: string
+}
+
+/** 当前筛选条件下的流水合计（分） */
+export interface TransactionSummary {
+  expense: number
+  income: number
+  transfer: number
+  count: number
 }
 
 export interface AccountInfo {

@@ -16,4 +16,7 @@ public class LoginUser implements Serializable {
 
     /** USER / ADMIN */
     private String role;
+
+    /** 签发时的令牌版本，与库中的值不一致即视为已失效 */
+    private int tokenVersion;
 }

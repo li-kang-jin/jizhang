@@ -107,6 +107,11 @@ public class UserServiceImpl implements UserService {
         if (!Objects.equals(user.getStatus(), CommonConstants.STATUS_ENABLED)) {
             throw new BizException(ResultCode.USER_DISABLED);
         }
+        // 改密 / 重置密码 / 禁用都会升版本，旧 refreshToken 不能再换新令牌
+        int currentVersion = user.getTokenVersion() == null ? 0 : user.getTokenVersion();
+        if (loginUser.getTokenVersion() != currentVersion) {
+            throw new BizException(ResultCode.TOKEN_INVALID);
+        }
         return buildToken(user);
     }
 
@@ -147,6 +152,8 @@ public class UserServiceImpl implements UserService {
         // 自己改过密码，就不需要再提示「密码已被重置」
         update.setMustChangePassword(0);
         userMapper.updateById(update);
+        // 改密即踢掉其他已登录设备，尤其是「密码已经泄漏、所以来改密」的场景
+        userMapper.incrementTokenVersion(userId);
         log.info("用户修改密码: userId={}, username={}", userId, user.getUsername());
     }
 
@@ -155,6 +162,7 @@ public class UserServiceImpl implements UserService {
         loginUser.setUserId(user.getId());
         loginUser.setUsername(user.getUsername());
         loginUser.setRole(user.getRole());
+        loginUser.setTokenVersion(user.getTokenVersion() == null ? 0 : user.getTokenVersion());
 
         TokenVO vo = new TokenVO();
         vo.setAccessToken(jwtUtils.generateAccessToken(loginUser));

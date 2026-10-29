@@ -9,6 +9,7 @@ import com.jizhang.service.dto.AdminUserQueryRequest;
 import com.jizhang.service.dto.ChangePasswordRequest;
 import com.jizhang.service.dto.LoginRequest;
 import com.jizhang.service.vo.AdminAccountVO;
+import com.jizhang.service.vo.AdminTransactionSummaryVO;
 import com.jizhang.service.vo.BookVO;
 import com.jizhang.service.vo.PlatformOverviewVO;
 import com.jizhang.service.vo.TokenVO;
@@ -47,6 +48,9 @@ public interface AdminService {
     PageResult<BookVO> pageBooks(AdminBookQueryRequest request);
 
     PageResult<TransactionVO> pageTransactions(AdminTransactionQueryRequest request);
+
+    /** 当前筛选条件下的流水合计（跨分页，转账单列） */
+    AdminTransactionSummaryVO sumTransactions(AdminTransactionQueryRequest request);
 
     /** 全平台账户列表（带所属账本与所有者） */
     PageResult<AdminAccountVO> pageAccounts(AdminAccountQueryRequest request);

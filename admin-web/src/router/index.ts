@@ -19,6 +19,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '登录', public: true }
   },
   {
+    path: '/change-password',
+    name: 'changePassword',
+    component: () => import('@/views/ForcePasswordView.vue'),
+    meta: { title: '修改初始密码' }
+  },
+  {
     path: '/',
     component: () => import('@/layouts/AdminLayout.vue'),
     redirect: '/dashboard',
@@ -71,8 +77,18 @@ router.beforeEach((to) => {
   if (!to.meta.public && !auth.isLogin) {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
-  if (to.name === 'login' && auth.isLogin) {
+
+  const mustChangePassword = auth.isLogin && auth.user?.mustChangePassword === 1
+  if (mustChangePassword && to.name !== 'changePassword') {
+    return { name: 'changePassword' }
+  }
+  if (!mustChangePassword && to.name === 'changePassword') {
+    // 已经改过密的人不需要停在强制改密页，改密走顶部菜单里的常规入口
     return { path: '/dashboard' }
+  }
+
+  if (to.name === 'login' && auth.isLogin) {
+    return { path: mustChangePassword ? '/change-password' : '/dashboard' }
   }
   return true
 })

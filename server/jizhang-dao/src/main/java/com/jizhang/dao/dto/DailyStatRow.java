@@ -14,6 +14,9 @@ public class DailyStatRow {
     /** 数量 */
     private Long cnt;
 
-    /** 金额（分） */
-    private Long amount;
+    /** 支出金额（分） */
+    private Long expense;
+
+    /** 收入金额（分） */
+    private Long income;
 }

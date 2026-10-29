@@ -24,6 +24,7 @@ public class JwtUtils {
     private static final String CLAIM_USERNAME = "username";
     private static final String CLAIM_ROLE = "role";
     private static final String CLAIM_TYPE = "type";
+    private static final String CLAIM_VERSION = "ver";
     private static final String TYPE_ACCESS = "access";
     private static final String TYPE_REFRESH = "refresh";
 
@@ -61,6 +62,7 @@ public class JwtUtils {
                 .subject(String.valueOf(user.getUserId()))
                 .claim(CLAIM_USERNAME, user.getUsername())
                 .claim(CLAIM_ROLE, user.getRole())
+                .claim(CLAIM_VERSION, user.getTokenVersion())
                 .claim(CLAIM_TYPE, type)
                 .issuedAt(now)
                 .expiration(new Date(now.getTime() + expireSeconds * 1000))
@@ -84,6 +86,9 @@ public class JwtUtils {
             user.setUserId(Long.valueOf(claims.getSubject()));
             user.setUsername(claims.get(CLAIM_USERNAME, String.class));
             user.setRole(claims.get(CLAIM_ROLE, String.class));
+            Integer version = claims.get(CLAIM_VERSION, Integer.class);
+            // 旧版本签发的 Token 没有该 claim，按 0 处理，避免升级瞬间把所有在线用户踢下线
+            user.setTokenVersion(version == null ? 0 : version);
             return user;
         } catch (JwtException | IllegalArgumentException e) {
             log.debug("Token 解析失败: {}", e.getMessage());

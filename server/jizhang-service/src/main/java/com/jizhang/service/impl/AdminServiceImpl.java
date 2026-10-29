@@ -2,6 +2,7 @@ package com.jizhang.service.impl;
 
 import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.jizhang.common.api.PageResult;
@@ -14,11 +15,13 @@ import com.jizhang.common.util.JwtUtils;
 import com.jizhang.dao.dto.DailyStatRow;
 import com.jizhang.dao.entity.AccountEntity;
 import com.jizhang.dao.entity.BookEntity;
+import com.jizhang.dao.entity.BookMemberEntity;
 import com.jizhang.dao.entity.CategoryEntity;
 import com.jizhang.dao.entity.TransactionEntity;
 import com.jizhang.dao.entity.UserEntity;
 import com.jizhang.dao.mapper.AccountMapper;
 import com.jizhang.dao.mapper.BookMapper;
+import com.jizhang.dao.mapper.BookMemberMapper;
 import com.jizhang.dao.mapper.CategoryMapper;
 import com.jizhang.dao.mapper.TransactionMapper;
 import com.jizhang.dao.mapper.UserMapper;
@@ -31,12 +34,14 @@ import com.jizhang.service.dto.AdminUserQueryRequest;
 import com.jizhang.service.dto.ChangePasswordRequest;
 import com.jizhang.service.dto.LoginRequest;
 import com.jizhang.service.vo.AdminAccountVO;
+import com.jizhang.service.vo.AdminTransactionSummaryVO;
 import com.jizhang.service.vo.BookVO;
 import com.jizhang.service.vo.PlatformOverviewVO;
 import com.jizhang.service.vo.TokenVO;
 import com.jizhang.service.vo.TransactionVO;
 import com.jizhang.service.vo.TrendPointVO;
 import com.jizhang.service.vo.UserVO;
+import com.jizhang.service.support.LoginAttemptGuard;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -50,6 +55,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -64,6 +70,9 @@ public class AdminServiceImpl implements AdminService {
     private static final int MIN_TREND_DAYS = 7;
     private static final int MAX_TREND_DAYS = 90;
 
+    private static final int TYPE_EXPENSE = 1;
+    private static final int TYPE_INCOME = 2;
+
     private static final String DEFAULT_CURRENCY = "CNY";
 
     /** 临时密码字符集：去掉 0/O/1/l/I，避免电话/微信口头传达时听错登不进去 */
@@ -74,41 +83,65 @@ public class AdminServiceImpl implements AdminService {
 
     private final UserMapper userMapper;
     private final BookMapper bookMapper;
+    private final BookMemberMapper bookMemberMapper;
     private final AccountMapper accountMapper;
     private final CategoryMapper categoryMapper;
     private final TransactionMapper transactionMapper;
     private final PasswordEncoder passwordEncoder;
     private final JwtUtils jwtUtils;
+    private final LoginAttemptGuard loginAttemptGuard;
 
     public AdminServiceImpl(UserMapper userMapper,
                             BookMapper bookMapper,
+                            BookMemberMapper bookMemberMapper,
                             AccountMapper accountMapper,
                             CategoryMapper categoryMapper,
                             TransactionMapper transactionMapper,
                             PasswordEncoder passwordEncoder,
-                            JwtUtils jwtUtils) {
+                            JwtUtils jwtUtils,
+                            LoginAttemptGuard loginAttemptGuard) {
         this.userMapper = userMapper;
         this.bookMapper = bookMapper;
+        this.bookMemberMapper = bookMemberMapper;
         this.accountMapper = accountMapper;
         this.categoryMapper = categoryMapper;
         this.transactionMapper = transactionMapper;
         this.passwordEncoder = passwordEncoder;
         this.jwtUtils = jwtUtils;
+        this.loginAttemptGuard = loginAttemptGuard;
     }
 
     @Override
     public TokenVO login(LoginRequest request) {
+        String attemptKey = "admin:" + request.getUsername().trim().toLowerCase(Locale.ROOT);
+        // 连续失败 5 次锁 15 分钟，挡掉对公开默认密码的暴力尝试
+        loginAttemptGuard.ensureAllowed(attemptKey);
+
         UserEntity user = userMapper.selectOne(Wrappers.<UserEntity>lambdaQuery()
                 .eq(UserEntity::getUsername, request.getUsername())
                 .last("limit 1"));
         if (user == null || !passwordEncoder.matches(request.getPassword(), user.getPassword())) {
+            loginAttemptGuard.recordFailure(attemptKey);
             throw new BizException(ResultCode.USERNAME_OR_PASSWORD_ERROR);
         }
         if (!CommonConstants.ROLE_ADMIN.equals(user.getRole())) {
+            loginAttemptGuard.recordFailure(attemptKey);
             throw new BizException(ResultCode.FORBIDDEN, "该账号不具备管理员权限");
         }
         if (!Objects.equals(user.getStatus(), CommonConstants.STATUS_ENABLED)) {
             throw new BizException(ResultCode.USER_DISABLED);
+        }
+        loginAttemptGuard.reset(attemptKey);
+
+        // 仍在使用公开的初始密码（含升级前就建好的老账号）→ 标记强制改密
+        if (CommonConstants.DEFAULT_ADMIN_PASSWORD.equals(request.getPassword())
+                && !Objects.equals(user.getMustChangePassword(), 1)) {
+            UserEntity flag = new UserEntity();
+            flag.setId(user.getId());
+            flag.setMustChangePassword(1);
+            userMapper.updateById(flag);
+            user.setMustChangePassword(1);
+            log.warn("管理员仍在使用初始密码，已要求登录后修改: userId={}", user.getId());
         }
 
         UserEntity update = new UserEntity();
@@ -120,6 +153,7 @@ public class AdminServiceImpl implements AdminService {
         loginUser.setUserId(user.getId());
         loginUser.setUsername(user.getUsername());
         loginUser.setRole(user.getRole());
+        loginUser.setTokenVersion(user.getTokenVersion() == null ? 0 : user.getTokenVersion());
 
         TokenVO vo = new TokenVO();
         vo.setAccessToken(jwtUtils.generateAccessToken(loginUser));
@@ -143,10 +177,16 @@ public class AdminServiceImpl implements AdminService {
         if (passwordEncoder.matches(request.getNewPassword(), user.getPassword())) {
             throw new BizException(ResultCode.PARAM_ERROR, "新密码不能与原密码相同");
         }
+        if (CommonConstants.DEFAULT_ADMIN_PASSWORD.equals(request.getNewPassword())) {
+            throw new BizException(ResultCode.PARAM_ERROR, "新密码不能使用初始密码");
+        }
         UserEntity update = new UserEntity();
         update.setId(userId);
         update.setPassword(passwordEncoder.encode(request.getNewPassword()));
+        update.setMustChangePassword(0);
         userMapper.updateById(update);
+        // 改密后旧会话立即失效：否则「改了密码」只是换了个登录凭据，已登录的设备还能继续用
+        userMapper.incrementTokenVersion(userId);
         log.info("管理员修改密码成功: userId={}, username={}", userId, user.getUsername());
     }
 
@@ -178,6 +218,10 @@ public class AdminServiceImpl implements AdminService {
         }
         user.setStatus(status);
         userMapper.updateById(user);
+        if (Objects.equals(status, CommonConstants.STATUS_DISABLED)) {
+            // 禁用必须立刻生效：JWT 无状态，不升版本的话已登录设备还能继续用到令牌过期
+            userMapper.incrementTokenVersion(userId);
+        }
         log.info("管理员修改用户状态: userId={}, status={}", userId, status);
         return UserVO.from(userMapper.selectById(userId));
     }
@@ -201,6 +245,8 @@ public class AdminServiceImpl implements AdminService {
         update.setPassword(passwordEncoder.encode(tempPassword));
         update.setMustChangePassword(1);
         userMapper.updateById(update);
+        // 重置密码的核心目的是「把可能被盗的会话踢掉」，所以旧令牌必须立刻失效
+        userMapper.incrementTokenVersion(userId);
 
         // 日志里只留「谁重置了谁」，不记密码：日志经常被转发、归档，比数据库更容易泄漏
         log.info("管理员重置用户密码: userId={}, username={}, operatorId={}",
@@ -234,41 +280,125 @@ public class AdminServiceImpl implements AdminService {
                                 .like(BookEntity::getName, request.getKeyword())
                                 .or().like(BookEntity::getRemark, request.getKeyword()))
                         .orderByDesc(BookEntity::getCreatedAt));
-        return PageResult.of(page.getRecords().stream().map(BookVO::from).toList(),
-                page.getTotal(), page.getCurrent(), page.getSize());
+        List<BookVO> records = decorateBooks(page.getRecords().stream().map(BookVO::from).toList());
+        return PageResult.of(records, page.getTotal(), page.getCurrent(), page.getSize());
     }
 
     @Override
     public PageResult<TransactionVO> pageTransactions(AdminTransactionQueryRequest request) {
-        LambdaQueryWrapper<TransactionEntity> wrapper = Wrappers.<TransactionEntity>lambdaQuery()
-                .eq(request.getBookId() != null, TransactionEntity::getBookId, request.getBookId())
-                .eq(request.getType() != null, TransactionEntity::getType, request.getType())
-                // 转账时「这个账户发生的事」也包含它作为转入方的那一条，所以两个字段都要看
-                .and(request.getAccountId() != null, w -> w
-                        .eq(TransactionEntity::getAccountId, request.getAccountId())
-                        .or().eq(TransactionEntity::getToAccountId, request.getAccountId()))
-                .ge(request.getStartTime() != null, TransactionEntity::getTradeTime, request.getStartTime())
-                .le(request.getEndTime() != null, TransactionEntity::getTradeTime, request.getEndTime())
-                .like(StrUtil.isNotBlank(request.getKeyword()), TransactionEntity::getRemark, request.getKeyword())
-                .orderByDesc(TransactionEntity::getTradeTime);
-
-        if (request.getUserId() != null) {
-            List<Long> bookIds = bookMapper.selectList(Wrappers.<BookEntity>lambdaQuery()
-                            .eq(BookEntity::getOwnerId, request.getUserId()))
-                    .stream()
-                    .map(BookEntity::getId)
-                    .toList();
-            if (bookIds.isEmpty()) {
-                return PageResult.empty(request.getPage(), request.getSize());
-            }
-            wrapper.in(TransactionEntity::getBookId, bookIds);
+        List<Long> ownerBookIds = ownerBookIds(request.getUserId());
+        if (ownerBookIds != null && ownerBookIds.isEmpty()) {
+            return PageResult.empty(request.getPage(), request.getSize());
         }
+
+        QueryWrapper<TransactionEntity> wrapper = buildTransactionFilter(request, ownerBookIds)
+                .orderByDesc("trade_time");
 
         Page<TransactionEntity> page = transactionMapper.selectPage(
                 new Page<>(request.getPage(), request.getSize()), wrapper);
         List<TransactionVO> records = page.getRecords().stream().map(TransactionVO::from).toList();
         fillDisplayNames(records);
         return PageResult.of(records, page.getTotal(), page.getCurrent(), page.getSize());
+    }
+
+    @Override
+    public AdminTransactionSummaryVO sumTransactions(AdminTransactionQueryRequest request) {
+        AdminTransactionSummaryVO vo = new AdminTransactionSummaryVO();
+        List<Long> ownerBookIds = ownerBookIds(request.getUserId());
+        if (ownerBookIds != null && ownerBookIds.isEmpty()) {
+            return vo;
+        }
+
+        // 用聚合而不是把结果集捞回内存：全平台流水不设上限，翻到哪一页都要能算全量合计
+        QueryWrapper<TransactionEntity> wrapper = buildTransactionFilter(request, ownerBookIds)
+                .select("COALESCE(sum(CASE WHEN type = 1 THEN amount ELSE 0 END), 0) AS expense",
+                        "COALESCE(sum(CASE WHEN type = 2 THEN amount ELSE 0 END), 0) AS income",
+                        "COALESCE(sum(CASE WHEN type = 3 THEN amount ELSE 0 END), 0) AS transfer",
+                        "count(*) AS tx_count");
+        List<Map<String, Object>> rows = transactionMapper.selectMaps(wrapper);
+        if (!rows.isEmpty()) {
+            Map<String, Object> row = rows.get(0);
+            vo.setExpense(asLong(row.get("expense")));
+            vo.setIncome(asLong(row.get("income")));
+            vo.setTransfer(asLong(row.get("transfer")));
+            vo.setCount(asLong(row.get("tx_count")));
+        }
+        return vo;
+    }
+
+    /**
+     * 按「账本所有者」反查账本 ID。
+     *
+     * @return null 表示未按用户过滤；空列表表示该用户没有账本，调用方应直接返回空结果
+     */
+    private List<Long> ownerBookIds(Long userId) {
+        if (userId == null) {
+            return null;
+        }
+        return bookMapper.selectList(Wrappers.<BookEntity>lambdaQuery()
+                        .eq(BookEntity::getOwnerId, userId))
+                .stream()
+                .map(BookEntity::getId)
+                .toList();
+    }
+
+    /** 列表与合计共用同一套筛选条件，避免两个接口口径不一致 */
+    private QueryWrapper<TransactionEntity> buildTransactionFilter(AdminTransactionQueryRequest request,
+                                                                    List<Long> ownerBookIds) {
+        QueryWrapper<TransactionEntity> wrapper = Wrappers.<TransactionEntity>query()
+                .eq(request.getBookId() != null, "book_id", request.getBookId())
+                .eq(request.getType() != null, "type", request.getType())
+                .ge(request.getStartTime() != null, "trade_time", request.getStartTime())
+                .le(request.getEndTime() != null, "trade_time", request.getEndTime())
+                .like(StrUtil.isNotBlank(request.getKeyword()), "remark", request.getKeyword());
+
+        // 转账时「这个账户发生的事」也包含它作为转入方的那一条，所以两个字段都要看
+        if (request.getAccountId() != null) {
+            wrapper.and(w -> w.eq("account_id", request.getAccountId())
+                    .or().eq("to_account_id", request.getAccountId()));
+        }
+        if (ownerBookIds != null) {
+            wrapper.in("book_id", ownerBookIds);
+        }
+        return wrapper;
+    }
+
+    private static long asLong(Object value) {
+        return value instanceof Number number ? number.longValue() : 0L;
+    }
+
+    /** 批量补齐账本的所有者、成员数与账户数，避免列表里只看得到一串 ID */
+    private List<BookVO> decorateBooks(List<BookVO> records) {
+        if (records.isEmpty()) {
+            return records;
+        }
+
+        Set<Long> bookIds = records.stream().map(BookVO::getId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Set<Long> ownerIds = records.stream().map(BookVO::getOwnerId).filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, String> owners = ownerIds.isEmpty()
+                ? Collections.emptyMap()
+                : toNameMap(userMapper.selectBatchIds(ownerIds), UserEntity::getId, this::displayName);
+
+        Map<Long, Integer> accountCounts = new HashMap<>();
+        accountMapper.selectList(Wrappers.<AccountEntity>lambdaQuery()
+                        .in(AccountEntity::getBookId, bookIds)
+                        .select(AccountEntity::getBookId))
+                .forEach(account -> accountCounts.merge(account.getBookId(), 1, Integer::sum));
+
+        Map<Long, Integer> memberCounts = new HashMap<>();
+        bookMemberMapper.selectList(Wrappers.<BookMemberEntity>lambdaQuery()
+                        .in(BookMemberEntity::getBookId, bookIds)
+                        .select(BookMemberEntity::getBookId))
+                .forEach(member -> memberCounts.merge(member.getBookId(), 1, Integer::sum));
+
+        for (BookVO vo : records) {
+            vo.setOwnerUsername(owners.get(vo.getOwnerId()));
+            vo.setAccountCount(accountCounts.getOrDefault(vo.getId(), 0));
+            // 与 App 端口径一致：成员数 = 所有者 1 人 + t_book_member 记录数
+            vo.setMemberCount(1 + memberCounts.getOrDefault(vo.getId(), 0));
+        }
+        return records;
     }
 
     @Override
@@ -490,10 +620,14 @@ public class AdminServiceImpl implements AdminService {
         vo.setUserTotal(userMapper.countAll());
         vo.setUserToday(userMapper.countSince(todayStart));
         vo.setBookTotal(bookMapper.countAll());
+        vo.setActiveBookToday(transactionMapper.countActiveBooksSince(todayStart));
         vo.setTransactionTotal(transactionMapper.countAll());
         vo.setTransactionToday(transactionMapper.countSince(todayStart));
-        vo.setAmountTotal(transactionMapper.sumAmount());
-        vo.setAmountToday(transactionMapper.sumAmountSince(todayStart));
+        // 收支分开统计，且不含转账：以前的 sum(amount) 会把支出、收入和转账加在一起，数字没有业务含义
+        vo.setExpenseTotal(transactionMapper.sumAmountByType(TYPE_EXPENSE));
+        vo.setIncomeTotal(transactionMapper.sumAmountByType(TYPE_INCOME));
+        vo.setExpenseToday(transactionMapper.sumAmountByTypeSince(TYPE_EXPENSE, todayStart));
+        vo.setIncomeToday(transactionMapper.sumAmountByTypeSince(TYPE_INCOME, todayStart));
         return vo;
     }
 
@@ -518,7 +652,8 @@ public class AdminServiceImpl implements AdminService {
             point.setDate(day);
             point.setNewUsers(userRow == null || userRow.getCnt() == null ? 0L : userRow.getCnt());
             point.setNewTransactions(txRow == null || txRow.getCnt() == null ? 0L : txRow.getCnt());
-            point.setAmount(txRow == null || txRow.getAmount() == null ? 0L : txRow.getAmount());
+            point.setExpense(txRow == null || txRow.getExpense() == null ? 0L : txRow.getExpense());
+            point.setIncome(txRow == null || txRow.getIncome() == null ? 0L : txRow.getIncome());
             result.add(point);
         }
         return result;

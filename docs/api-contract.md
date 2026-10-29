@@ -65,6 +65,7 @@
 | 1002 | 用户名或密码错误 |
 | 1003 | 账号已被禁用 |
 | 1004 | Token 已失效，请重新登录 |
+| 1006 | 管理员仍在使用初始密码，需先修改（除 `/admin/auth/**` 外的管理接口均返回此码） |
 | 2001 | 账本不存在 |
 | 2002 | 无该账本访问权限 |
 | 2003 | 邀请码无效或已过期 |
@@ -495,19 +496,27 @@
 | POST | `/admin/auth/login` | 管理员登录 |
 | GET | `/admin/users` | 用户列表（分页、搜索） |
 | PUT | `/admin/users/{id}/status` | 启用/禁用用户 |
-| GET | `/admin/books` | 账本列表 |
+| GET | `/admin/books` | 账本列表（带所有者名称、成员数、账户数） |
 | GET | `/admin/accounts` | 账户列表（分页，可按账本 / 所有者 / 类型 / 名称筛选，带账本名与所有者） |
 | POST | `/admin/accounts` | 创建账户（请求体同 `/app/accounts` 的创建） |
 | PUT | `/admin/accounts/{id}` | 修改账户（不允许改动所属账本，`bookId` 被忽略） |
 | DELETE | `/admin/accounts/{id}` | 删除账户（账户下仍有流水时拒绝，code=3003） |
-| GET | `/admin/transactions` | 交易列表（可传 `accountId` 只看某账户的流水，转出/转入都算） |
-| GET | `/admin/statistics/overview` | 平台总览（用户数、活跃数、交易量） |
-| GET | `/admin/statistics/trend` | 平台增长趋势 |
+| GET | `/admin/transactions` | 交易列表（可按 `accountId` / `bookId` / `userId` 筛选，转出/转入都算） |
+| GET | `/admin/transactions/summary` | 交易合计（与列表同一套筛选条件，统计整个结果集而非当前页） |
+| GET | `/admin/statistics/overview` | 平台总览（用户数、账本数、今日活跃账本、收支金额，转账不计入收支） |
+| GET | `/admin/statistics/trend` | 平台增长趋势（新增用户、交易笔数、收支金额） |
 
 > 管理后台接口需要管理员角色（`role = ADMIN`），与 C 端 Token 隔离。
 > 它是**运营后台**（管用户 / 账本 / 账户 / 交易 / 平台指标），不承载预算、固定支出这类业务功能。
+> 管理员登录时如果仍在用初始密码 `admin123456`，响应里的 `user.mustChangePassword` 为 1，
+> 此时除 `/admin/auth/**` 外的管理接口都返回业务码 1006，前端应强制跳转改密页。
+> 禁用用户、重置密码、修改密码都会自增 `t_user.token_version`，已签发的 accessToken 立即返回 401，
+> 旧 refreshToken 调用 `/auth/refresh` 返回 1004。
+>
 > 账户列表与交易列表会额外返回 `bookName`、`ownerUsername`、`accountName`、`toAccountName`、
 > `categoryName` 这些展示名（App 端接口不填，保持只返回 ID）。
+> 账本列表额外返回 `ownerUsername`、`memberCount`、`accountCount`，便于后台直接从用户下钻到账本、账户。
+> 平台金额口径统一为「支出 / 收入分开统计，转账不计入」，与 C 端报表保持一致。
 
 ---
 

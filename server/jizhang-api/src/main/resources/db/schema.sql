@@ -28,10 +28,13 @@ CREATE TABLE IF NOT EXISTS t_user
 CREATE UNIQUE INDEX IF NOT EXISTS uk_user_username ON t_user (username) WHERE deleted = 0;
 -- 管理员重置密码后置 1：登录仍然放行（否则用户拿不到改密码的机会），由客户端提示尽快改密
 ALTER TABLE t_user ADD COLUMN IF NOT EXISTS must_change_password SMALLINT NOT NULL DEFAULT 0;
+-- 令牌版本：改密 / 重置密码 / 禁用时 +1，旧 accessToken 与 refreshToken 立即失效
+ALTER TABLE t_user ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0;
 COMMENT ON TABLE t_user IS '用户表';
 COMMENT ON COLUMN t_user.role IS 'USER=普通用户 ADMIN=管理员';
 COMMENT ON COLUMN t_user.status IS '0=禁用 1=正常';
 COMMENT ON COLUMN t_user.must_change_password IS '1=密码已被管理员重置，提示用户登录后自行修改';
+COMMENT ON COLUMN t_user.token_version IS '令牌版本，签发 JWT 时写入，校验时不匹配即视为失效';
 
 -- ---------------------------------------------------------------------------
 -- 账本

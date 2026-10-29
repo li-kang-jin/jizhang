@@ -48,7 +48,7 @@ java -jar server/jizhang-api/target/jizhang-api.jar
 
 - 服务地址：http://localhost:8080
 - 接口文档：http://localhost:8080/swagger-ui.html
-- 首次启动会自动建表，并创建默认管理员 `admin / admin123456`
+- 首次启动会自动建表，并创建默认管理员 `admin / admin123456`；首次登录会强制修改这个初始密码
 
 ### 3. 启动管理后台
 

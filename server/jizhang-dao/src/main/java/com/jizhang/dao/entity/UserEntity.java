@@ -43,5 +43,8 @@ public class UserEntity extends BaseEntity {
      */
     private Integer mustChangePassword;
 
+    /** 令牌版本：改密 / 重置密码 / 禁用时自增，旧令牌随之失效 */
+    private Integer tokenVersion;
+
     private OffsetDateTime lastLoginAt;
 }

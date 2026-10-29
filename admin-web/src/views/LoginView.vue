@@ -36,6 +36,11 @@ async function handleSubmit() {
   loading.value = true
   try {
     await auth.login({ username: form.username, password: form.password })
+    if (auth.user?.mustChangePassword === 1) {
+      ElMessage.warning('当前账号仍在使用初始密码，请先修改')
+      router.replace({ name: 'changePassword' })
+      return
+    }
     ElMessage.success('登录成功')
     const redirect = (route.query.redirect as string) || '/dashboard'
     router.push(redirect)

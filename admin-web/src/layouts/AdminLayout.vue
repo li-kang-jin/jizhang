@@ -10,6 +10,7 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 
+const collapsed = ref(false)
 const activeMenu = computed(() => route.path)
 const currentTitle = computed(() => route.meta.title || '')
 
@@ -99,14 +100,16 @@ async function submitPwdChange() {
 
 <template>
   <el-container class="layout">
-    <el-aside width="210px" class="sidebar">
-      <div class="logo">
+    <el-aside :width="collapsed ? '64px' : '210px'" class="sidebar">
+      <div class="logo" :class="{ collapsed }">
         <el-icon :size="22"><Wallet /></el-icon>
-        <span>记账系统</span>
+        <span v-show="!collapsed">记账系统</span>
       </div>
       <el-menu
         :default-active="activeMenu"
         router
+        :collapse="collapsed"
+        :collapse-transition="false"
         background-color="#001529"
         text-color="#bfcbd9"
         active-text-color="#409eff"
@@ -114,14 +117,19 @@ async function submitPwdChange() {
       >
         <el-menu-item v-for="menu in menus" :key="menu.path" :index="menu.path">
           <el-icon><component :is="menu.icon" /></el-icon>
-          <span>{{ menu.title }}</span>
+          <template #title>{{ menu.title }}</template>
         </el-menu-item>
       </el-menu>
     </el-aside>
 
     <el-container>
       <el-header class="header">
-        <div class="header-title">{{ currentTitle }}</div>
+        <div class="header-left">
+          <el-button text class="collapse-btn" @click="collapsed = !collapsed">
+            <el-icon :size="18"><component :is="collapsed ? 'Expand' : 'Fold'" /></el-icon>
+          </el-button>
+          <div class="header-title">{{ currentTitle }}</div>
+        </div>
         <div class="header-right">
           <el-dropdown trigger="click">
             <span class="user-trigger">
@@ -188,6 +196,8 @@ async function submitPwdChange() {
   display: flex;
   flex-direction: column;
   background-color: #001529;
+  transition: width 0.2s ease;
+  overflow: hidden;
 }
 
 .logo {
@@ -200,6 +210,22 @@ async function submitPwdChange() {
   font-size: 16px;
   font-weight: 600;
   letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+
+.logo.collapsed {
+  justify-content: center;
+  padding: 0;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.collapse-btn {
+  color: #606266;
 }
 
 .menu {

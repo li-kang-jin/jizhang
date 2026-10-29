@@ -29,6 +29,8 @@ a {
 }
 
 .page {
+  max-width: 1440px;
+  margin: 0 auto;
   padding: 16px;
 }
 
@@ -45,14 +47,55 @@ a {
   width: 200px;
 }
 
+/* 工具栏已经用 gap 控制间距，按钮自带的 margin-left 会造成双倍空隙 */
+.page-toolbar .el-button + .el-button {
+  margin-left: 0;
+}
+
 .page-toolbar .spacer {
   flex: 1;
+}
+
+.total-text {
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .pagination-bar {
   display: flex;
   justify-content: flex-end;
   margin-top: 16px;
+}
+
+/* 表头压暗一档，正文比网格线更突出；列表本身不再画 border */
+.el-table th.el-table__cell {
+  background-color: #fafafa;
+  color: #606266;
+  font-weight: 600;
+}
+
+.el-table .cell {
+  line-height: 1.5;
+}
+
+/* 对账条：筛选结果的收支合计 */
+.summary-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  align-items: center;
+  margin: -4px 0 14px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #f5f7fa;
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+}
+
+.summary-bar strong {
+  font-size: 15px;
+  font-weight: 600;
 }
 
 .stat-card {

@@ -17,6 +17,9 @@ public class TrendPointVO {
     /** 当日新增交易笔数 */
     private long newTransactions;
 
-    /** 当日交易金额（分） */
-    private long amount;
+    /** 当日支出（分），不含转账 */
+    private long expense;
+
+    /** 当日收入（分），不含转账 */
+    private long income;
 }

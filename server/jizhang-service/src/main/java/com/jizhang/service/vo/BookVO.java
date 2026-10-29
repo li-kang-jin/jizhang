@@ -24,6 +24,9 @@ public class BookVO {
     @JsonSerialize(using = ToStringSerializer.class)
     private Long ownerId;
 
+    /** 所有者登录名 / 昵称（管理后台列表由 Service 批量补齐，App 端不填） */
+    private String ownerUsername;
+
     private String remark;
 
     /** 当前用户在账本中的角色：0=只读 1=可写 2=管理员 */
@@ -31,6 +34,9 @@ public class BookVO {
 
     /** 成员数（含所有者） */
     private Integer memberCount;
+
+    /** 账户数（管理后台列表由 Service 批量补齐，App 端不填） */
+    private Integer accountCount;
 
     /** 是否为我自己的个人账本（type=0 且我是 owner） */
     private Boolean personal;

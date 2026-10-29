@@ -6,6 +6,7 @@ import com.jizhang.dao.entity.UserEntity;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -25,4 +26,13 @@ public interface UserMapper extends BaseMapper<UserEntity> {
     @Select("SELECT to_char(created_at, 'YYYY-MM-DD') AS day, count(*) AS cnt "
             + "FROM t_user WHERE deleted = 0 AND created_at >= #{start} GROUP BY 1 ORDER BY 1")
     List<DailyStatRow> dailyNewUsers(@Param("start") OffsetDateTime start);
+
+    /**
+     * 自增令牌版本，使该用户已签发的 accessToken / refreshToken 立即失效。
+     * <p>
+     * 用 SQL 自增而不是「读出来 +1 再写回」，避免并发改密时丢更新。
+     */
+    @Update("UPDATE t_user SET token_version = token_version + 1, updated_at = now() "
+            + "WHERE id = #{userId} AND deleted = 0")
+    int incrementTokenVersion(@Param("userId") Long userId);
 }

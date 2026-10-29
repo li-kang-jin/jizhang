@@ -29,20 +29,32 @@ public interface TransactionMapper extends BaseMapper<TransactionEntity> {
     @Select("SELECT count(*) FROM t_transaction WHERE deleted = 0")
     long countAll();
 
-    /** 指定时间之后产生的交易笔数 */
-    @Select("SELECT count(*) FROM t_transaction WHERE deleted = 0 AND created_at >= #{start}")
+    /**
+     * 指定时间之后的交易笔数。
+     * <p>
+     * 按 {@code trade_time} 而不是 {@code created_at}：离线补录会把「昨天花的钱」记在今天，
+     * 用创建时间统计会让笔数和金额（按 trade_time 算）互相打架。
+     */
+    @Select("SELECT count(*) FROM t_transaction WHERE deleted = 0 AND trade_time >= #{start}")
     long countSince(@Param("start") OffsetDateTime start);
 
-    /** 平台交易总金额（分） */
-    @Select("SELECT COALESCE(sum(amount), 0) FROM t_transaction WHERE deleted = 0")
-    long sumAmount();
+    /** 指定类型的累计金额（分），1=支出 2=收入 3=转账 */
+    @Select("SELECT COALESCE(sum(amount), 0) FROM t_transaction WHERE deleted = 0 AND type = #{type}")
+    long sumAmountByType(@Param("type") int type);
 
-    /** 指定时间之后的交易金额（分） */
-    @Select("SELECT COALESCE(sum(amount), 0) FROM t_transaction WHERE deleted = 0 AND trade_time >= #{start}")
-    long sumAmountSince(@Param("start") OffsetDateTime start);
+    /** 指定时间之后、指定类型的金额（分） */
+    @Select("SELECT COALESCE(sum(amount), 0) FROM t_transaction WHERE deleted = 0 AND type = #{type} "
+            + "AND trade_time >= #{start}")
+    long sumAmountByTypeSince(@Param("type") int type, @Param("start") OffsetDateTime start);
 
-    /** 按日统计交易笔数与金额 */
-    @Select("SELECT to_char(trade_time, 'YYYY-MM-DD') AS day, count(*) AS cnt, COALESCE(sum(amount), 0) AS amount "
+    /** 指定时间之后有记账行为的账本数（去重），作为平台活跃度的代理指标 */
+    @Select("SELECT count(DISTINCT book_id) FROM t_transaction WHERE deleted = 0 AND trade_time >= #{start}")
+    long countActiveBooksSince(@Param("start") OffsetDateTime start);
+
+    /** 按日统计交易笔数与收支金额（转账不计入收支） */
+    @Select("SELECT to_char(trade_time, 'YYYY-MM-DD') AS day, count(*) AS cnt, "
+            + "COALESCE(sum(CASE WHEN type = 1 THEN amount ELSE 0 END), 0) AS expense, "
+            + "COALESCE(sum(CASE WHEN type = 2 THEN amount ELSE 0 END), 0) AS income "
             + "FROM t_transaction WHERE deleted = 0 AND trade_time >= #{start} GROUP BY 1 ORDER BY 1")
     List<DailyStatRow> dailyTransactions(@Param("start") OffsetDateTime start);
 

@@ -7,6 +7,7 @@ import type {
   PlatformOverview,
   TokenInfo,
   TransactionInfo,
+  TransactionSummary,
   TrendPoint,
   UserInfo
 } from '@/types'
@@ -90,6 +91,11 @@ export interface TransactionQuery {
 
 export function fetchTransactions(params: TransactionQuery): Promise<PageResult<TransactionInfo>> {
   return get<PageResult<TransactionInfo>>('/admin/transactions', params as Record<string, unknown>)
+}
+
+/** 与列表同一套筛选条件，统计整个结果集而不是当前页 */
+export function fetchTransactionSummary(params: TransactionQuery): Promise<TransactionSummary> {
+  return get<TransactionSummary>('/admin/transactions/summary', params as Record<string, unknown>)
 }
 
 /* ---------------- 账户 ---------------- */

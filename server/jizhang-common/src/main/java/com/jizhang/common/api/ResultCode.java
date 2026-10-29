@@ -20,6 +20,7 @@ public enum ResultCode {
     USER_DISABLED(1003, "账号已被禁用"),
     TOKEN_INVALID(1004, "Token 已失效，请重新登录"),
     USER_NOT_FOUND(1005, "用户不存在"),
+    PASSWORD_CHANGE_REQUIRED(1006, "请先修改初始密码"),
 
     /* 账本 2xxx */
     BOOK_NOT_FOUND(2001, "账本不存在"),

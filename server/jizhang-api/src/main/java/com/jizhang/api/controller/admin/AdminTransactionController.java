@@ -5,6 +5,7 @@ import com.jizhang.common.api.Result;
 import com.jizhang.common.constant.CommonConstants;
 import com.jizhang.service.AdminService;
 import com.jizhang.service.dto.AdminTransactionQueryRequest;
+import com.jizhang.service.vo.AdminTransactionSummaryVO;
 import com.jizhang.service.vo.TransactionVO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -33,5 +34,11 @@ public class AdminTransactionController {
     @GetMapping
     public Result<PageResult<TransactionVO>> page(@Valid AdminTransactionQueryRequest request) {
         return Result.success(adminService.pageTransactions(request));
+    }
+
+    @Operation(summary = "交易流水合计", description = "与列表同一套筛选条件，统计整个结果集而非当前页")
+    @GetMapping("/summary")
+    public Result<AdminTransactionSummaryVO> summary(@Valid AdminTransactionQueryRequest request) {
+        return Result.success(adminService.sumTransactions(request));
     }
 }

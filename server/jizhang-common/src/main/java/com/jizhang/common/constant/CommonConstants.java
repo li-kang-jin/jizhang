@@ -27,6 +27,10 @@ public final class CommonConstants {
     public static final String ROLE_USER = "USER";
     public static final String ROLE_ADMIN = "ADMIN";
 
+    /** 默认管理员账号，仅用于首次建号与「是否仍在用初始密码」判断 */
+    public static final String DEFAULT_ADMIN_USERNAME = "admin";
+    public static final String DEFAULT_ADMIN_PASSWORD = "admin123456";
+
     /** 通用状态 */
     public static final int STATUS_DISABLED = 0;
     public static final int STATUS_ENABLED = 1;

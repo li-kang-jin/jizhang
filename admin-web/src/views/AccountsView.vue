@@ -6,17 +6,19 @@ import {
   createAccount,
   deleteAccount,
   fetchAccounts,
-  fetchBooks,
   fetchTransactions,
   updateAccount
 } from '@/api/admin'
-import type { AccountPayload } from '@/api/admin'
+import type { AccountQuery, AccountPayload, TransactionQuery } from '@/api/admin'
+import { loadBookOptions, loadUserOptions } from '@/api/options'
+import { usePagedTable } from '@/composables/usePagedTable'
 import { ACCOUNT_TYPES, formatAmount, TRANSACTION_TYPES } from '@/types'
-import type { AccountInfo, BookInfo, TransactionInfo } from '@/types'
-
-const loading = ref(false)
-const list = ref<AccountInfo[]>([])
-const total = ref(0)
+import { formatDateTime } from '@/utils/format'
+import CopyText from '@/components/CopyText.vue'
+import EntitySelect from '@/components/EntitySelect.vue'
+import PageToolbar from '@/components/PageToolbar.vue'
+import TableEmpty from '@/components/TableEmpty.vue'
+import type { AccountInfo, TransactionInfo } from '@/types'
 
 const query = reactive({
   page: 1,
@@ -27,49 +29,28 @@ const query = reactive({
   type: undefined as number | undefined
 })
 
-/* ---------------- 列表 ---------------- */
+const { loading, error, list, total, load, search, onPageChange, onSizeChange, reloadAfterDelete } =
+  usePagedTable<AccountInfo>((params) => fetchAccounts(params as AccountQuery), query, () => ({
+    keyword: query.keyword || undefined,
+    bookId: query.bookId || undefined,
+    userId: query.userId || undefined,
+    type: query.type
+  }))
 
-async function loadData() {
-  loading.value = true
-  try {
-    const result = await fetchAccounts({
-      page: query.page,
-      size: query.size,
-      keyword: query.keyword || undefined,
-      bookId: query.bookId || undefined,
-      userId: query.userId || undefined,
-      type: query.type
-    })
-    list.value = result.records
-    total.value = result.total
-  } finally {
-    loading.value = false
-  }
-}
-
-function handleSearch() {
-  query.page = 1
-  loadData()
-}
+const hasFilter = computed(
+  () => !!query.keyword || !!query.bookId || !!query.userId || query.type !== undefined
+)
 
 function handleReset() {
   query.keyword = ''
   query.bookId = ''
   query.userId = ''
   query.type = undefined
-  query.page = 1
-  loadData()
+  search()
 }
 
 function typeLabel(type: number) {
   return ACCOUNT_TYPES.find((item) => item.value === type)?.label ?? '未知'
-}
-
-function formatTime(value?: string) {
-  if (!value) {
-    return '-'
-  }
-  return value.replace('T', ' ').slice(0, 19)
 }
 
 /* ---------------- 新增 / 编辑 ---------------- */
@@ -79,6 +60,8 @@ const dialogTitle = computed(() => (editingId.value ? '编辑账户' : '新增�
 const saving = ref(false)
 const editingId = ref<string | null>(null)
 const formRef = ref<FormInstance>()
+const formBookLabel = ref('')
+const originalInitialBalance = ref(0)
 
 const form = reactive({
   bookId: '',
@@ -87,6 +70,7 @@ const form = reactive({
   /** 表单里按「元」填写，提交时换算成分 */
   initialBalanceYuan: 0,
   currency: 'CNY',
+  /** 图标是 App 侧字段，后台不展示，但编辑时必须原样带回，否则会被后端清空 */
   icon: '',
   sort: 0,
   includeInTotal: 1
@@ -101,20 +85,6 @@ const rules: FormRules = {
   type: [{ required: true, message: '请选择账户类型', trigger: 'change' }]
 }
 
-/* 账本远程搜索：后台新建账户必须落在某个账本下，光靠手输 ID 容易填错 */
-const bookOptions = ref<BookInfo[]>([])
-const bookLoading = ref(false)
-
-async function searchBooks(keyword: string) {
-  bookLoading.value = true
-  try {
-    const result = await fetchBooks({ page: 1, size: 50, keyword: keyword || undefined })
-    bookOptions.value = result.records
-  } finally {
-    bookLoading.value = false
-  }
-}
-
 function resetForm() {
   form.bookId = ''
   form.name = ''
@@ -124,13 +94,13 @@ function resetForm() {
   form.icon = ''
   form.sort = 0
   form.includeInTotal = 1
+  formBookLabel.value = ''
+  originalInitialBalance.value = 0
 }
 
 function openCreate() {
   editingId.value = null
   resetForm()
-  bookOptions.value = []
-  searchBooks('')
   dialogVisible.value = true
 }
 
@@ -144,8 +114,8 @@ function openEdit(row: AccountInfo) {
   form.icon = row.icon || ''
   form.sort = row.sort ?? 0
   form.includeInTotal = row.includeInTotal ?? 1
-  // 编辑时账本不可选，但下拉里得有这一项，否则只显示一个 ID
-  bookOptions.value = [{ id: row.bookId, name: row.bookName || `账本 ${row.bookId}` } as BookInfo]
+  formBookLabel.value = row.bookName || `账本 ${row.bookId}`
+  originalInitialBalance.value = row.initialBalance ?? 0
   dialogVisible.value = true
 }
 
@@ -157,11 +127,27 @@ async function submitForm() {
   if (!valid) {
     return
   }
+
+  const initialBalance = Math.round(Number(form.initialBalanceYuan || 0) * 100)
+  if (editingId.value && initialBalance !== originalInitialBalance.value) {
+    try {
+      await ElMessageBox.confirm(
+        `初始余额将从 ${formatAmount(originalInitialBalance.value)} 元调整为 ${formatAmount(
+          initialBalance
+        )} 元，账户当前余额会同步变动。确认继续？`,
+        '修改初始余额',
+        { type: 'warning', confirmButtonText: '确认修改' }
+      )
+    } catch {
+      return
+    }
+  }
+
   const payload: AccountPayload = {
     bookId: form.bookId,
     name: form.name.trim(),
     type: form.type as number,
-    initialBalance: Math.round(Number(form.initialBalanceYuan || 0) * 100),
+    initialBalance,
     currency: form.currency || 'CNY',
     icon: form.icon || undefined,
     sort: form.sort ?? 0,
@@ -177,7 +163,7 @@ async function submitForm() {
       ElMessage.success('账户创建成功')
     }
     dialogVisible.value = false
-    loadData()
+    load()
   } catch {
     // 错误提示已在 axios 拦截器中统一处理
   } finally {
@@ -196,10 +182,7 @@ async function handleDelete(row: AccountInfo) {
   try {
     await deleteAccount(row.id)
     ElMessage.success('删除成功')
-    if (list.value.length === 1 && query.page > 1) {
-      query.page -= 1
-    }
-    loadData()
+    reloadAfterDelete()
   } catch {
     // 账户下还有流水时后端会拒绝，提示已由拦截器弹出
   }
@@ -208,40 +191,28 @@ async function handleDelete(row: AccountInfo) {
 /* ---------------- 账户流水 ---------------- */
 
 const recordsVisible = ref(false)
-const recordsLoading = ref(false)
 const recordAccount = ref<AccountInfo | null>(null)
-const recordList = ref<TransactionInfo[]>([])
-const recordTotal = ref(0)
 const recordQuery = reactive({ page: 1, size: 10 })
 
-async function loadRecords() {
-  if (!recordAccount.value) {
-    return
-  }
-  recordsLoading.value = true
-  try {
-    const result = await fetchTransactions({
-      page: recordQuery.page,
-      size: recordQuery.size,
-      accountId: recordAccount.value.id
-    })
-    recordList.value = result.records
-    recordTotal.value = result.total
-  } finally {
-    recordsLoading.value = false
-  }
-}
+const {
+  loading: recordsLoading,
+  error: recordsError,
+  list: recordList,
+  total: recordTotal,
+  load: loadRecords,
+  search: searchRecords,
+  onPageChange: onRecordPageChange,
+  onSizeChange: onRecordSizeChange
+} = usePagedTable<TransactionInfo>(
+  (params) => fetchTransactions(params as TransactionQuery),
+  recordQuery,
+  () => ({ accountId: recordAccount.value?.id })
+)
 
 function openRecords(row: AccountInfo) {
   recordAccount.value = row
-  recordQuery.page = 1
   recordsVisible.value = true
-  loadRecords()
-}
-
-function handleRecordsSearch() {
-  recordQuery.page = 1
-  loadRecords()
+  searchRecords()
 }
 
 function transactionMeta(type: number) {
@@ -263,72 +234,89 @@ function amountClass(type: number) {
   return ''
 }
 
-onMounted(loadData)
+onMounted(load)
 </script>
 
 <template>
   <div class="page">
     <el-card shadow="never">
-      <div class="page-toolbar">
-        <el-input v-model="query.keyword" placeholder="账户名称关键字" clearable @keyup.enter="handleSearch" />
-        <el-input v-model="query.bookId" placeholder="账本 ID" clearable @keyup.enter="handleSearch" />
-        <el-input v-model="query.userId" placeholder="所有者用户 ID" clearable @keyup.enter="handleSearch" />
+      <PageToolbar :total="total" unit="个账户">
+        <el-input v-model="query.keyword" placeholder="账户名称关键字" clearable @keyup.enter="search" />
+        <EntitySelect
+          v-model="query.bookId"
+          :loader="loadBookOptions"
+          placeholder="所属账本"
+          width="200px"
+        />
+        <EntitySelect
+          v-model="query.userId"
+          :loader="loadUserOptions"
+          placeholder="所有者（用户名 / 昵称）"
+          width="220px"
+        />
         <el-select v-model="query.type" placeholder="账户类型" clearable style="width: 150px">
           <el-option v-for="item in ACCOUNT_TYPES" :key="item.value" :label="item.label" :value="item.value" />
         </el-select>
-        <el-button type="primary" @click="handleSearch">
+        <el-button type="primary" @click="search">
           <el-icon><Search /></el-icon>
           <span>查询</span>
         </el-button>
         <el-button @click="handleReset">重置</el-button>
-        <div class="spacer"></div>
-        <el-button type="primary" plain @click="openCreate">
-          <el-icon><Plus /></el-icon>
-          <span>新增账户</span>
-        </el-button>
-        <span class="total-text">共 {{ total }} 个账户</span>
-      </div>
+        <template #actions>
+          <el-button type="primary" plain @click="openCreate">
+            <el-icon><Plus /></el-icon>
+            <span>新增账户</span>
+          </el-button>
+        </template>
+      </PageToolbar>
 
-      <el-table :data="list" v-loading="loading" stripe border>
-        <el-table-column prop="id" label="账户 ID" width="200" />
-        <el-table-column prop="name" label="账户名称" min-width="160" />
-        <el-table-column label="类型" width="100">
+      <el-table :data="list" v-loading="loading" stripe>
+        <el-table-column label="账户 ID" width="150">
+          <template #default="{ row }">
+            <CopyText :text="row.id" mono label="账户 ID" />
+          </template>
+        </el-table-column>
+        <el-table-column prop="name" label="账户名称" min-width="150" />
+        <el-table-column label="类型" width="90">
           <template #default="{ row }">
             <el-tag size="small" type="info">{{ typeLabel(row.type) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="所属账本" min-width="180">
+        <el-table-column label="所属账本" min-width="170">
           <template #default="{ row }">
             <div>{{ row.bookName || '（账本已删除）' }}</div>
-            <div class="muted">{{ row.bookId }}</div>
+            <CopyText :text="row.bookId" mono label="账本 ID" />
           </template>
         </el-table-column>
-        <el-table-column label="所有者" width="130">
+        <el-table-column label="所有者" width="120">
           <template #default="{ row }">{{ row.ownerUsername || '-' }}</template>
         </el-table-column>
-        <el-table-column label="当前余额（元）" width="140" align="right">
+        <el-table-column label="当前余额（元）" width="130" align="right">
           <template #default="{ row }">{{ formatAmount(row.balance) }}</template>
         </el-table-column>
-        <el-table-column label="初始余额（元）" width="140" align="right">
+        <el-table-column label="初始余额（元）" width="130" align="right">
           <template #default="{ row }">{{ formatAmount(row.initialBalance) }}</template>
         </el-table-column>
-        <el-table-column label="计入总资产" width="110" align="center">
+        <el-table-column label="计入总资产" width="100" align="center">
           <template #default="{ row }">
             <el-tag size="small" :type="row.includeInTotal === 1 ? 'success' : 'info'">
               {{ row.includeInTotal === 1 ? '是' : '否' }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="更新时间" width="180">
-          <template #default="{ row }">{{ formatTime(row.updatedAt || row.createdAt) }}</template>
+        <el-table-column label="更新时间" width="170">
+          <template #default="{ row }">{{ formatDateTime(row.updatedAt || row.createdAt) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column label="操作" width="180" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="openRecords(row)">流水</el-button>
             <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
             <el-button link type="danger" @click="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
+        <template #empty>
+          <TableEmpty :error="error" :filtered="hasFilter" @retry="load" @clear="handleReset" />
+        </template>
       </el-table>
 
       <div class="pagination-bar">
@@ -338,8 +326,8 @@ onMounted(loadData)
           :page-sizes="[10, 20, 50, 100]"
           :total="total"
           layout="total, sizes, prev, pager, next, jumper"
-          @current-change="loadData"
-          @size-change="handleSearch"
+          @current-change="onPageChange"
+          @size-change="onSizeChange"
         />
       </div>
     </el-card>
@@ -348,25 +336,20 @@ onMounted(loadData)
     <el-dialog
       v-model="dialogVisible"
       :title="dialogTitle"
-      width="520px"
+      width="540px"
       :close-on-click-modal="false"
       append-to-body
     >
       <el-form ref="formRef" :model="form" :rules="rules" label-width="100px">
         <el-form-item label="所属账本" prop="bookId">
-          <el-select
+          <EntitySelect
             v-model="form.bookId"
-            filterable
-            remote
-            :remote-method="searchBooks"
-            :loading="bookLoading"
+            :loader="loadBookOptions"
             :disabled="!!editingId"
+            :selected-label="formBookLabel"
             placeholder="输入账本名称搜索"
-            style="width: 100%"
-            @focus="searchBooks('')"
-          >
-            <el-option v-for="book in bookOptions" :key="book.id" :label="book.name" :value="book.id" />
-          </el-select>
+            width="100%"
+          />
         </el-form-item>
         <el-form-item label="账户名称" prop="name">
           <el-input v-model="form.name" placeholder="如：招商银行储蓄卡" maxlength="64" show-word-limit />
@@ -386,21 +369,28 @@ onMounted(loadData)
             controls-position="right"
             style="width: 200px"
           />
-          <span class="form-tip">元；修改时会同步调整当前余额，不动已有流水</span>
-        </el-form-item>
-        <el-form-item label="币种">
-          <el-input v-model="form.currency" maxlength="8" placeholder="CNY" style="width: 120px" />
-        </el-form-item>
-        <el-form-item label="图标标识">
-          <el-input v-model="form.icon" maxlength="64" placeholder="可选，如 bank" style="width: 200px" />
-        </el-form-item>
-        <el-form-item label="排序">
-          <el-input-number v-model="form.sort" :min="0" :max="9999" controls-position="right" style="width: 140px" />
-          <span class="form-tip">数字越小越靠前</span>
+          <span class="form-tip">元；修改会同步调整当前余额，不动已有流水</span>
         </el-form-item>
         <el-form-item label="计入总资产">
           <el-switch v-model="form.includeInTotal" :active-value="1" :inactive-value="0" />
         </el-form-item>
+        <el-collapse class="form-advanced">
+          <el-collapse-item title="高级设置（币种 / 排序）" name="advanced">
+            <el-form-item label="币种">
+              <el-input v-model="form.currency" maxlength="8" placeholder="CNY" style="width: 120px" />
+            </el-form-item>
+            <el-form-item label="排序">
+              <el-input-number
+                v-model="form.sort"
+                :min="0"
+                :max="9999"
+                controls-position="right"
+                style="width: 140px"
+              />
+              <span class="form-tip">数字越小越靠前</span>
+            </el-form-item>
+          </el-collapse-item>
+        </el-collapse>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取 消</el-button>
@@ -418,7 +408,7 @@ onMounted(loadData)
         <div class="spacer"></div>
         <span class="muted">共 {{ recordTotal }} 笔</span>
       </div>
-      <el-table :data="recordList" v-loading="recordsLoading" stripe border height="calc(100vh - 260px)">
+      <el-table :data="recordList" v-loading="recordsLoading" stripe height="calc(100vh - 260px)">
         <el-table-column label="类型" width="90">
           <template #default="{ row }">
             <el-tag size="small" :type="transactionMeta(row.type).tag">{{ transactionMeta(row.type).label }}</el-tag>
@@ -441,9 +431,12 @@ onMounted(loadData)
         <el-table-column label="备注" min-width="140">
           <template #default="{ row }">{{ row.remark || '-' }}</template>
         </el-table-column>
-        <el-table-column label="交易时间" width="180">
-          <template #default="{ row }">{{ formatTime(row.tradeTime) }}</template>
+        <el-table-column label="交易时间" width="170">
+          <template #default="{ row }">{{ formatDateTime(row.tradeTime) }}</template>
         </el-table-column>
+        <template #empty>
+          <TableEmpty :error="recordsError" @retry="loadRecords" />
+        </template>
       </el-table>
       <div class="pagination-bar">
         <el-pagination
@@ -452,8 +445,8 @@ onMounted(loadData)
           :page-sizes="[10, 20, 50]"
           :total="recordTotal"
           layout="total, sizes, prev, pager, next"
-          @current-change="loadRecords"
-          @size-change="handleRecordsSearch"
+          @current-change="onRecordPageChange"
+          @size-change="onRecordSizeChange"
         />
       </div>
     </el-drawer>
@@ -461,20 +454,20 @@ onMounted(loadData)
 </template>
 
 <style scoped>
-.total-text {
-  color: #909399;
-  font-size: 13px;
-}
-
 .muted {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
 }
 
 .form-tip {
   margin-left: 10px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
+}
+
+.form-advanced {
+  margin-top: 4px;
+  border-top: none;
 }
 
 .drawer-toolbar {
