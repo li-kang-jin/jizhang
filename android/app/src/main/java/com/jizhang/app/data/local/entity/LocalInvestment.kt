@@ -15,8 +15,9 @@ import androidx.room.PrimaryKey
  * "投了多少、现在值多少、赚了多少"。份额必须先维护净值才能换算，一次要填两个数，
  * 这是绝大多数人放弃持仓功能的原因；[sharesScaled] 只是给想算单价的人留的口子。
  * <p>
- * 当前市值**不落库**：取 [LocalInvestValuation] 里最新一条快照，
- * 与「账户余额不落库、由流水实时聚合」保持同一个原则，不会出现两处数字打架。
+ * 当前市值**不落库**：由 [LocalInvestValuation] 里最新一条快照，加上「快照之后发生的
+ * 买卖净额」实时推算（加仓不会让市值停在旧值上），与「账户余额不落库、由流水实时聚合」
+ * 保持同一个原则，不会出现两处数字打架。
  */
 @Entity(
     tableName = "local_invest_position",
@@ -157,7 +158,9 @@ data class PositionWithValue(
     val sort: Int,
     val note: String?,
     val archived: Boolean,
+    /** 当前市值（分）= 最新快照值 + 快照之后的买卖净额；null 表示从未估值，按成本计 */
     val valueFen: Long?,
+    /** 最新快照的时点（不是推算时点）：界面「上次估值 N 天前」用 */
     val valuedAt: Long?,
     /** 编辑弹窗回填用的「期初成本」：转账自动记的那部分不该被手改覆盖 */
     val manualCostFen: Long = 0L,
@@ -175,12 +178,18 @@ data class PositionWithValue(
 }
 
 /**
- * 按账户汇总的持仓市值（Room 只读投影）。
+ * 按账户汇总的持仓市值与成本（Room 只读投影）。
  * <p>
- * 统计页要把投资账户的「余额（本金）」换成市值，否则浮盈永远不进净资产，
- * FI 进度会长期偏低。没有持仓的账户不会出现在结果里，调用方回落到原余额。
+ * 统计页不能直接把投资账户的「余额（本金）」换成市值：那样会吞掉账户里还没归到
+ * 品种上的现金（未分配资金），也会让「只填成本、没走转账」的品种凭空增加净资产。
+ * 正确口径是 `本金余额 + (市值 − 成本)`，所以两个数必须一起返回。
+ * <p>
+ * 没有持仓的账户不会出现在结果里，调用方回落到原余额。
  */
 data class AccountMarketValue(
     val accountId: Long,
-    val valueFen: Long
+    /** 该账户下持仓的最新市值合计（从未估值的品种按成本计） */
+    val valueFen: Long,
+    /** 该账户下持仓的总成本合计（期初 + 转账累计），用于算未实现盈亏 */
+    val costFen: Long
 )

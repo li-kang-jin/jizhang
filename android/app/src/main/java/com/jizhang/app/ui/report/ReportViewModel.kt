@@ -16,6 +16,7 @@ import com.jizhang.app.data.repository.CategorySlice
 import com.jizhang.app.data.repository.DayAmount
 import com.jizhang.app.data.repository.DayDetail
 import com.jizhang.app.data.repository.HabitStats
+import com.jizhang.app.data.repository.InvestmentSummary
 import com.jizhang.app.data.repository.RankItem
 import com.jizhang.app.data.repository.ReportGranularity
 import com.jizhang.app.data.repository.ReportOverview
@@ -99,6 +100,12 @@ class ReportViewModel @Inject constructor(
         /** 预算进度（始终按锚点所在月份），未设置时 hasBudget = false */
         val budget: BudgetOverviewDto? = null,
         val assets: AssetSummary = AssetSummary.EMPTY,
+        /**
+         * 投资资产汇总（本金 / 成本 / 市值 / 未分配 / 浮动）。
+         * <p>
+         * 与投资页共用同一份口径，null 表示没有投资账户（不显示投资卡）。
+         */
+        val investment: InvestmentSummary? = null,
         /**
          * 财务自由进度（卡片上的一行进度条用）。
          * <p>
@@ -254,6 +261,8 @@ class ReportViewModel @Inject constructor(
                     }
                     val budget = async { budgetRepository.overview(bookId, budgetPeriod) }
                     val assets = async { reportRepository.assets(bookId) }
+                    // 投资汇总与投资页共用口径：卡片上的本金 / 市值 / 浮动必须来自同一份计算
+                    val investment = async { reportRepository.investmentSummary(bookId) }
                     val expenseCategories = async { reportRepository.expenseCategories(bookId) }
                     // 预算卡片的月份可能不是本月：过去的月份没有「还没到期」的固定支出，这里自然返回 0
                     val reservation = async {
@@ -277,6 +286,7 @@ class ReportViewModel @Inject constructor(
                             members = members.await(),
                             budget = budgetDto,
                             assets = assets.await(),
+                            investment = investment.await(),
                             expenseCategories = expenseCategories.await(),
                             fixedReserved = reserved.total,
                             uncoveredFixed = uncoveredFixedTotal(

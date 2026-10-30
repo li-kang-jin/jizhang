@@ -329,14 +329,27 @@ class BillViewModel @Inject constructor(
         }
 
         val zone = ZoneId.systemDefault()
-        val days = typed
+        val rawDays = typed
             .groupBy { Instant.ofEpochMilli(it.tradeTime).atZone(zone).toLocalDate() }
             .map { (date, list) -> BillChartDay(date, list.sumOf { it.amount }) }
             .sortedBy { it.date }
-            .takeLast(CHART_DAYS)
+
+        // 按「筛选范围内最后一天」往前补满 14 天，没有交易的日子记 0。
+        // 不补零的话，断档的日期会被直接跳过，柱子看着连续、实际不是一条时间轴，
+        // 用户会误以为「这几天每天都在花」。
+        val dayByDate = rawDays.associateBy { it.date }
+        val days = if (rawDays.isEmpty()) {
+            emptyList()
+        } else {
+            val end = rawDays.last().date
+            (CHART_DAYS - 1 downTo 0).map { back ->
+                val date = end.minusDays(back.toLong())
+                BillChartDay(date, dayByDate[date]?.amount ?: 0L)
+            }
+        }
 
         val total = typed.sumOf { it.amount }
-        val topCategories = typed
+        val grouped = typed
             .groupBy { it.categoryId }
             .map { (categoryId, list) ->
                 val amount = list.sumOf { it.amount }
@@ -349,7 +362,23 @@ class BillViewModel @Inject constructor(
                 )
             }
             .sortedByDescending { it.amount }
-            .take(CHART_CATEGORIES)
+
+        // Top5 之外合并成「其他」：原来直接截断，5 行加起来只有 60% 多，
+        // 用户看不到剩下的钱花在哪，还会以为百分比算错了
+        val top = grouped.take(CHART_CATEGORIES)
+        val rest = grouped.drop(CHART_CATEGORIES)
+        val topCategories = if (rest.isEmpty()) {
+            top
+        } else {
+            val restAmount = rest.sumOf { it.amount }
+            top + BillCategorySlice(
+                categoryId = null,
+                name = "其他 ${rest.size} 项",
+                icon = null,
+                amount = restAmount,
+                ratio = if (total == 0L) 0f else restAmount.toFloat() / total
+            )
+        }
 
         return BillChart(type = chartType, days = days, topCategories = topCategories, total = total)
     }

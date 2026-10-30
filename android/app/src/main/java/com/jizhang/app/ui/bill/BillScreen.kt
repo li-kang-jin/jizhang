@@ -933,7 +933,14 @@ private fun BillChartCard(chart: BillChart) {
 
             if (chart.days.isNotEmpty()) {
                 Spacer(Modifier.height(12.dp))
+                Text(
+                    text = "近 14 天",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(6.dp))
                 val maxValue = chart.days.maxOf { it.amount }.coerceAtLeast(1L)
+                val today = LocalDate.now()
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -942,6 +949,8 @@ private fun BillChartCard(chart: BillChart) {
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     chart.days.forEach { day ->
+                        // 今天单独给实色：14 根柱子光看日期数字很难定位「最右边这根是不是今天」
+                        val isToday = day.date == today
                         Column(
                             modifier = Modifier.weight(1f),
                             horizontalAlignment = Alignment.CenterHorizontally,
@@ -952,13 +961,14 @@ private fun BillChartCard(chart: BillChart) {
                                     .fillMaxWidth()
                                     .height((64 * (day.amount.toFloat() / maxValue)).dp.coerceAtLeast(2.dp))
                                     .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
-                                    .background(accent.copy(alpha = 0.85f))
+                                    .background(if (isToday) accent else accent.copy(alpha = 0.35f))
                             )
                             Spacer(Modifier.height(4.dp))
                             Text(
                                 text = day.date.dayOfMonth.toString(),
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                fontWeight = if (isToday) FontWeight.Bold else FontWeight.Normal,
+                                color = if (isToday) accent else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
@@ -969,6 +979,12 @@ private fun BillChartCard(chart: BillChart) {
                 Spacer(Modifier.height(12.dp))
                 HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
                 Spacer(Modifier.height(10.dp))
+                Text(
+                    text = "分类占比",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
                 chart.topCategories.forEach { slice ->
                     Column(Modifier.padding(bottom = 8.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1001,7 +1017,7 @@ private fun BillChartCard(chart: BillChart) {
                             )
                             Spacer(Modifier.width(8.dp))
                             Text(
-                                text = "${(slice.ratio * 100).toInt()}%",
+                                text = "${(slice.ratio * 100).roundToInt()}%",
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Medium,
                                 color = accent

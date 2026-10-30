@@ -37,38 +37,104 @@ private const val TRANSFER_TYPE = 3
 private const val PUSH_TIMEOUT_MS = 2_000L
 
 /**
- * 投资总览：一次算清「投了多少、现在值多少、还有多少没分配」。
+ * 投资资产的唯一口径：投资页、统计页、账户页共用一份，任何页面都不再自己加减。
  * <p>
- * 三个口径必须说清楚，否则数字之间会对不上：
+ * 五个数的关系必须恒成立，错一处就会让两个页面对同一个账户给出两个数：
  * <ol>
- *   <li>**总市值**：未估过值的品种按**成本**计，不能按 0 计 ——
- *       否则刚建完品种的第一眼，总市值会凭空塌下去；</li>
- *   <li>**总成本**：净投入（买入 − 卖出），V1 由用户手填；</li>
- *   <li>**未分配资金** = 投资账户余额 − 持仓成本合计。这是全模块最关键的一个数：
- *       它允许你月底转进来 5000 但暂时不分类，不至于因为「必须先建品种」而放弃记账。</li>
+ *   <li>**本金** = 投资账户的转入 − 转出（由流水聚合，不是手工填的）；</li>
+ *   <li>**成本** = 持仓的期初成本 + 买入 − 卖出；</li>
+ *   <li>**市值** = 最新估值 + 快照之后的买卖净额；从未估值的按成本计
+ *       （按 0 计会让新建品种后净资产凭空塌一截）；</li>
+ *   <li>**未分配** = 本金 − 成本（转进来但还没归到品种上的钱，成本填多了则为负）；</li>
+ *   <li>**投资资产** = 本金 + 浮动盈亏 = 市值 + 未分配。</li>
  * </ol>
- * 账户余额来自转账实时聚合，所以未分配资金**不需要任何额外维护**。
+ * 第 5 条是关键：直接拿市值当资产会吞掉未分配现金，直接拿本金又会让浮盈浮亏
+ * 永远进不了净资产。两者都不对。
+ */
+data class InvestmentSummary(
+    /** 持仓总市值（分） */
+    val marketValueFen: Long = 0L,
+    /** 持仓总成本（分） */
+    val costFen: Long = 0L,
+    /** 投资账户本金余额合计（分） */
+    val principalFen: Long = 0L,
+    /** 未分配资金（分） */
+    val unallocatedFen: Long = 0L,
+    /** 最近一次估值时间；从未估值时为 null */
+    val lastValuedAt: Long? = null
+) {
+    /** 浮动盈亏（分）：只算市值与净投入的差，不进收支表 */
+    val profitFen: Long get() = marketValueFen - costFen
+
+    /** 计入净资产的投资资产（分） */
+    val assetFen: Long get() = principalFen + profitFen
+
+    /** 收益率；没有成本时为 null（不显示 0%，那是"没投"不是"没赚"） */
+    val profitRate: Double? get() = if (costFen > 0L) profitFen.toDouble() / costFen else null
+
+    /** 没有任何投资账户与持仓 */
+    val isEmpty: Boolean get() = principalFen == 0L && costFen == 0L && marketValueFen == 0L
+
+    companion object {
+        val EMPTY = InvestmentSummary()
+    }
+}
+
+/**
+ * 三个页面共用的汇总函数 —— 口径只在这里写一次。
+ * <p>
+ * 之所以抽出来：投资页、统计页、账户页原先各算一套（一个用 Flow、两个用 SQL 聚合），
+ * 加仓后一处更新、另一处没更新，用户就会看到三个不同的数。
+ */
+internal fun summarizeInvest(
+    positions: List<PositionWithValue>,
+    investAccounts: List<AccountWithBalance>,
+    lastValuedAt: Long?
+): InvestmentSummary {
+    val marketValue = positions.sumOf { it.marketValueFen }
+    val cost = positions.sumOf { it.costFen }
+    val principal = investAccounts.sumOf { it.balance }
+    return InvestmentSummary(
+        marketValueFen = marketValue,
+        costFen = cost,
+        principalFen = principal,
+        unallocatedFen = principal - cost,
+        lastValuedAt = lastValuedAt
+    )
+}
+
+/**
+ * 投资总览：持仓明细 + 汇总口径 + 可挂账户。
+ * <p>
+ * 所有数字都从 [summary] 派生，页面只做展示，不再各自加减。
  */
 data class InvestmentOverview(
     val positions: List<PositionWithValue> = emptyList(),
-    /** 总市值（分），包含未估值品种的成本 */
-    val totalValueFen: Long = 0L,
-    /** 总成本（分） */
-    val totalCostFen: Long = 0L,
-    /** 投资账户余额合计（分）：转账进去的钱，可能还没分配到品种 */
-    val accountBalanceFen: Long = 0L,
-    /** 未分配资金（分），可能为负（持仓成本填得比实际转入还多） */
-    val unallocatedFen: Long = 0L,
-    /** 最近一次估值时间；从未估值时为 null */
-    val lastValuedAt: Long? = null,
+    /** 唯一口径：本金 / 成本 / 市值 / 未分配 / 浮动都在这里 */
+    val summary: InvestmentSummary = InvestmentSummary.EMPTY,
     /** 可挂持仓的投资账户（未归档） */
     val accounts: List<AccountWithBalance> = emptyList()
 ) {
-    /** 浮动盈亏（分）：只算市值与净投入的差，不进收支表 */
-    val profitFen: Long get() = totalValueFen - totalCostFen
+    /** 总市值（分），包含未估值品种的成本 */
+    val totalValueFen: Long get() = summary.marketValueFen
 
-    /** 收益率；没有成本时为 null（不显示 0%，那是"没投"不是"没赚"） */
-    val profitRate: Double? get() = if (totalCostFen > 0L) profitFen.toDouble() / totalCostFen else null
+    /** 总成本（分） */
+    val totalCostFen: Long get() = summary.costFen
+
+    /** 投资账户余额合计（分）：转账进去的钱，可能还没分配到品种 */
+    val accountBalanceFen: Long get() = summary.principalFen
+
+    /** 未分配资金（分），可能为负（持仓成本填得比实际转入还多） */
+    val unallocatedFen: Long get() = summary.unallocatedFen
+
+    /** 最近一次估值时间；从未估值时为 null */
+    val lastValuedAt: Long? get() = summary.lastValuedAt
+
+    /** 浮动盈亏（分） */
+    val profitFen: Long get() = summary.profitFen
+
+    /** 收益率；没有成本时为 null */
+    val profitRate: Double? get() = summary.profitRate
 
     val hasInvestAccount: Boolean get() = accounts.isNotEmpty()
 
@@ -108,15 +174,9 @@ class InvestmentRepository @Inject constructor(
         val investAccounts = accounts.filter {
             it.type == ACCOUNT_TYPE_INVEST && !it.archived
         }
-        val balance = investAccounts.sumOf { it.balance }
-        val cost = positions.sumOf { it.costFen }
         InvestmentOverview(
             positions = positions,
-            totalValueFen = positions.sumOf { it.marketValueFen },
-            totalCostFen = cost,
-            accountBalanceFen = balance,
-            unallocatedFen = balance - cost,
-            lastValuedAt = lastValuedAt,
+            summary = summarizeInvest(positions, investAccounts, lastValuedAt),
             accounts = investAccounts
         )
     }
@@ -129,7 +189,7 @@ class InvestmentRepository @Inject constructor(
      * 新建或修改一个品种。
      *
      * @param id 传入已有 id 表示编辑；null 表示新建
-     * @param initialValueFen 新建时顺手填的当前市值；null 表示先估成本、之后单独更新
+     * @param initialValueFen 顺手填的当前市值（新建、编辑都可）；null 表示不动市值
      */
     suspend fun savePosition(
         id: Long?,
@@ -161,8 +221,9 @@ class InvestmentRepository @Inject constructor(
                 clientUpdatedAt = now
             )
         )
-        // 新建时填了市值就直接落一条快照：少一次「建完再点更新」的操作
-        if (id == null && initialValueFen != null) {
+        // 填了市值就直接落一条快照：新建时省掉「建完再点更新」，编辑时能把改成本
+        // 和校准市值一次做完（只改期初成本时市值不会自动跟，用户容易漏）
+        if (initialValueFen != null) {
             insertValuation(positionId, bookId, initialValueFen, now)
         }
         tryPush(bookId)
@@ -184,6 +245,24 @@ class InvestmentRepository @Inject constructor(
     /** 更新市值：只追加一条估值快照，不改持仓本身（历史曲线要留着） */
     suspend fun updateValue(bookId: Long, positionId: Long, valueFen: Long) {
         insertValuation(positionId, bookId, valueFen, System.currentTimeMillis())
+        tryPush(bookId)
+    }
+
+    /**
+     * 批量更新市值（投资页「更新全部市值」一次提交多个品种）。
+     * <p>
+     * 同一时刻写同一个 `valuedAt`，界面上就是「这一轮看过了」；历史曲线仍按时间取最新。
+     * 调用方只需传真正变过的品种 —— 全量补快照会把曲线糊满水平线，也看不出哪天真的核对过。
+     */
+    suspend fun updateValues(bookId: Long, values: Map<Long, Long>) {
+        if (values.isEmpty()) return
+        val at = System.currentTimeMillis()
+        values.forEach { (positionId, valueFen) ->
+            // 弹窗打开期间品种可能已被删除：给不存在的持仓写估值只会留下孤儿数据
+            if (investmentDao.findById(positionId) != null) {
+                insertValuation(positionId, bookId, valueFen, at)
+            }
+        }
         tryPush(bookId)
     }
 

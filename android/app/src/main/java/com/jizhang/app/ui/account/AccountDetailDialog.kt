@@ -1,6 +1,7 @@
 package com.jizhang.app.ui.account
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +25,7 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -52,6 +54,7 @@ import com.jizhang.app.data.local.entity.AccountWithBalance
 import com.jizhang.app.data.local.entity.LocalCategory
 import com.jizhang.app.data.local.entity.LocalTransaction
 import com.jizhang.app.data.repository.AccountRepository
+import com.jizhang.app.data.repository.InvestmentRepository
 import com.jizhang.app.data.repository.CategoryRepository
 import com.jizhang.app.data.repository.TransactionRepository
 import com.jizhang.app.ui.common.AppFullScreenDialog
@@ -87,7 +90,8 @@ private const val DETAIL_LIMIT = 60
 class AccountDetailViewModel @Inject constructor(
     private val accountRepository: AccountRepository,
     private val transactionRepository: TransactionRepository,
-    private val categoryRepository: CategoryRepository
+    private val categoryRepository: CategoryRepository,
+    private val investmentRepository: InvestmentRepository
 ) : ViewModel() {
 
     data class UiState(
@@ -99,6 +103,13 @@ class AccountDetailViewModel @Inject constructor(
         val categoryById: Map<Long, LocalCategory> = emptyMap(),
         val monthIncome: Long = 0L,
         val monthExpense: Long = 0L,
+        /**
+         * 投资账户的持仓汇总（市值 / 成本）；非投资账户或没有持仓时为 null。
+         * <p>
+         * 详情页的主数字仍然是本金（对账 / 校准要它能对上流水），
+         * 市值只作为并列信息展示，两者不混用。
+         */
+        val investValue: AccountInvestValue? = null,
         val calibrating: Boolean = false,
         val message: String? = null
     )
@@ -124,6 +135,25 @@ class AccountDetailViewModel @Inject constructor(
             val categories = runCatching { categoryRepository.listCategories(bookId) }
                 .getOrDefault(emptyList())
             _state.update { it.copy(categoryById = categories.associateBy { c -> c.id }) }
+        }
+        // 投资账户额外挂一条市值流：点进账户就能看到「现在值多少」，
+        // 不用再退回列表、切到投资页。非投资账户这条流不会产出数据。
+        viewModelScope.launch {
+            investmentRepository.observe(bookId).collect { overview ->
+                val positions = overview.positions.filter { p -> p.accountId == accountId }
+                _state.update {
+                    it.copy(
+                        investValue = if (positions.isEmpty()) {
+                            null
+                        } else {
+                            AccountInvestValue(
+                                valueFen = positions.sumOf { p -> p.marketValueFen },
+                                costFen = positions.sumOf { p -> p.costFen }
+                            )
+                        }
+                    )
+                }
+            }
         }
         viewModelScope.launch { refresh(bookId, accountId) }
     }
@@ -199,6 +229,8 @@ fun AccountDetailDialog(
     accountId: Long,
     onDismiss: () -> Unit,
     hideAmounts: Boolean = false,
+    /** 投资账户的出口：去投资页看品种明细和更新估值 */
+    onOpenInvest: (() -> Unit)? = null,
     viewModel: AccountDetailViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -251,6 +283,19 @@ fun AccountDetailDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 item { BalanceCard(account, hideAmounts) }
+
+                // 投资账户多一块：点进来就是为了看这个账户现在怎么样，
+                // 只给本金会让人以为「市值没了」，还得退回列表再切投资页
+                state.investValue?.let { invest ->
+                    item {
+                        InvestCard(
+                            account = account,
+                            invest = invest,
+                            hideAmounts = hideAmounts,
+                            onOpenInvest = onOpenInvest
+                        )
+                    }
+                }
 
                 item {
                     MonthCard(
@@ -357,7 +402,13 @@ private fun BalanceCard(account: AccountWithBalance, hideAmounts: Boolean) {
             }
             Spacer(Modifier.width(10.dp))
             Column {
-                Text("当前余额", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                // 投资账户的余额是本金（转入 − 转出），不是市值：
+                // 这里是对账 / 校准用的页面，必须保持本金口径，所以标题要写清楚
+                Text(
+                    text = if (account.type == 6) "当前余额（本金）" else "当前余额",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Text(
                     text = amountText(account.balance, hideAmounts),
                     style = MaterialTheme.typography.headlineSmall,
@@ -388,6 +439,99 @@ private fun BalanceCard(account: AccountWithBalance, hideAmounts: Boolean) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+}
+
+/**
+ * 投资账户的持仓概览：市值 / 浮动 / 成本 / 未分配。
+ * <p>
+ * 主数字用市值（和账户列表、统计页同一个口径），本金在上面那张卡里已经有了。
+ * 四个数满足 `本金 + 浮动 = 市值 + 未分配`，与投资页是同一份计算。
+ */
+@Composable
+private fun InvestCard(
+    account: AccountWithBalance,
+    invest: AccountInvestValue,
+    hideAmounts: Boolean,
+    onOpenInvest: (() -> Unit)?
+) {
+    val profit = invest.profitFen
+    val unallocated = account.balance - invest.costFen
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(16.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "持仓市值",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.weight(1f))
+            if (onOpenInvest != null) {
+                Text(
+                    text = "品种与估值 ›",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(onClick = onOpenInvest)
+                        .padding(horizontal = 6.dp, vertical = 4.dp)
+                )
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = amountText(invest.valueFen, hideAmounts),
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = (if (profit >= 0) "+" else "-") + amountText(abs(profit), hideAmounts),
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = when {
+                profit > 0L -> AppColors.income
+                profit < 0L -> AppColors.expense
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            }
+        )
+        Spacer(Modifier.height(10.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+        Spacer(Modifier.height(8.dp))
+        InvestInfoRow("持仓成本", amountText(invest.costFen, hideAmounts))
+        InvestInfoRow("未分配资金", amountText(unallocated, hideAmounts))
+        // 未分配为负说明有买入没记转账，直接点破，别让人对着负数猜
+        if (unallocated < 0L) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "记在品种上的成本比本金多，多半是有买入没记转账",
+                style = MaterialTheme.typography.labelSmall,
+                color = AppColors.expense
+            )
+        }
+    }
+}
+
+@Composable
+private fun InvestInfoRow(label: String, value: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.weight(1f))
+        Text(text = value, style = MaterialTheme.typography.labelSmall)
     }
 }
 

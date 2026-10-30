@@ -36,7 +36,9 @@ class InvestViewModel @Inject constructor(
         /** 新建时预填的成本（用于一句「把未分配资金归到这个新品种」） */
         val costPrefillFen: Long? = null,
         /** 正在更新市值的品种 */
-        val valuing: PositionWithValue? = null
+        val valuing: PositionWithValue? = null,
+        /** 「更新全部市值」弹窗是否打开 */
+        val valuingAll: Boolean = false
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -79,6 +81,35 @@ class InvestViewModel @Inject constructor(
         _state.update { it.copy(valuing = null) }
     }
 
+    fun openValuingAll() {
+        _state.update { it.copy(valuingAll = true) }
+    }
+
+    fun closeValuingAll() {
+        _state.update { it.copy(valuingAll = false) }
+    }
+
+    /**
+     * 批量更新市值（「更新全部市值」）。
+     * <p>
+     * 只提交和当前显示不一样的品种：给每个品种都补一条快照的话，没改过的那些也会在
+     * 历史曲线上多一个点，看不出哪天是真的核对过。
+     */
+    fun updateAllValues(texts: Map<Long, String>) {
+        val positions = _state.value.overview.positions
+        if (bookId <= 0L || positions.isEmpty()) return
+        viewModelScope.launch {
+            val updates = positions.mapNotNull { position ->
+                val text = texts[position.id]
+                if (text.isNullOrBlank()) return@mapNotNull null
+                val fen = parseFen(text)
+                if (fen == position.marketValueFen) null else position.id to fen
+            }.toMap()
+            repository.updateValues(bookId, updates)
+            closeValuingAll()
+        }
+    }
+
     fun save(
         accountId: Long,
         name: String,
@@ -99,12 +130,8 @@ class InvestViewModel @Inject constructor(
                 code = code,
                 kind = kind,
                 costFen = parseFen(costText),
-                // 只有新建时允许顺手填市值：编辑时改市值应该走「更新」，否则会多出一条快照
-                initialValueFen = if (editing == null && valueText.isNotBlank()) {
-                    parseFen(valueText)
-                } else {
-                    null
-                },
+                // 留空表示不动市值：编辑时把旧值预填进去再保存，会平白多出一条快照
+                initialValueFen = valueText.takeIf { it.isNotBlank() }?.let(::parseFen),
                 note = note
             )
             closeEditor()

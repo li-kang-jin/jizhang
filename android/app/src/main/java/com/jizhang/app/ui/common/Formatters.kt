@@ -7,6 +7,8 @@ import java.time.LocalDate
 import java.time.YearMonth
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 private val DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd")
 private val DATE_TIME_FORMAT = DateTimeFormatter.ofPattern("MM-dd HH:mm")
@@ -71,6 +73,37 @@ fun weekdayShortOf(displayIndex: Int): String = WEEKDAY_SHORT[(displayIndex + 1)
  */
 fun money(fen: Long, hideAmounts: Boolean, suffix: String = ""): String =
     if (hideAmounts) "****$suffix" else "¥${formatAmount(fen)}$suffix"
+
+/**
+ * 「多久以前」的距离文案（估值时间、快照时间都用它）。
+ * <p>
+ * 超过一个月按整月说，避免出现「第 187 天」这种读不懂的数字。
+ */
+fun daysAgoText(at: Long): String {
+    val days = ((System.currentTimeMillis() - at) / 86_400_000L).toInt()
+    return when {
+        days <= 0 -> "今天"
+        days == 1 -> "昨天"
+        days < 30 -> "$days 天前"
+        else -> "${days / 30} 个月前"
+    }
+}
+
+/** 带符号金额：+¥1,200.00 / -¥300.00；隐私模式下不泄露正负之外的任何信息 */
+fun signedMoney(fen: Long, hideAmounts: Boolean): String =
+    if (hideAmounts) "****" else (if (fen >= 0) "+" else "-") + "¥" + formatAmount(abs(fen))
+
+/** 收益率：整数不带小数，其余保留一位（+24.6%） */
+fun percentText(rate: Double): String {
+    val percent = rate * 100.0
+    val rounded = percent.roundToInt()
+    val body = if (abs(percent - rounded) < 0.05) {
+        "$rounded"
+    } else {
+        "${(percent * 10).roundToInt() / 10.0}"
+    }
+    return if (percent >= 0) "+$body%" else "$body%"
+}
 
 private val COMPACT_AMOUNT: DecimalFormat = DecimalFormat("0.##")
 

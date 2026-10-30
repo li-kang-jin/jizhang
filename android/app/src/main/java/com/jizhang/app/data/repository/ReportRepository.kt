@@ -42,7 +42,7 @@ class ReportRepository @Inject constructor(
         const val EXPENSE_TYPE = 1
         const val INCOME_TYPE = 2
 
-        /** 投资账户类型：余额是本金，有持仓时要换成市值 */
+        /** 投资账户类型：余额只含本金，资产要在本金上叠加未实现盈亏 */
         const val INVEST_ACCOUNT_TYPE = 6
 
         /** 排行默认取前几名：再多用户也不会看，反而把卡片撑长 */
@@ -446,6 +446,22 @@ class ReportRepository @Inject constructor(
     /* ==================== 资产 ==================== */
 
     /**
+     * 投资资产汇总（本金 / 成本 / 市值 / 未分配 / 浮动）。
+     * <p>
+     * 与投资页、账户页共用 [summarizeInvest] 这一份口径，不在这里另写一套 SQL ——
+     * 之前统计页用账户聚合、投资页用 Flow，加仓后两边会短暂不一致，用户看到就是「数不对」。
+     *
+     * @return 没有任何投资账户时返回 null（界面据此不显示这张卡）
+     */
+    suspend fun investmentSummary(bookId: Long): InvestmentSummary? {
+        val accounts = accountDao.listWithBalance(bookId)
+            .filter { it.type == INVEST_ACCOUNT_TYPE && !it.archived }
+        if (accounts.isEmpty()) return null
+        val positions = investmentDao.listWithValue(bookId)
+        return summarizeInvest(positions, accounts, investmentDao.lastValuedAt(bookId))
+    }
+
+    /**
      * 资产总览：分开算资产与负债，并给出净资产。
      * <p>
      * 信用卡余额为负 = 欠款，单独归为负债；只有 `includeInTotal = 1` 的账户参与合计
@@ -454,30 +470,31 @@ class ReportRepository @Inject constructor(
     suspend fun assets(bookId: Long): AssetSummary {
         val accounts = accountDao.listWithBalance(bookId)
         // 投资账户的 balance 是「本金」——浮盈浮亏不是流水，永远不会出现在里面。
-        // 名下有持仓时换成最新市值，否则净资产长期低估，FI 进度跟着一起偏低。
+        // 不能直接替换成市值：账户里还没归到品种的钱会被算丢，只填成本没走转账的
+        // 品种又会凭空生钱。按「本金 + 未实现盈亏」算，等价于「未分配现金 + 持仓市值」。
         // 没有持仓（或从未建过品种）的账户回落到原余额，行为与升级前完全一致。
         val investValues = investmentDao.accountMarketValues(bookId)
-            .associate { it.accountId to it.valueFen }
+            .associateBy { it.accountId }
         val items = accounts.map {
+            // 只有投资账户才走「本金 + 浮盈」：其它类型不该出现持仓，出现了也不改旧口径
+            val market = if (it.type == INVEST_ACCOUNT_TYPE) investValues[it.id] else null
+            val profit = market?.let { m -> m.valueFen - m.costFen }
             AccountAssetDto(
                 accountId = it.id,
                 name = it.name,
                 type = it.type,
                 icon = it.icon,
-                balance = if (it.type == INVEST_ACCOUNT_TYPE) {
-                    investValues[it.id] ?: it.balance
-                } else {
-                    it.balance
-                },
-                includeInTotal = it.includeInTotal
+                balance = if (profit != null) it.balance + profit else it.balance,
+                includeInTotal = it.includeInTotal,
+                // 带上本金/浮盈，界面才能把「本金 5000、市值 4500」两个口径同时摆出来，
+                // 否则用户只会看到账户页 5000 和这里 4500，以为有一处算错了
+                investCostFen = market?.costFen,
+                investProfitFen = profit
             )
         }
         val counted = items.filter { it.includeInTotal == 1 }
-        val totalAssets = counted.filter { it.type != AssetSummary.CREDIT_CARD_TYPE }
-            .sumOf { it.balance }
-        val totalLiabilities = counted.filter { it.type == AssetSummary.CREDIT_CARD_TYPE }
-            .sumOf { -it.balance }
-            .coerceAtLeast(0L)
+        val totalAssets = counted.sumOf { totalAssetOf(it) }
+        val totalLiabilities = counted.sumOf { liabilityOf(it) }
 
         return AssetSummary(
             totalAssets = totalAssets,
@@ -516,15 +533,45 @@ class ReportRepository @Inject constructor(
     /** 净资产：资产合计 - 负债合计（信用卡余额为负时翻正计入负债） */
     private fun netOf(accounts: List<AccountWithBalance>): Long {
         val counted = accounts.filter { it.includeInTotal == 1 }
-        val totalAssets = counted
-            .filter { it.type != AssetSummary.CREDIT_CARD_TYPE }
-            .sumOf { it.balance }
-        val totalLiabilities = counted
-            .filter { it.type == AssetSummary.CREDIT_CARD_TYPE }
-            .sumOf { -it.balance }
-            .coerceAtLeast(0L)
-        return totalAssets - totalLiabilities
+        return counted.sumOf { totalAssetOf(it) } - counted.sumOf { liabilityOf(it) }
     }
+
+    /**
+     * 单个账户计入「资产」的金额。
+     * <p>
+     * 信用卡要按**每张卡**判断：正余额是溢缴款（多还的钱，属于资产），负余额才是欠款。
+     * 如果先把所有信用卡余额求和再 clap，一张溢缴款卡会抵掉另一张卡的欠款，
+     * 两张卡就都从净资产里消失了。
+     */
+    private fun totalAssetOf(account: AccountAssetDto): Long =
+        if (account.type == AssetSummary.CREDIT_CARD_TYPE) {
+            account.balance.coerceAtLeast(0L)
+        } else {
+            account.balance
+        }
+
+    /** 单个账户计入「负债」的金额：只有信用卡的负余额才算欠款 */
+    private fun liabilityOf(account: AccountAssetDto): Long =
+        if (account.type == AssetSummary.CREDIT_CARD_TYPE) {
+            (-account.balance).coerceAtLeast(0L)
+        } else {
+            0L
+        }
+
+    /** 账户投影版本（历史净资产用，不走 DTO） */
+    private fun totalAssetOf(account: AccountWithBalance): Long =
+        if (account.type == AssetSummary.CREDIT_CARD_TYPE) {
+            account.balance.coerceAtLeast(0L)
+        } else {
+            account.balance
+        }
+
+    private fun liabilityOf(account: AccountWithBalance): Long =
+        if (account.type == AssetSummary.CREDIT_CARD_TYPE) {
+            (-account.balance).coerceAtLeast(0L)
+        } else {
+            0L
+        }
 
     /* ==================== 工具 ==================== */
 

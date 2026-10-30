@@ -1,6 +1,7 @@
 package com.jizhang.app.ui.record
 
 import android.view.HapticFeedbackConstants
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -55,6 +56,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -121,6 +123,7 @@ fun RecordScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val view = LocalView.current
+    val context = LocalContext.current
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var showRemarkDialog by remember { mutableStateOf(false) }
     var showTagDialog by remember { mutableStateOf(false) }
@@ -139,9 +142,21 @@ fun RecordScreen(
     }
 
     fun save() {
+        // 挂了投资品种时提示一句「已计入市值」：市值是随买卖自动跟进的，
+        // 用户不知道的话会以为漏记，回头又去投资页手改一次，反而改错
+        val investedName = state.let { s ->
+            if (s.type != 3) {
+                null
+            } else {
+                s.positions.firstOrNull { it.id == s.selectedPositionId }?.name
+            }
+        }
         viewModel.save { error ->
             if (error == null) {
                 errorMessage = null
+                if (investedName != null) {
+                    Toast.makeText(context, "已计入「$investedName」的市值", Toast.LENGTH_SHORT).show()
+                }
                 onSaved()
             } else {
                 errorMessage = error

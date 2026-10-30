@@ -77,6 +77,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.jizhang.app.data.local.entity.AccountWithBalance
 import com.jizhang.app.data.repository.AccountRepository
+import com.jizhang.app.data.repository.InvestmentRepository
 import com.jizhang.app.ui.common.ACCOUNT_ICON_OPTIONS
 import com.jizhang.app.ui.common.AppFullScreenDialog
 import com.jizhang.app.ui.common.accountColorOf
@@ -105,16 +106,34 @@ private const val CREDIT_CARD_TYPE = 3
 /** 账户行高度：拖拽排序靠固定行高换算格子，别用自适应高度 */
 private val ROW_HEIGHT = 68.dp
 
+/**
+ * 投资账户的市值与成本（账户页与净资产摘要共用）。
+ * <p>
+ * 账户行的余额必须保持「本金」——那是能和微信 / 银行对上的数；
+ * 但净资产得按市值算，否则浮亏不会体现在身家里，还会和统计页差出一截。
+ * 两个数同时摆出来，用户才不会觉得有一处算错了。
+ */
+data class AccountInvestValue(
+    val valueFen: Long,
+    val costFen: Long
+) {
+    /** 浮动盈亏（分），可能为负 */
+    val profitFen: Long get() = valueFen - costFen
+}
+
 /** 归档账户不参与新记账，但余额仍然算进净资产 */
 @HiltViewModel
 class AccountViewModel @Inject constructor(
-    private val accountRepository: AccountRepository
+    private val accountRepository: AccountRepository,
+    private val investmentRepository: InvestmentRepository
 ) : ViewModel() {
 
     data class UiState(
         val bookId: Long = 0L,
         /** 全部账户（含归档），顺序按 sort */
         val accounts: List<AccountWithBalance> = emptyList(),
+        /** 投资账户的持仓市值与成本（accountId → 明细）；没有持仓的账户不在里面 */
+        val investValues: Map<Long, AccountInvestValue> = emptyMap(),
         val message: String? = null
     )
 
@@ -132,6 +151,18 @@ class AccountViewModel @Inject constructor(
         viewModelScope.launch {
             accountRepository.observeAccounts(bookId).collect { list ->
                 _state.update { it.copy(accounts = list) }
+            }
+        }
+        // 投资账户的市值另开一条流：它随估值和买卖变化，和账户余额不是同一个数据源
+        viewModelScope.launch {
+            investmentRepository.observe(bookId).collect { overview ->
+                val byAccount = overview.positions.groupBy { it.accountId }.mapValues { (_, list) ->
+                    AccountInvestValue(
+                        valueFen = list.sumOf { it.marketValueFen },
+                        costFen = list.sumOf { it.costFen }
+                    )
+                }
+                _state.update { it.copy(investValues = byAccount) }
             }
         }
     }
@@ -258,8 +289,17 @@ fun AccountListDialog(
             val assetAccounts = ordered.filter { it.groupRank() == RANK_ASSET }
             val creditAccounts = ordered.filter { it.groupRank() == RANK_CREDIT }
             val archivedAccounts = ordered.filter { it.groupRank() == RANK_ARCHIVED }
-            val totalAsset = ordered.filter { it.type != CREDIT_CARD_TYPE }.sumOf { it.balance }
-            val totalDebt = ordered.filter { it.type == CREDIT_CARD_TYPE }.sumOf { maxOf(0L, -it.balance) }
+            // 与统计页同一口径：只把「计入总资产」的账户算进合计，
+            // 纯走账的中间卡不该算进身家；归档账户余额照算（归档只是不再参与新记账）
+            val counted = ordered.filter { it.includeInTotal == 1 }
+            // 投资账户按「本金 + 浮动盈亏」= 市值 + 未分配现金，和券商 / 基金 App 的总资产一致；
+            // 其它账户就是余额本身
+            val totalAsset = counted
+                .filter { it.type != CREDIT_CARD_TYPE }
+                .sumOf { it.balance + (state.investValues[it.id]?.profitFen ?: 0L) }
+            val totalDebt = counted.filter { it.type == CREDIT_CARD_TYPE }.sumOf { maxOf(0L, -it.balance) }
+            // 单独留一份浮动合计：摘要卡要用它说明「本金的差在哪」
+            val totalProfit = counted.sumOf { state.investValues[it.id]?.profitFen ?: 0L }
 
             Column(
                 modifier = Modifier
@@ -270,6 +310,7 @@ fun AccountListDialog(
                 AssetSummaryCard(
                     totalAsset = totalAsset,
                     totalDebt = totalDebt,
+                    totalProfit = totalProfit,
                     hideAmounts = hideAmounts
                 )
                 Spacer(Modifier.height(14.dp))
@@ -286,6 +327,7 @@ fun AccountListDialog(
                     title = "资产账户",
                     subtotal = if (hideAmounts) null else "¥" + formatAmount(totalAsset),
                     accounts = assetAccounts,
+                    investValues = state.investValues,
                     hideAmounts = hideAmounts,
                     emptyHint = null,
                     onOpenDetail = onOpenDetail,
@@ -301,6 +343,7 @@ fun AccountListDialog(
                     title = "信用账户",
                     subtotal = if (hideAmounts) null else "欠款 ¥" + formatAmount(totalDebt),
                     accounts = creditAccounts,
+                    investValues = state.investValues,
                     hideAmounts = hideAmounts,
                     emptyHint = "把信用卡等需要还的账户建在这里，欠款会算进负债",
                     onOpenDetail = onOpenDetail,
@@ -317,6 +360,7 @@ fun AccountListDialog(
                         title = "已归档",
                         subtotal = null,
                         accounts = archivedAccounts,
+                        investValues = state.investValues,
                         hideAmounts = hideAmounts,
                         emptyHint = null,
                         onOpenDetail = onOpenDetail,
@@ -401,9 +445,19 @@ fun AccountListDialog(
 
 /* ==================== 摘要 / 分组 / 行 ==================== */
 
-/** 顶部资产摘要：净资产（大）+ 总资产 / 总负债 */
+/**
+ * 顶部资产摘要：净资产（大）+ 总资产 / 总负债。
+ * <p>
+ * [totalAsset] 已经含投资浮动盈亏（调用方按「本金 + 浮动」算），
+ * 所以这里不再单独加减，否则会重复计算一次浮盈。
+ */
 @Composable
-private fun AssetSummaryCard(totalAsset: Long, totalDebt: Long, hideAmounts: Boolean) {
+private fun AssetSummaryCard(
+    totalAsset: Long,
+    totalDebt: Long,
+    totalProfit: Long,
+    hideAmounts: Boolean
+) {
     val net = totalAsset - totalDebt
     Column(
         modifier = Modifier
@@ -432,6 +486,17 @@ private fun AssetSummaryCard(totalAsset: Long, totalDebt: Long, hideAmounts: Boo
                 money(totalDebt, hideAmounts),
                 Modifier.weight(1f),
                 valueColor = if (totalDebt > 0) AppColors.expense else MaterialTheme.colorScheme.onSurface
+            )
+        }
+        // 把「本金」和「市值」的差摊开写：用户拿账户余额和净资产一比就能对上，
+        // 不用再猜是哪边算错了
+        if (totalProfit != 0L) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "含投资浮动盈亏 " + (if (totalProfit > 0L) "+" else "-") +
+                    money(abs(totalProfit), hideAmounts) + "（投资账户按市值计，本金见行内小字）",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (totalProfit > 0L) AppColors.income else AppColors.expense
             )
         }
     }
@@ -471,6 +536,8 @@ private fun AccountGroup(
     title: String,
     subtotal: String?,
     accounts: List<AccountWithBalance>,
+    /** 投资账户的市值明细：行内要在本金下面补一行「市值 / 浮动」 */
+    investValues: Map<Long, AccountInvestValue>,
     hideAmounts: Boolean,
     emptyHint: String?,
     onOpenDetail: (AccountWithBalance) -> Unit,
@@ -526,6 +593,7 @@ private fun AccountGroup(
             val dragging = draggingId == account.id
             AccountRow(
                 account = account,
+                invest = investValues[account.id],
                 hideAmounts = hideAmounts,
                 dragging = dragging,
                 dragOffset = if (dragging) dragOffset else 0f,
@@ -573,6 +641,8 @@ private fun AccountGroup(
 @Composable
 private fun AccountRow(
     account: AccountWithBalance,
+    /** 投资账户的市值明细；null 表示这个账户没有持仓（或不是投资账户） */
+    invest: AccountInvestValue?,
     hideAmounts: Boolean,
     dragging: Boolean,
     dragOffset: Float,
@@ -585,7 +655,10 @@ private fun AccountRow(
     dragModifier: Modifier
 ) {
     var menuOpen by remember { mutableStateOf(false) }
-    val negative = account.balance < 0
+    // 投资账户的大字显示「市值」（本金 + 浮动盈亏），这样才能和券商 / 基金 App 的总资产对上；
+    // 本金退到下面小字，只用来核对转账记录
+    val display = account.balance + (invest?.profitFen ?: 0L)
+    val negative = display < 0
 
     Row(
         modifier = Modifier
@@ -661,12 +734,30 @@ private fun AccountRow(
             )
         }
         Spacer(Modifier.width(6.dp))
-        Text(
-            text = money(account.balance, hideAmounts),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            color = if (negative) AppColors.expense else MaterialTheme.colorScheme.onSurface
-        )
+        Column(horizontalAlignment = Alignment.End) {
+            Text(
+                text = money(display, hideAmounts),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = if (negative) AppColors.expense else MaterialTheme.colorScheme.onSurface
+            )
+            // 大字是市值，这里补本金：两者同时给，既能对券商 App，
+            // 也能对转账记录，不用再猜哪个数是对的
+            if (invest != null) {
+                Text(
+                    text = "本金 " + money(account.balance, hideAmounts) + " · " +
+                        (if (invest.profitFen >= 0L) "+" else "-") +
+                        money(abs(invest.profitFen), hideAmounts),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = when {
+                        invest.profitFen > 0L -> AppColors.income
+                        invest.profitFen < 0L -> AppColors.expense
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    maxLines = 1
+                )
+            }
+        }
         Box {
             IconButton(onClick = { menuOpen = true }) {
                 Icon(
@@ -816,6 +907,17 @@ private fun AccountEditor(
                             onClick = { type = value }
                         )
                     }
+                }
+                // 选了「投资」就把语义说清楚：这里的余额是本金，
+                // 和券商 / 基金 App 显示的总资产不是一个数，否则用户会一直觉得哪里算错了
+                if (type == 6) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = "投资账户的余额记的是本金（转入 − 转出），不是券商 / 基金 App 的总资产。" +
+                            "市值和浮动盈亏在投资页维护。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
                 }
 
                 Spacer(Modifier.height(12.dp))

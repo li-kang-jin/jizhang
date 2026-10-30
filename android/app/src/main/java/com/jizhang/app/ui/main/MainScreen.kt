@@ -353,7 +353,13 @@ fun MainScreen(appViewModel: AppViewModel) {
             bookId = state.bookId,
             accountId = accountId,
             hideAmounts = state.hideAmounts,
-            onDismiss = { detailAccountId = null }
+            onDismiss = { detailAccountId = null },
+            // 和投资页跳资产管理的做法一致：先收起自己再叠目标页，
+            // 两个全屏覆盖层同时挂着时层级顺序不好保证
+            onOpenInvest = {
+                detailAccountId = null
+                showInvest = true
+            }
         )
     }
 

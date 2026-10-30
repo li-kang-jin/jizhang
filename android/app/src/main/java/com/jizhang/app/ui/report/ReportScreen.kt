@@ -79,6 +79,7 @@ import com.jizhang.app.data.repository.CategorySlice
 import com.jizhang.app.data.repository.DayAmount
 import com.jizhang.app.data.repository.DayDetail
 import com.jizhang.app.data.repository.HabitStats
+import com.jizhang.app.data.repository.InvestmentSummary
 import com.jizhang.app.data.repository.RankItem
 import com.jizhang.app.data.repository.ReportGranularity
 import com.jizhang.app.data.repository.ReportOverview
@@ -92,8 +93,11 @@ import com.jizhang.app.ui.common.WEEKDAY_SHORT
 import com.jizhang.app.ui.common.accountIconOf
 import com.jizhang.app.ui.common.categoryIconOf
 import com.jizhang.app.ui.common.compactAmount
+import com.jizhang.app.ui.common.daysAgoText
 import com.jizhang.app.ui.common.formatAmount
 import com.jizhang.app.ui.common.money
+import com.jizhang.app.ui.common.percentText
+import com.jizhang.app.ui.common.signedMoney
 import com.jizhang.app.ui.common.weekdayShortOf
 import com.jizhang.app.ui.theme.AppColors
 import com.jizhang.app.ui.theme.JizhangTheme
@@ -322,6 +326,17 @@ fun ReportScreen(
                             onManage = onOpenAccounts,
                             onOpenInvest = onOpenInvest
                         )
+                    }
+                    // 投资明细紧跟资产分布：资产分布说「有多少钱在投资账户」，
+                    // 这张卡说「投了多少、现在值多少、差在哪」，两卡相邻才好对
+                    state.investment?.let { investment ->
+                        item {
+                            InvestmentCard(
+                                summary = investment,
+                                hideAmounts = hideAmounts,
+                                onOpen = onOpenInvest
+                            )
+                        }
                     }
                     state.habit?.let { habit ->
                         item {
@@ -2659,6 +2674,22 @@ private fun AssetCard(
                         color = if (isCredit) AppColors.expense else MaterialTheme.colorScheme.onSurface
                     )
                 }
+                // 投资账户的两个口径摆在一起：账户页看到的是本金，这里看到的是本金+浮盈。
+                // 不写清楚的话，用户会以为 5000 和 4500 里必有一个算错了
+                account.investProfitFen?.let { profit ->
+                    Text(
+                        text = "本金 " + money(account.balance - profit, hideAmounts) +
+                            " · 浮动 " + (if (profit >= 0L) "+" else "-") +
+                            money(kotlin.math.abs(profit), hideAmounts),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = when {
+                            profit > 0L -> AppColors.income
+                            profit < 0L -> AppColors.expense
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        modifier = Modifier.padding(start = 22.dp)
+                    )
+                }
                 Spacer(Modifier.height(4.dp))
                 LinearProgressIndicator(
                     progress = { ratio },
@@ -2714,6 +2745,97 @@ private fun AssetCard(
                 )
             }
         }
+    }
+}
+
+/**
+ * 投资卡：把「本金 / 市值 / 浮动 / 未分配」四个数放在一起。
+ * <p>
+ * 数据来自 [InvestmentSummary]，与投资页、账户页共用同一份口径。
+ * 这张卡的意义是：不点进投资页也能看明白「我投了多少、现在值多少、差在哪」，
+ * 并且四个数之间能互相验算 —— 本金 + 浮动 = 投资资产。
+ */
+@Composable
+private fun InvestmentCard(
+    summary: InvestmentSummary,
+    hideAmounts: Boolean,
+    onOpen: (() -> Unit)?
+) {
+    val profit = summary.profitFen
+    val profitColor = when {
+        profit > 0L -> AppColors.income
+        profit < 0L -> AppColors.expense
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
+    CardBox {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("投资", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.weight(1f))
+            if (onOpen != null) {
+                Text(
+                    text = "品种与市值 ›",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(onClick = onOpen)
+                        .padding(horizontal = 6.dp, vertical = 4.dp)
+                )
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        // 大字是市值：和券商 / 基金 App 里看到的数字对得上
+        Text(
+            text = money(summary.marketValueFen, hideAmounts),
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = signedMoney(profit, hideAmounts) +
+                (summary.profitRate?.let { "（" + percentText(it) + "）" } ?: ""),
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = profitColor
+        )
+        Spacer(Modifier.height(10.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+        Spacer(Modifier.height(8.dp))
+        InvestRow("本金（累计投入）", money(summary.principalFen, hideAmounts))
+        InvestRow("未分配资金", money(summary.unallocatedFen, hideAmounts))
+        InvestRow("上次估值", summary.lastValuedAt?.let { daysAgoText(it) } ?: "还没估过")
+        Spacer(Modifier.height(6.dp))
+        // 把恒等式直接写出来，用户能自己验算，不用猜哪两个数该相等
+        Text(
+            text = "本金 " + money(summary.principalFen, hideAmounts) +
+                " + 浮动 " + signedMoney(profit, hideAmounts) +
+                " = 投资资产 " + money(summary.assetFen, hideAmounts),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun InvestRow(label: String, value: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.weight(1f))
+        Text(
+            text = value,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Medium
+        )
     }
 }
 

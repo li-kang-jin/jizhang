@@ -45,6 +45,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -67,10 +68,13 @@ import com.jizhang.app.data.local.entity.LocalInvestPosition
 import com.jizhang.app.data.local.entity.PositionWithValue
 import com.jizhang.app.data.repository.InvestmentOverview
 import com.jizhang.app.ui.common.AppFullScreenDialog
+import com.jizhang.app.ui.common.daysAgoText
 import com.jizhang.app.ui.common.formatAmount
 import com.jizhang.app.ui.common.formatAmountInput
 import com.jizhang.app.ui.common.money
+import com.jizhang.app.ui.common.percentText
 import com.jizhang.app.ui.common.safeDialogContent
+import com.jizhang.app.ui.common.signedMoney
 import com.jizhang.app.ui.theme.AppColors
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -129,7 +133,11 @@ fun InvestScreen(
                         )
                     }
                     else -> {
-                        SummaryCard(overview, hideAmounts)
+                        SummaryCard(
+                            overview = overview,
+                            hideAmounts = hideAmounts,
+                            onUpdateAll = viewModel::openValuingAll
+                        )
                         if (overview.unallocatedFen != 0L) {
                             UnallocatedCard(
                                 unallocatedFen = overview.unallocatedFen,
@@ -152,9 +160,10 @@ fun InvestScreen(
                         }
                         Spacer(Modifier.height(2.dp))
                         Text(
-                            text = "记账时从储蓄卡转账到投资账户、顺手选中品种，成本会自动累计；" +
-                                "市值需要手动更新（每周或每月一次就够）。这里不接行情：" +
-                                "记账是按月看的，天天盯盘只会让你更容易追涨杀跌。",
+                            text = "记账时从储蓄卡转账到投资账户、顺手选中品种，成本和市值都会自动跟上" +
+                                "（买入按投入额加进市值，不会凭空变成亏损）；涨跌仍要手动更新市值" +
+                                "（每周或每月一次就够）。这里不接行情：记账是按月看的，" +
+                                "天天盯盘只会让你更容易追涨杀跌。",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -197,13 +206,27 @@ fun InvestScreen(
             onConfirm = { text -> viewModel.updateValue(position, text) }
         )
     }
+
+    if (state.valuingAll) {
+        ValuingAllDialog(
+            positions = overview.positions,
+            hideAmounts = hideAmounts,
+            onDismiss = viewModel::closeValuingAll,
+            onConfirm = viewModel::updateAllValues
+        )
+    }
 }
 
 /* ==================== 卡片 ==================== */
 
 /** 总览：总市值 + 浮动盈亏 + 总成本 */
 @Composable
-private fun SummaryCard(overview: InvestmentOverview, hideAmounts: Boolean) {
+private fun SummaryCard(
+    overview: InvestmentOverview,
+    hideAmounts: Boolean,
+    /** 非空时在标题行右侧给一个「更新全部」入口：一个月看一次的人不该逐个点卡片 */
+    onUpdateAll: (() -> Unit)? = null
+) {
     val profit = overview.profitFen
     val profitColor = when {
         profit > 0L -> AppColors.income
@@ -212,11 +235,26 @@ private fun SummaryCard(overview: InvestmentOverview, hideAmounts: Boolean) {
     }
 
     CardBox {
-        Text(
-            text = "投资总市值",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "投资总市值",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (onUpdateAll != null) {
+                Spacer(Modifier.weight(1f))
+                Text(
+                    text = "更新全部",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = AppColors.accent,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(onClick = onUpdateAll)
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                )
+            }
+        }
         Spacer(Modifier.height(4.dp))
         Text(
             text = money(overview.totalValueFen, hideAmounts),
@@ -238,8 +276,9 @@ private fun SummaryCard(overview: InvestmentOverview, hideAmounts: Boolean) {
         Spacer(Modifier.height(10.dp))
         HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
         Spacer(Modifier.height(8.dp))
-        InfoRow("总成本", money(overview.totalCostFen, hideAmounts))
-        InfoRow("投资账户余额", money(overview.accountBalanceFen, hideAmounts))
+        InfoRow("持仓成本", money(overview.totalCostFen, hideAmounts))
+        // 叫「本金」而不是「账户余额」：它是累计转入的钱，不是券商 App 里的总资产
+        InfoRow("本金（累计转入）", money(overview.accountBalanceFen, hideAmounts))
         InfoRow(
             label = "上次估值",
             value = overview.lastValuedAt?.let { daysAgoText(it) } ?: "还没估过"
@@ -260,7 +299,7 @@ private fun UnallocatedCard(unallocatedFen: Long, hideAmounts: Boolean, onClaim:
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = if (negative) "成本记多了" else "未分配资金",
+                    text = if (negative) "本金比成本少" else "未分配资金",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -278,9 +317,11 @@ private fun UnallocatedCard(unallocatedFen: Long, hideAmounts: Boolean, onClaim:
         Spacer(Modifier.height(4.dp))
         Text(
             text = if (negative) {
-                "品种成本比投资账户里的钱还多。检查一下成本是不是填重复了。"
+                "记在品种上的成本，比转进投资账户的本金多了这个数。" +
+                    "多半是有买入没记转账：补上本金，或把对应账户的初始余额加上差额即可归零；" +
+                    "也可能是成本填多了。"
             } else {
-                "这笔钱在投资账户里，但还没归到具体品种上。"
+                "转进投资账户、但还没买成品种的钱。买的时候选品种，它会自动变成成本。"
             },
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -629,17 +670,24 @@ private fun PositionEditorDialog(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                if (editing == null) {
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = valueText,
-                        onValueChange = { valueText = it },
-                        label = { Text("当前市值（元，选填）") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = valueText,
+                    onValueChange = { valueText = it },
+                    label = { Text("当前市值（元，选填）") },
+                    placeholder = {
+                        Text(
+                            if (editing?.valuedAt != null) {
+                                "现在 " + formatAmountInput(editing.marketValueFen) + "，不改请留空"
+                            } else {
+                                "选填"
+                            }
+                        )
+                    },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.fillMaxWidth()
+                )
 
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
@@ -743,6 +791,86 @@ private fun ValuationDialog(
     )
 }
 
+/**
+ * 一次更新全部市值。
+ * <p>
+ * 每个品种一行、预填当前值：只需要改真正变了的那些，其余留原样直接保存。
+ * 这是「想起来才看一次」的人最常用的路径 —— 逐个点卡片太慢，慢到最后干脆不更新，
+ * 一年下来净资产就一直是旧值。
+ */
+@Composable
+private fun ValuingAllDialog(
+    positions: List<PositionWithValue>,
+    hideAmounts: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: (Map<Long, String>) -> Unit
+) {
+    // 按品种 id 存输入文本：弹窗生命周期内只初始化一次，用户改到一半不会被打断
+    val texts = remember {
+        mutableStateMapOf<Long, String>().apply {
+            positions.forEach { put(it.id, formatAmountInput(it.marketValueFen)) }
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("更新全部市值", fontWeight = FontWeight.SemiBold) },
+        text = {
+            // 与品种编辑弹窗同样处理：heightIn 限外层视口，verticalScroll 在内层才有余量
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(bottom = 4.dp)
+                    .imePadding()
+            ) {
+                Text(
+                    text = "按现在的实际市值改，没动的行直接保存即可。估值时间统一记成现在。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(10.dp))
+                positions.forEach { position ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = position.name,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "成本 " + money(position.costFen, hideAmounts),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        OutlinedTextField(
+                            value = texts[position.id].orEmpty(),
+                            onValueChange = { texts[position.id] = it },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            modifier = Modifier.width(132.dp)
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(texts.toMap()) }) { Text("保存") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
+}
+
 /* ==================== 小工具 ==================== */
 
 @Composable
@@ -779,32 +907,9 @@ private fun InfoRow(label: String, value: String) {
     }
 }
 
-/** 带符号金额：+¥1,200.00 / -¥300.00；隐私模式下不泄露正负之外的任何信息 */
-private fun signedMoney(fen: Long, hideAmounts: Boolean): String =
-    if (hideAmounts) "****" else (if (fen >= 0) "+" else "-") + "¥" + formatAmount(abs(fen))
 
-/** 收益率：整数不带小数，其余保留一位（+24.6%） */
-private fun percentText(rate: Double): String {
-    val percent = rate * 100.0
-    val rounded = percent.roundToInt()
-    val body = if (abs(percent - rounded) < 0.05) {
-        "$rounded"
-    } else {
-        "${(percent * 10).roundToInt() / 10.0}"
-    }
-    return if (percent >= 0) "+$body%" else "$body%"
-}
 
-/** 「上次估值」的距离文案：超过一个月按整月说，避免出现「第 187 天」这种读不懂的数字 */
-private fun daysAgoText(at: Long): String {
-    val days = ((System.currentTimeMillis() - at) / 86_400_000L).toInt()
-    return when {
-        days <= 0 -> "今天"
-        days == 1 -> "昨天"
-        days < 30 -> "$days 天前"
-        else -> "${days / 30} 个月前"
-    }
-}
+
 
 private fun kindIcon(kind: Int): ImageVector = when (kind) {
     LocalInvestPosition.KIND_STOCK -> Icons.Filled.TrendingUp

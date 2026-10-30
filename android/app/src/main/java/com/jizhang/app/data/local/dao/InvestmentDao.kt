@@ -79,19 +79,27 @@ interface InvestmentDao {
     suspend fun latestValuation(positionId: Long): LocalInvestValuation?
 
     /**
-     * 按账户汇总的持仓市值：统计页把投资账户的余额换成市值要用。
+     * 按账户汇总的持仓市值与成本：统计页算投资账户的真实资产要用。
      * <p>
-     * 未估过值的品种按**成本**计（期初 + 转账累计），不能按 0 计 ——
-     * 否则新建品种之后净资产会凭空掉一截。
+     * 同时返回市值与成本，是因为资产口径必须是 `本金余额 + (市值 − 成本)`：
+     * 只给市值再直接替换余额，会吞掉未分配资金，也会让手工建仓的成本凭空生钱。
+     * <p>
+     * 市值口径与 [POSITION_SELECT] 一致：最新快照 + 快照之后发生的买卖净额，
+     * 否则加仓后资产总览与投资页会差出这一笔。未估过值的品种按**成本**计
+     * （期初 + 转账累计），不能按 0 计 —— 否则新建品种之后净资产会凭空掉一截。
+     * 墓碑（`pendingDelete = 1`）要排除，否则删掉的品种还会继续算进资产。
      */
     @Query(
         "SELECT p.accountId AS accountId, SUM(" +
-            "COALESCE((SELECT v.valueFen FROM local_invest_valuation v " +
+            "COALESCE((SELECT v.valueFen + $FLOW_AFTER_VALUATION " +
+            "   FROM local_invest_valuation v " +
             "   WHERE v.positionId = p.id AND v.pendingDelete = 0 " +
             "   ORDER BY v.valuedAt DESC, v.id DESC LIMIT 1), " +
-            "(p.costFen + $FLOW_NET))) AS valueFen " +
+            "(p.costFen + $FLOW_NET))) AS valueFen, " +
+            "SUM(p.costFen + $FLOW_NET) AS costFen " +
             "FROM local_invest_position p " +
-            "WHERE p.bookId = :bookId AND p.archived = 0 GROUP BY p.accountId"
+            "WHERE p.bookId = :bookId AND p.archived = 0 AND p.pendingDelete = 0 " +
+            "GROUP BY p.accountId"
     )
     suspend fun accountMarketValues(bookId: Long): List<AccountMarketValue>
 
@@ -101,6 +109,13 @@ interface InvestmentDao {
             "WHERE bookId = :bookId AND pendingDelete = 0"
     )
     fun observeLastValuedAt(bookId: Long): Flow<Long?>
+
+    /** 与 [observeLastValuedAt] 同口径的一次性查询（统计页不走 Flow） */
+    @Query(
+        "SELECT MAX(valuedAt) FROM local_invest_valuation " +
+            "WHERE bookId = :bookId AND pendingDelete = 0"
+    )
+    suspend fun lastValuedAt(bookId: Long): Long?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertValuation(valuation: LocalInvestValuation)
@@ -196,10 +211,28 @@ interface InvestmentDao {
                 "FROM local_invest_flow f WHERE f.positionId = p.id), 0)"
 
         /**
-         * 持仓 + 最新市值 + 总成本。
+         * 最新快照**之后**发生的买卖净额：买入记正、卖出记负。
          * <p>
-         * 两个子查询各取一次最新快照（市值与时间必须来自同一行），
-         * 避免出现「市值是新的、时间是旧的」这种自相矛盾的展示。
+         * 当前市值 = 快照值 + 这个增量。不叠加的话，加仓后市值会停在旧快照上，
+         * 盈亏凭空多亏一整笔买入额（成本涨了、市值没动），这是「买完发现亏损翻倍」的根因。
+         * 真正的涨跌仍然只由用户手动估值修正，这里只负责不让「投入」被当成「亏损」。
+         * <p>
+         * 用 `occurredAt`（账单交易时间）而不是写入时间：它是随流水同步的稳定值，
+         * 补记、改单、多端拉取都不会让叠加量漂移；估值时点之前发生的买卖已被那次
+         * 估值吸收，本来就不该再叠加一次。
+         */
+        private const val FLOW_AFTER_VALUATION =
+            "COALESCE((SELECT SUM(CASE WHEN f.side = 1 THEN f.amountFen ELSE -f.amountFen END) " +
+                "FROM local_invest_flow f " +
+                "WHERE f.positionId = p.id AND f.occurredAt > v.valuedAt), 0)"
+
+        /**
+         * 持仓 + 当前市值 + 总成本。
+         * <p>
+         * 市值取「最新快照值 + 快照之后的买卖净额」：用户估值 V 之后又投入 X，
+         * 当前市值就是 V + X，盈亏不会因为「没及时点更新市值」而失真。
+         * `valuedAt` 仍返回快照本身的时间，界面「上次估值 N 天前」用它，
+         * 所以两者同源于同一行快照，不会出现「市值是新的、时间是旧的」。
          * <p>
          * `costFen` 是**总成本**（期初 + 转账累计），页面上的「成本 / 盈亏」都用它；
          * 编辑弹窗回填 `manualCostFen`，否则用户改一次名字就会把自动累计的部分写成静态值。
@@ -212,7 +245,7 @@ interface InvestmentDao {
                 "$FLOW_NET AS flowCostFen, " +
                 "p.sharesScaled AS sharesScaled, p.targetPercent AS targetPercent, " +
                 "p.sort AS sort, p.note AS note, p.archived AS archived, " +
-                "(SELECT v.valueFen FROM local_invest_valuation v " +
+                "(SELECT v.valueFen + $FLOW_AFTER_VALUATION FROM local_invest_valuation v " +
                 "   WHERE v.positionId = p.id AND v.pendingDelete = 0 " +
                 "   ORDER BY v.valuedAt DESC, v.id DESC LIMIT 1) AS valueFen, " +
                 "(SELECT v.valuedAt FROM local_invest_valuation v " +

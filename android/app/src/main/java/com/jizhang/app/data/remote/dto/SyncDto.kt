@@ -103,7 +103,14 @@ data class AccountAssetDto(
     val type: Int? = null,
     val icon: String? = null,
     val balance: Long = 0,
-    val includeInTotal: Int? = null
+    val includeInTotal: Int? = null,
+    /**
+     * 投资账户的持仓成本（分）：[balance] 已经含浮动盈亏，用它还原「本金」。
+     * 其它类型的账户为 null（没有这个概念）。
+     */
+    val investCostFen: Long? = null,
+    /** 投资账户的未实现盈亏（分）：`balance = 本金 + 这个数`。其它类型为 null */
+    val investProfitFen: Long? = null
 )
 
 @Serializable
