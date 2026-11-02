@@ -81,11 +81,14 @@ import com.jizhang.app.data.repository.InvestmentRepository
 import com.jizhang.app.ui.common.ACCOUNT_ICON_OPTIONS
 import com.jizhang.app.ui.common.AppFullScreenDialog
 import com.jizhang.app.ui.common.accountColorOf
+import com.jizhang.app.ui.common.accountIconKeyOf
 import com.jizhang.app.ui.common.accountIconOf
+import com.jizhang.app.ui.common.accountIconTintOf
 import com.jizhang.app.ui.common.accountTypeLabel
 import com.jizhang.app.ui.common.categoryContentOn
 import com.jizhang.app.ui.common.categoryTintOn
 import com.jizhang.app.ui.common.defaultAccountIconOf
+import com.jizhang.app.ui.common.isBrandAccountIcon
 import com.jizhang.app.ui.common.formatAmount
 import com.jizhang.app.ui.common.formatAmountInput
 import com.jizhang.app.ui.common.safeDialogContent
@@ -677,8 +680,10 @@ private fun AccountRow(
         verticalAlignment = Alignment.CenterVertically
     ) {
         // 图标按账户语义着色：现金绿 / 储蓄卡蓝 / 信用卡紫 / 微信绿 / 投资橙，
-        // 一列扫下来颜色本身就是「资产还是负债」的信号，比全用主题蓝更有信息量
+        // 一列扫下来颜色本身就是「资产还是负债」的信号，比全用主题蓝更有信息量。
+        // 微信 / 支付宝是品牌标，保持原色（品牌绿、品牌蓝），不跟着类型色染
         val accColor = accountColorOf(account.icon, account.type)
+        val iconKey = accountIconKeyOf(account.icon, account.type)
         Box(
             modifier = Modifier
                 .size(34.dp)
@@ -690,12 +695,12 @@ private fun AccountRow(
             contentAlignment = Alignment.Center
         ) {
             Icon(
-                imageVector = accountIconOf(account.icon),
+                imageVector = accountIconOf(iconKey),
                 contentDescription = null,
                 tint = if (account.archived) {
                     MaterialTheme.colorScheme.onSurfaceVariant
                 } else {
-                    categoryTintOn(accColor)
+                    accountIconTintOf(iconKey, accColor)
                 },
                 modifier = Modifier.size(18.dp)
             )
@@ -824,7 +829,9 @@ private fun AccountEditor(
         mutableStateOf(account?.let { formatAmountInput(it.initialBalance) } ?: "0.00")
     }
     var icon by remember {
-        mutableStateOf(account?.icon ?: defaultAccountIconOf(account?.type ?: 1))
+        // 老账户存的是「钱包 / 网络支付」这类兜底图标：按类型解析成微信、支付宝的品牌标，
+        // 打开编辑器时高亮的才是它真正的样子
+        mutableStateOf(accountIconKeyOf(account?.icon, account?.type ?: 1))
     }
     var note by remember { mutableStateOf(account?.note.orEmpty()) }
     var archived by remember { mutableStateOf(account?.archived ?: false) }
@@ -901,6 +908,7 @@ private fun AccountEditor(
                 ) {
                     (1..7).forEach { value ->
                         AccountTypeChip(
+                            iconKey = defaultAccountIconOf(value),
                             label = accountTypeLabel(value),
                             selected = type == value,
                             color = accountColorOf(defaultAccountIconOf(value), value),
@@ -932,12 +940,28 @@ private fun AccountEditor(
                     ACCOUNT_ICON_OPTIONS.forEach { option ->
                         val selected = icon == option.key
                         val optionColor = accountColorOf(option.key, 0)
+                        // 品牌标是实心、自带颜色：选中时不能把它埋进同色底，
+                        // 改成淡底 + 一圈品牌色描边；其余图标继续「选中填实底」
+                        val brand = isBrandAccountIcon(option.key)
                         Box(
                             modifier = Modifier
                                 .size(44.dp)
                                 .clip(CircleShape)
                                 .background(
-                                    if (selected) optionColor else optionColor.copy(alpha = 0.13f)
+                                    when {
+                                        brand -> MaterialTheme.colorScheme.surfaceVariant.copy(
+                                            alpha = if (selected) 0.9f else 0.45f
+                                        )
+                                        selected -> optionColor
+                                        else -> optionColor.copy(alpha = 0.13f)
+                                    }
+                                )
+                                .then(
+                                    if (brand && selected) {
+                                        Modifier.border(2.dp, optionColor, CircleShape)
+                                    } else {
+                                        Modifier
+                                    }
                                 )
                                 .clickable { icon = option.key },
                             contentAlignment = Alignment.Center
@@ -945,12 +969,12 @@ private fun AccountEditor(
                             Icon(
                                 imageVector = accountIconOf(option.key),
                                 contentDescription = option.label,
-                                tint = if (selected) {
-                                    categoryContentOn(optionColor)
-                                } else {
-                                    categoryTintOn(optionColor)
+                                tint = when {
+                                    brand -> Color.Unspecified
+                                    selected -> categoryContentOn(optionColor)
+                                    else -> categoryTintOn(optionColor)
                                 },
-                                modifier = Modifier.size(21.dp)
+                                modifier = Modifier.size(if (brand) 26.dp else 21.dp)
                             )
                         }
                     }
@@ -1000,24 +1024,22 @@ private fun AccountEditor(
 }
 
 /**
- * 账户类型选项：淡色胶囊 + 类型色选中。
+ * 账户类型选项：淡色胶囊 + 类型图标 + 类型色选中。
  *
  * 不用 M3 FilterChip：它带 1dp 灰边、且宽度不可控，7 个并排时会被压成竖排文字。
+ * 每个类型都配图标（现金 / 储蓄卡 / 信用卡 / 支付宝 / 微信 / 投资），
+ * 与记账页的账户芯片共用同一套符号，选类型时不必逐字读标签。
  */
 @Composable
 private fun AccountTypeChip(
+    iconKey: String,
     label: String,
     selected: Boolean,
     color: Color,
     onClick: () -> Unit
 ) {
     val shape = RoundedCornerShape(10.dp)
-    Text(
-        text = label,
-        style = MaterialTheme.typography.labelLarge,
-        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-        color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-        maxLines = 1,
+    Row(
         modifier = Modifier
             .clip(shape)
             .background(
@@ -1028,8 +1050,33 @@ private fun AccountTypeChip(
                 if (selected) Modifier.border(1.dp, color.copy(alpha = 0.55f), shape) else Modifier
             )
             .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 8.dp)
-    )
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = accountIconOf(iconKey),
+            contentDescription = null,
+            // 微信 / 支付宝是品牌标：保持品牌色，不跟随选中态染色
+            tint = when {
+                isBrandAccountIcon(iconKey) -> Color.Unspecified
+                selected -> categoryTintOn(color)
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            modifier = Modifier.size(15.dp)
+        )
+        Spacer(Modifier.width(5.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            maxLines = 1
+        )
+    }
 }
 
 /* ==================== 排序工具 ==================== */

@@ -59,8 +59,9 @@ import com.jizhang.app.data.repository.CategoryRepository
 import com.jizhang.app.data.repository.TransactionRepository
 import com.jizhang.app.ui.common.AppFullScreenDialog
 import com.jizhang.app.ui.common.accountColorOf
+import com.jizhang.app.ui.common.accountIconKeyOf
 import com.jizhang.app.ui.common.accountIconOf
-import com.jizhang.app.ui.common.categoryTintOn
+import com.jizhang.app.ui.common.accountIconTintOf
 import com.jizhang.app.ui.common.accountTypeLabel
 import com.jizhang.app.ui.common.categoryIconOf
 import com.jizhang.app.ui.common.formatAmount
@@ -384,8 +385,10 @@ private fun BalanceCard(account: AccountWithBalance, hideAmounts: Boolean) {
             .padding(16.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            // 与账户列表同一套语义色：现金绿 / 储蓄卡蓝 / 信用卡紫
+            // 与账户列表同一套语义色：现金绿 / 储蓄卡蓝 / 信用卡紫；
+            // 微信 / 支付宝的品牌标保持原色
             val accColor = accountColorOf(account.icon, account.type)
+            val iconKey = accountIconKeyOf(account.icon, account.type)
             Box(
                 modifier = Modifier
                     .size(36.dp)
@@ -394,9 +397,9 @@ private fun BalanceCard(account: AccountWithBalance, hideAmounts: Boolean) {
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = accountIconOf(account.icon),
+                    imageVector = accountIconOf(iconKey),
                     contentDescription = null,
-                    tint = categoryTintOn(accColor),
+                    tint = accountIconTintOf(iconKey, accColor),
                     modifier = Modifier.size(20.dp)
                 )
             }

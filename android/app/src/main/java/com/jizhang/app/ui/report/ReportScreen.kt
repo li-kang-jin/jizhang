@@ -90,7 +90,9 @@ import com.jizhang.app.ui.common.HeatCell
 import com.jizhang.app.ui.common.MonthGrid
 import com.jizhang.app.ui.common.SmallAction
 import com.jizhang.app.ui.common.WEEKDAY_SHORT
+import com.jizhang.app.ui.common.accountIconKeyOf
 import com.jizhang.app.ui.common.accountIconOf
+import com.jizhang.app.ui.common.accountIconTintOf
 import com.jizhang.app.ui.common.categoryIconOf
 import com.jizhang.app.ui.common.compactAmount
 import com.jizhang.app.ui.common.daysAgoText
@@ -267,11 +269,22 @@ fun ReportScreen(
                     item {
                         TrendCard(
                             trend = state.trend,
-                            netAssets = state.netAssetTrend,
                             period = state.period,
+                            avgExpensePerDay = state.overview?.avgExpensePerDay ?: 0L,
                             hideAmounts = hideAmounts,
                             onOpenRange = { start, end -> openBills(startMillis = start, endMillis = end - 1) }
                         )
+                    }
+                    // 净资产单独一张卡：收支是流量、净资产是存量，量级差一两个数量级，
+                    // 塞在同一张卡里只会互相压扁（原来那条 76dp 窄线就是被压扁的结果）
+                    if (state.netAssetTrend.any { it != 0L }) {
+                        item {
+                            NetAssetTrendCard(
+                                netAssets = state.netAssetTrend,
+                                period = state.period,
+                                hideAmounts = hideAmounts
+                            )
+                        }
                     }
                     // 日历卡是「当期概览」：周视图已由趋势图逐日铺开，再摆一个月历会和「只看这一周」打架；
                     // 年视图只在有数据时给热力图
@@ -1029,25 +1042,27 @@ private fun ValueBlock(
  * 横轴标签由图表自己按桶中心摆放（[BucketLabelFormatter]），密度按粒度定 ——
  * 周视图 7 天全标，月视图每 5 天一个，不会和柱子错位。
  * <p>
- * 隐私模式**不是只藏刻度**：柱子高低本身就是金额，所以数据整形成「有 / 没有」两档，
- * 净值线直接不画（形状同样会暴露量级）。
+ * 隐私模式**不是只藏刻度**：柱子高低本身就是金额，所以数据整形成「有 / 没有」两档。
  * <p>
- * 图上的柱子 / 折线点 / 下方净值线**都可点**：点中的那一格会在图下方摊开明细（支出 / 收入 / 结余 / 占比），
+ * 图上的柱子**都可点**：点中的那一格会在图下方摊开明细（支出 / 收入 / 结余 / 占比），
  * 想进一步看这批账就点「查看这批账单」——带着那一格的时间窗跳到账单页。
  */
 @Composable
 private fun TrendCard(
     trend: List<TrendItemDto>,
-    /** 期末净资产序列（与 [trend] 等长）：存量指标，单独画一条窄线 */
-    netAssets: List<Long>,
     period: ReportPeriod,
+    /** 日均支出（分）：图里只有绝对高度，给一个参照系才知道「这天算不算多」 */
+    avgExpensePerDay: Long,
     hideAmounts: Boolean,
     /** 「查看这批账单」：把选中那格的时间窗（左闭右开毫秒）交给账单页 */
     onOpenRange: (Long, Long) -> Unit
 ) {
-    // 选中的柱子下标。点图上的柱子 / 折线点会更新它，点空白处不动 ——
-    // 手指抬起后 Vico 的标记线会消失，但下方明细面板留着，方便照着数字去翻账单
-    var selected by remember(trend, period) { mutableStateOf<Int?>(null) }
+    // 选中的柱子下标。点图上的柱子会更新它，点空白处不动 ——
+    // 手指抬起后 Vico 的标记线会消失，但下方明细面板留着，方便照着数字去翻账单。
+    // 初始选中最后一个有数据的格子：不点也该先有内容，而不是甩一句「请点我」
+    var selected by remember(trend, period) {
+        mutableStateOf(trend.indexOfLast { it.income != 0L || it.expense != 0L }.takeIf { it >= 0 })
+    }
     val pickLatest = rememberUpdatedState<(Int) -> Unit> { index ->
         if (index in trend.indices) {
             selected = index
@@ -1073,9 +1088,14 @@ private fun TrendCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(Modifier.weight(1f))
-            BarLegend(AppColors.expense, "支出")
-            Spacer(Modifier.width(10.dp))
-            LineLegend(AppColors.income, "收入")
+            // 环比已经在总览卡上，这里给「日均」：图上唯一缺的就是一个横向参照
+            if (avgExpensePerDay > 0L) {
+                Text(
+                    text = "日均支出 " + money(avgExpensePerDay, hideAmounts),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
         Spacer(Modifier.height(12.dp))
 
@@ -1092,12 +1112,16 @@ private fun TrendCard(
             val expenses = trend.map { it.expense.chartValue(hideAmounts) }
             val incomes = trend.map { it.income.chartValue(hideAmounts) }
             modelProducer.runTransaction {
-                columnSeries { series(expenses) }
-                lineSeries { series(incomes) }
+                // 两根柱并排：收入以前画成折线，但收入大多不是每天都有，
+                // 折线会在无收入的日子掉到 0，形成一排骨刺，还暗示「这几天也在持续入账」
+                columnSeries {
+                    series(expenses)
+                    series(incomes)
+                }
             }
         }
 
-        // 柱/线显式用主题色：不给颜色的话 Vico 会用自带的蓝色，
+        // 柱子显式用主题色：不给颜色的话 Vico 会用自带的蓝色，
         // 于是「图例红=支出、绿=收入」和图里的蓝色对不上 —— 这正是之前看不懂的来源
         val expenseColor = AppColors.expense
         val incomeColor = AppColors.income
@@ -1121,7 +1145,7 @@ private fun TrendCard(
             },
             valueFormatter = remember(axisLabels) { BucketLabelFormatter(axisLabels) }
         )
-        // 纵轴宽度固定：净值窄图用同一个宽度，两张图的横轴才对得上
+        // 纵轴宽度固定：刻度换了位数也不让绘图区左右跳
         val yAxisSize = remember { BaseAxis.Size.Fixed(TREND_Y_AXIS_WIDTH_DP) }
         val yAxisFormatter = remember { YuanAxisFormatter() }
 
@@ -1129,18 +1153,17 @@ private fun TrendCard(
             chart = rememberCartesianChart(
                 rememberColumnCartesianLayer(
                     columnProvider = ColumnCartesianLayer.ColumnProvider.series(
+                        // 一个 x 位置两根柱，宽度从 14dp 收到 9dp：
+                        // 31 天时每根只剩 4-5dp，再宽就会糊在一起
                         rememberLineComponent(
                             fill = fill(expenseColor),
-                            thickness = 14.dp,
-                            shape = RoundedCornerShape(4.dp).toVicoShape()
-                        )
-                    )
-                ),
-                rememberLineCartesianLayer(
-                    lineProvider = LineCartesianLayer.LineProvider.series(
-                        LineCartesianLayer.rememberLine(
-                            fill = LineCartesianLayer.LineFill.single(fill(incomeColor)),
-                            stroke = LineCartesianLayer.LineStroke.continuous(thickness = 2.5.dp)
+                            thickness = 9.dp,
+                            shape = RoundedCornerShape(3.dp).toVicoShape()
+                        ),
+                        rememberLineComponent(
+                            fill = fill(incomeColor),
+                            thickness = 9.dp,
+                            shape = RoundedCornerShape(3.dp).toVicoShape()
                         )
                     )
                 ),
@@ -1158,93 +1181,30 @@ private fun TrendCard(
                 .fillMaxWidth()
                 .height(170.dp)
         )
-        Spacer(Modifier.height(6.dp))
-
-        Text(
-            text = if (hideAmounts) {
-                "柱 / 线只表示「有没有收支」，高度不代表金额"
-            } else {
-                "柱 = 支出，线 = 收入；两者共用左侧刻度，单位：元"
-            },
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-
-        // 净值是存量，量级通常比单格收支大一两个数量级：塞进主图会把柱子压成一条线，
-        // 所以单独画一条窄线。横轴与主图共用：纵轴宽度固定成同一个值，两边的格子才对得上；
-        // 点这条线也能选中（同一个 marker 回调），不用非得去够上面那根柱子
-        if (netAssets.isNotEmpty() && netAssets.any { it != 0L }) {
-            Spacer(Modifier.height(12.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("期末净资产", style = MaterialTheme.typography.labelMedium)
-                Spacer(Modifier.weight(1f))
-                Text(
-                    text = money(netAssets.last(), hideAmounts),
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = AppColors.accent
-                )
-            }
-            Spacer(Modifier.height(2.dp))
-            if (hideAmounts) {
-                // 线本身也会说话：一段陡升陡降就把「这段时间赚了多少」交代出去了。
-                // 隐私模式下宁可不画，只留一句说明，也不留一个能被反推的形状
-                Text(
-                    text = "隐私模式下不画净值曲线（走势会暴露量级）",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            } else {
-                val netProducer = remember { CartesianChartModelProducer() }
-                LaunchedEffect(netAssets) {
-                    // 与主图一样换算成「元」，否则纵轴刻度会是六位数的分
-                    netProducer.runTransaction {
-                        lineSeries { series(netAssets.map { it / 100.0 }) }
-                    }
-                }
-                CartesianChartHost(
-                    chart = rememberCartesianChart(
-                        rememberLineCartesianLayer(
-                            lineProvider = LineCartesianLayer.LineProvider.series(
-                                LineCartesianLayer.rememberLine(
-                                    fill = LineCartesianLayer.LineFill.single(fill(AppColors.accent)),
-                                    stroke = LineCartesianLayer.LineStroke.continuous(thickness = 2.dp)
-                                )
-                            )
-                        ),
-                        // 与主图同一个宽度 + 同一个格式化器，横轴才能严丝合缝
-                        startAxis = VerticalAxis.rememberStart(
-                            valueFormatter = yAxisFormatter,
-                            size = yAxisSize
-                        ),
-                        marker = marker,
-                        markerVisibilityListener = markerListener
-                    ),
-                    modelProducer = netProducer,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(76.dp)
-                )
-                Text(
-                    text = "线 = 期末净资产（截至该周期最后一天）· 可点选",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            BarLegend(expenseColor, "支出")
+            Spacer(Modifier.width(12.dp))
+            BarLegend(incomeColor, "收入")
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = if (hideAmounts) "柱高只表示有没有" else "共用左侧刻度 · 单位：元",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
 
         Spacer(Modifier.height(8.dp))
         val picked = selected?.takeIf { it in trend.indices }
         if (picked == null) {
             Text(
-                text = "点图上的柱子 / 折线点 → 这里摊开那一格的明细",
+                text = "点图上的柱子 → 这里摊开那一格的明细",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         } else {
             TrendBucketDetail(
                 item = trend[picked],
-                netAsset = netAssets.getOrNull(picked),
                 label = period.bucketLabel(picked),
                 periodExpense = trend.sumOf { it.expense },
                 periodIncome = trend.sumOf { it.income },
@@ -1259,6 +1219,76 @@ private fun TrendCard(
 }
 
 /**
+ * 净资产走势：单独一张卡，不和收支趋势混在一起。
+ * <p>
+ * 收支是**流量**（这个月花了多少），净资产是**存量**（到现在攒了多少），
+ * 两者量级差一两个数量级。原来把净值塞在收支图下面当一条 76dp 的窄线，
+ * 观感上像附注，实际是完全另一个问题 —— 一张图应该只回答一个问题。
+ */
+@Composable
+private fun NetAssetTrendCard(
+    netAssets: List<Long>,
+    period: ReportPeriod,
+    hideAmounts: Boolean
+) {
+    CardBox {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("净资产走势", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = money(netAssets.last(), hideAmounts),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = AppColors.accent
+            )
+        }
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = "每个周期结束时的净资产 · " + period.label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(8.dp))
+        if (hideAmounts) {
+            // 走势的形状本身就会暴露量级：隐私模式下宁可不画
+            Text(
+                text = "隐私模式下不画走势（形状会暴露量级）",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            return@CardBox
+        }
+        val producer = remember { CartesianChartModelProducer() }
+        LaunchedEffect(netAssets) {
+            // 与收支图一样换算成「元」，否则纵轴刻度会是六位数的分
+            producer.runTransaction {
+                lineSeries { series(netAssets.map { it / 100.0 }) }
+            }
+        }
+        CartesianChartHost(
+            chart = rememberCartesianChart(
+                rememberLineCartesianLayer(
+                    lineProvider = LineCartesianLayer.LineProvider.series(
+                        LineCartesianLayer.rememberLine(
+                            fill = LineCartesianLayer.LineFill.single(fill(AppColors.accent)),
+                            stroke = LineCartesianLayer.LineStroke.continuous(thickness = 2.dp)
+                        )
+                    )
+                ),
+                startAxis = VerticalAxis.rememberStart(
+                    valueFormatter = YuanAxisFormatter(),
+                    size = BaseAxis.Size.Fixed(TREND_Y_AXIS_WIDTH_DP)
+                )
+            ),
+            modelProducer = producer,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(96.dp)
+        )
+    }
+}
+
+/**
  * 趋势图选中某一格的明细条。
  * <p>
  * 图表只表达量级：具体多少钱、占当期多少、要不要去看那批账，都在这里交代清楚，
@@ -1267,8 +1297,6 @@ private fun TrendCard(
 @Composable
 private fun TrendBucketDetail(
     item: TrendItemDto,
-    /** 这一格结束时的净资产；主图没数据时为空 */
-    netAsset: Long?,
     label: String,
     periodExpense: Long,
     periodIncome: Long,
@@ -1313,13 +1341,6 @@ private fun TrendBucketDetail(
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        if (netAsset != null) {
-            Text(
-                text = "这一格结束时的净资产 ${money(netAsset, hideAmounts)}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
     }
 }
 
@@ -1328,10 +1349,10 @@ private fun shareText(part: Long, total: Long): String =
     if (total <= 0L) "—" else "${(part * 100.0 / total).roundToInt()}%"
 
 /**
- * 趋势图纵轴的固定宽度（dp）。
+ * 图表纵轴的固定宽度（dp）。
  * <p>
- * 主图和下面的净值窄图必须一样宽：纵轴宽度就是绘图区的左边界，
- * 两边宽度不同，两条线一眼就能看出错位（各自按自己的标签宽度自适应时必然不同）。
+ * 固定而不是自适应：纵轴宽度就是绘图区的左边界，刻度位数一变，
+ * 自适应宽度会让绘图区左右横跳；收支图与净资产图共用同一宽度，切换时观感一致。
  */
 private const val TREND_Y_AXIS_WIDTH_DP = 44f
 
@@ -2080,7 +2101,8 @@ private fun RankRow(
                     imageVector = accountIconOf(item.icon),
                     contentDescription = null,
                     modifier = Modifier.size(16.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    // 微信 / 支付宝的品牌标保留品牌色，其余账户图标继续用中性灰
+                    tint = accountIconTintOf(item.icon, MaterialTheme.colorScheme.onSurfaceVariant)
                 )
                 Spacer(Modifier.width(6.dp))
             }
@@ -2650,11 +2672,12 @@ private fun AssetCard(
             val ratio = if (maxAbs <= 0L) 0f else (kotlin.math.abs(account.balance).toFloat() / maxAbs).coerceIn(0f, 1f)
             Column(modifier = Modifier.padding(vertical = 5.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    val iconKey = accountIconKeyOf(account.icon, account.type ?: 0)
                     Icon(
-                        imageVector = accountIconOf(account.icon),
+                        imageVector = accountIconOf(iconKey),
                         contentDescription = null,
                         modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        tint = accountIconTintOf(iconKey, MaterialTheme.colorScheme.onSurfaceVariant)
                     )
                     Spacer(Modifier.width(6.dp))
                     Text(account.name, style = MaterialTheme.typography.bodyMedium)
@@ -3074,8 +3097,8 @@ private fun previewState(empty: Boolean = false): ReportViewModel.UiState {
         },
         accountRanks = listOf(
             RankItem(1L, "招商银行储蓄卡", "bank", 152000, 0.5f, 12),
-            RankItem(2L, "支付宝", "online", 84000, 0.28f, 9),
-            RankItem(3L, "微信零钱", "online", 41000, 0.14f, 5)
+            RankItem(2L, "支付宝", "alipay", 84000, 0.28f, 9),
+            RankItem(3L, "微信零钱", "wechat", 41000, 0.14f, 5)
         ),
         tagRanks = listOf(
             RankItem(1L, "通勤", null, 42000, 0.4f, 8),
@@ -3130,11 +3153,16 @@ private fun ReportOverviewPreview() {
                 onOpen = {}
             )
             TrendCard(
-                state.trend,
-                state.netAssetTrend,
-                state.period,
+                trend = state.trend,
+                period = state.period,
+                avgExpensePerDay = state.overview?.avgExpensePerDay ?: 0L,
                 hideAmounts = false,
                 onOpenRange = { _, _ -> }
+            )
+            NetAssetTrendCard(
+                netAssets = state.netAssetTrend,
+                period = state.period,
+                hideAmounts = false
             )
         }
     }

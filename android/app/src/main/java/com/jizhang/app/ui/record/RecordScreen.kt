@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.LocalOffer
+import androidx.compose.material.icons.outlined.AccountBalanceWallet
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
@@ -74,8 +75,14 @@ import com.jizhang.app.data.local.entity.LocalTransaction
 import com.jizhang.app.data.repository.CategoryGuess
 import com.jizhang.app.data.repository.GuessSource
 import com.jizhang.app.ui.category.CategoryEditorDialog
+import com.jizhang.app.ui.common.AccountChip
 import com.jizhang.app.ui.common.AppChip
 import com.jizhang.app.ui.common.AppFullScreenDialog
+import com.jizhang.app.ui.common.accountColorOf
+import com.jizhang.app.ui.common.accountIconKeyOf
+import com.jizhang.app.ui.common.accountIconOf
+import com.jizhang.app.ui.common.accountIconTintOf
+import com.jizhang.app.ui.common.accountTypeLabel
 import com.jizhang.app.ui.common.categoryColorOf
 import com.jizhang.app.ui.common.categoryContentOn
 import com.jizhang.app.ui.common.categoryIconOf
@@ -392,7 +399,6 @@ private fun RecordLayout(
             accounts = state.accounts,
             selectedId = state.selectedAccountId,
             lastAccountId = state.lastAccountId,
-            accent = accent,
             onSelect = {
                 viewModel.selectAccount(it)
                 showAccountPicker = false
@@ -470,6 +476,9 @@ private fun AmountBar(state: RecordViewModel.UiState) {
  * 账户只铺**三个常用的**（按使用次数，见 [quickAccounts]），点一下直接切，不用先开弹窗；
  * 账户多于三个时末尾补一个「更多」进完整选择器。日期与备注同样压缩成芯片，
  * 整条可横滚，**当前值始终可见**。标签不在这里：它每笔都要点，已经常驻成一行（见 [TagQuickBar]）。
+ * <p>
+ * 账户芯片用 [AccountChip]（方角 + 类型图标），与上方的标签胶囊是两套形状 ——
+ * 之前两者长得一模一样，手指落在哪一行全靠读文字，很容易点错。
  */
 @Composable
 private fun MetaBar(
@@ -484,45 +493,73 @@ private fun MetaBar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(start = 15.dp, top = 4.dp, end = 10.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // 账户行给一个固定的钱包标：上面是「标签」、这里是「账户」，
+        // 行首的图标让两行从「一排一样的胶囊」变成可以一眼分辨的两组
         if (state.type != 3) {
-            quickAccounts.forEach { account ->
-                AppChip(
-                    label = account.name,
-                    selected = state.selectedAccountId == account.id,
-                    onClick = { onSelectAccount(account.id) },
-                    tint = accent,
-                    compact = true
-                )
-            }
-            if (state.accounts.size > quickAccounts.size) {
-                AppChip(
-                    label = "更多",
-                    selected = false,
-                    onClick = onPickAccount,
-                    trailingIcon = Icons.Filled.ExpandMore,
-                    compact = true
-                )
-            }
+            Icon(
+                imageVector = Icons.Outlined.AccountBalanceWallet,
+                contentDescription = null,
+                tint = if (state.selectedAccountId != null) {
+                    accent
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                },
+                modifier = Modifier.size(14.dp)
+            )
+            Spacer(Modifier.width(8.dp))
         }
-        AppChip(
-            label = dateShortLabel(state.tradeDate),
-            selected = false,
-            onClick = onOpenDate,
-            leadingIcon = Icons.Filled.DateRange,
-            compact = true
-        )
-        AppChip(
-            label = state.remark.ifBlank { "备注" }.let { if (it.length > 8) it.take(8) + "…" else it },
-            selected = state.remark.isNotBlank(),
-            onClick = onOpenRemark,
-            leadingIcon = Icons.Filled.Edit,
-            compact = true
-        )
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (state.type != 3) {
+                quickAccounts.forEach { account ->
+                    AccountChip(
+                        account = account,
+                        selected = state.selectedAccountId == account.id,
+                        onClick = { onSelectAccount(account.id) },
+                        compact = true
+                    )
+                }
+                if (state.accounts.size > quickAccounts.size) {
+                    AppChip(
+                        label = "更多",
+                        selected = false,
+                        onClick = onPickAccount,
+                        trailingIcon = Icons.Filled.ExpandMore,
+                        compact = true
+                    )
+                }
+                // 账户段和后面的日期 / 备注之间划一道细线：
+                // 同一行里既有账户又有日期，不隔开的话「钱包标」会被误读成管着后面两枚
+                Box(
+                    modifier = Modifier
+                        .width(1.dp)
+                        .height(14.dp)
+                        .background(MaterialTheme.colorScheme.outlineVariant)
+                )
+            }
+            AppChip(
+                label = dateShortLabel(state.tradeDate),
+                selected = false,
+                onClick = onOpenDate,
+                leadingIcon = Icons.Filled.DateRange,
+                compact = true
+            )
+            AppChip(
+                label = state.remark.ifBlank { "备注" }.let { if (it.length > 8) it.take(8) + "…" else it },
+                selected = state.remark.isNotBlank(),
+                onClick = onOpenRemark,
+                leadingIcon = Icons.Filled.Edit,
+                compact = true
+            )
+        }
     }
 }
 
@@ -620,14 +657,19 @@ private fun TagQuickBar(
     }
 }
 
-/** 账户选择：二级弹层，不再常驻占一行 */
-@OptIn(ExperimentalLayoutApi::class)
+/**
+ * 账户选择：二级弹层，不再常驻占一行。
+ *
+ * 以前这里是一堆和标签一模一样的圆胶囊，只有名字不同，既看不出「这是账户还是标签」，
+ * 也看不出每个账户是什么类型。现在一律是**带类型图标的列表行**：图标 + 名字 +
+ * 类型（现金 / 储蓄卡 / 信用卡 / 支付宝 / 微信 / 投资），选中项打勾，
+ * 手指落在哪一行、这一行是什么类型，都写得很清楚。
+ */
 @Composable
 private fun AccountPickerDialog(
     accounts: List<LocalAccount>,
     selectedId: Long?,
     lastAccountId: Long?,
-    accent: Color,
     onSelect: (Long) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -650,21 +692,16 @@ private fun AccountPickerDialog(
             } else {
                 Column(
                     modifier = Modifier
-                        .heightIn(max = 320.dp)
-                        .verticalScroll(rememberScrollState())
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        ordered.forEach { account ->
-                            AppChip(
-                                label = account.name,
-                                selected = selectedId == account.id,
-                                onClick = { onSelect(account.id) },
-                                tint = accent
-                            )
-                        }
+                    ordered.forEach { account ->
+                        AccountPickerRow(
+                            account = account,
+                            selected = selectedId == account.id,
+                            onClick = { onSelect(account.id) }
+                        )
                     }
                 }
             }
@@ -673,6 +710,73 @@ private fun AccountPickerDialog(
             TextButton(onClick = onDismiss) { Text("关闭") }
         }
     )
+}
+
+/** 选择器里的一行账户：类型图标（按类型上色）+ 名字 + 类型，选中打勾 */
+@Composable
+private fun AccountPickerRow(
+    account: LocalAccount,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    val iconKey = accountIconKeyOf(account.icon, account.type)
+    val typeColor = accountColorOf(account.icon, account.type)
+    val shape = RoundedCornerShape(12.dp)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(
+                if (selected) typeColor.copy(alpha = 0.14f) else Color.Transparent
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(34.dp)
+                .clip(CircleShape)
+                .background(typeColor.copy(alpha = 0.16f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = accountIconOf(iconKey),
+                contentDescription = null,
+                tint = accountIconTintOf(iconKey, typeColor),
+                modifier = Modifier.size(18.dp)
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = account.name,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            // 类型名单独一行写出来：账户名（招行、花呗…）本身看不出是资产还是负债
+            Text(
+                text = account.note?.takeIf { it.isNotBlank() }
+                    ?.let { accountTypeLabel(account.type) + " · " + it }
+                    ?: accountTypeLabel(account.type),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (selected) {
+            Spacer(Modifier.width(6.dp))
+            Icon(
+                imageVector = Icons.Filled.Check,
+                contentDescription = null,
+                tint = typeColor,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+    }
 }
 
 /** 紧凑类型分段：顶栏里只占 168dp，当前类型一眼可见 */
@@ -768,7 +872,6 @@ private fun TransferSection(state: RecordViewModel.UiState, viewModel: RecordVie
     AccountChips(
         accounts = state.accounts,
         selectedId = state.selectedAccountId,
-        accent = accent,
         excludeId = state.selectedToAccountId,
         onSelect = viewModel::selectAccount
     )
@@ -779,7 +882,6 @@ private fun TransferSection(state: RecordViewModel.UiState, viewModel: RecordVie
     AccountChips(
         accounts = state.accounts,
         selectedId = state.selectedToAccountId,
-        accent = accent,
         excludeId = state.selectedAccountId,
         onSelect = viewModel::selectToAccount
     )
@@ -1013,11 +1115,16 @@ private fun CategoryItem(
     }
 }
 
+/**
+ * 转账的转出 / 转入账户行。
+ *
+ * 用 [AccountChip] 而不是通用芯片：转账要连着选两个账户，形状一样、颜色一样时
+ * 很容易把「转出」和「转入」看串行；类型图标 + 类型名让每个账户的身份更明确。
+ */
 @Composable
 private fun AccountChips(
     accounts: List<LocalAccount>,
     selectedId: Long?,
-    accent: Color,
     excludeId: Long? = null,
     onSelect: (Long) -> Unit
 ) {
@@ -1037,11 +1144,11 @@ private fun AccountChips(
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         visible.forEach { account ->
-            AppChip(
-                label = account.name,
+            AccountChip(
+                account = account,
                 selected = selectedId == account.id,
                 onClick = { onSelect(account.id) },
-                tint = accent
+                showType = true
             )
         }
         // 横向滚到末尾时别让最后一个芯片贴着文字边缘，看起来像被切掉

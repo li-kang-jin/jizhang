@@ -50,10 +50,13 @@ import androidx.compose.material.icons.outlined.TrendingUp
 import androidx.compose.material.icons.outlined.VolunteerActivism
 import androidx.compose.material.icons.outlined.WaterDrop
 import androidx.compose.material.icons.outlined.WorkOutline
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.vectorResource
+import com.jizhang.app.R
 
 /**
  * 分类图标体系。
@@ -338,17 +341,55 @@ data class CategoryIconOption(val key: String, val label: String)
 /**
  * 账户图标映射。
  *
- * 与分类同一套约定：库里存短标识，客户端翻译成图标。账户是"钱从哪来"，
- * 所以统一用钱包/银行卡/二维码这类具象符号，不用抽象图形。
+ * 与分类同一套约定：库里存短标识，客户端翻译成图标。
+ * <p>
+ * 有品牌的支付账户直接画**对应应用的标**（微信双气泡、支付宝「支」），
+ * 不再让支付宝和微信共用一个二维码符号 —— 记账时先分清是哪个 App 出的钱；
+ * 公交卡用公交标、储蓄卡 / 信用卡用卡片标，京东白条用购物袋标（京东红），
+ * 其余类型继续用钱包这类具象符号。
+ * <p>
+ * 品牌图标自带颜色（实心、非单色），调用方不能再 tint，统一走 [accountIconTintOf]。
  */
+@Composable
 fun accountIconOf(key: String?): ImageVector = when (key) {
-    "wallet" -> Icons.Outlined.AccountBalanceWallet
     "cash" -> Icons.Outlined.Payments
-    "card" -> Icons.Outlined.CreditCard
+    // card 是旧版「储蓄卡」的 key，老数据还要认
+    "debit", "card" -> Icons.Outlined.CreditCard
+    "credit" -> Icons.Outlined.CreditScore
     "bank" -> Icons.Outlined.AccountBalance
     "online" -> Icons.Outlined.QrCode
     "invest" -> Icons.Outlined.TrendingUp
+    "transit" -> Icons.Outlined.DirectionsBus
+    "jd" -> Icons.Outlined.ShoppingBag
+    "wechat" -> ImageVector.vectorResource(R.drawable.ic_account_wechat)
+    "alipay" -> ImageVector.vectorResource(R.drawable.ic_account_alipay)
     else -> Icons.Outlined.AccountBalanceWallet
+}
+
+/** 品牌图标（自带品牌色）：渲染时保持原色，不跟着账户类型色走 */
+fun isBrandAccountIcon(key: String?): Boolean = key == "wechat" || key == "alipay"
+
+/** 账户图标该用什么颜色：品牌图标原色，其余压成类型色的可读版本 */
+fun accountIconTintOf(key: String?, fallback: Color): Color =
+    if (isBrandAccountIcon(key)) Color.Unspecified else categoryTintOn(fallback)
+
+/**
+ * 账户实际使用的图标 key。
+ *
+ * 「钱包 / 网络支付」是旧版的兜底图标（种子里支付宝、微信都存的是 wallet），
+ * 这类通用值按**类型**换成对应的品牌 / 语义图标，否则老账户升级后还是一排同一个符号；
+ * 用户手动挑过的其他图标原样保留。
+ */
+fun accountIconKeyOf(icon: String?, type: Int): String {
+    val stored = icon?.takeIf { it.isNotBlank() }
+    val legacyGeneric = stored == null || stored == "wallet" || stored == "online"
+    return when {
+        stored == null -> defaultAccountIconOf(type)
+        // 现金 / 支付宝 / 微信：种子里存的就是「钱包」，旧默认又是「网络支付」，
+        // 这两个通用值一律按类型换成现金、品牌标；用户自己挑过的图标原样保留
+        legacyGeneric && (type == 1 || type == 4 || type == 5) -> defaultAccountIconOf(type)
+        else -> stored
+    }
 }
 
 /**
@@ -363,15 +404,21 @@ fun accountColorOf(icon: String?, type: Int): Color = when (type) {
     3 -> Color(0xFFB07CFF)
     1 -> Color(0xFF5FD3A0)
     2 -> Color(0xFF4A90E2)
-    4 -> Color(0xFF4FC3F7)
-    5 -> Color(0xFF5FD3A0)
+    // 支付宝 / 微信用品牌色：图标和底色是同一个色系，才不会「绿底蓝图标」打架
+    4 -> Color(0xFF1677FF)
+    5 -> Color(0xFF07C160)
     6 -> Color(0xFFFFB65C)
     else -> when (icon) {
         "cash" -> Color(0xFF5FD3A0)
-        "card" -> Color(0xFF4A90E2)
+        "debit", "card" -> Color(0xFF4A90E2)
+        "credit" -> Color(0xFFB07CFF)
         "bank" -> Color(0xFF7C8BFF)
-        "online" -> Color(0xFF4FC3F7)
+        "wechat" -> Color(0xFF07C160)
+        "alipay" -> Color(0xFF1677FF)
+        "transit" -> Color(0xFF2BB3C0)
+        "jd" -> Color(0xFFE1251B)
         "invest" -> Color(0xFFFFB65C)
+        "online" -> Color(0xFF4FC3F7)
         "wallet" -> Color(0xFF5C9DFF)
         else -> Color(0xFF9AA4B2)
     }
@@ -379,21 +426,25 @@ fun accountColorOf(icon: String?, type: Int): Color = when (type) {
 
 /** 新建 / 编辑账户时可挑的图标，key 必须与 [accountIconOf] 的分支对应 */
 val ACCOUNT_ICON_OPTIONS: List<CategoryIconOption> = listOf(
-    CategoryIconOption("wallet", "钱包"),
+    CategoryIconOption("wechat", "微信"),
+    CategoryIconOption("alipay", "支付宝"),
+    CategoryIconOption("debit", "储蓄卡"),
+    CategoryIconOption("credit", "信用卡"),
+    CategoryIconOption("transit", "公交卡"),
+    CategoryIconOption("jd", "京东白条"),
     CategoryIconOption("cash", "现金"),
-    CategoryIconOption("card", "储蓄卡"),
-    CategoryIconOption("bank", "银行"),
-    CategoryIconOption("online", "网络支付"),
     CategoryIconOption("invest", "投资"),
-    CategoryIconOption("other", "其他")
+    CategoryIconOption("bank", "银行卡"),
+    CategoryIconOption("wallet", "钱包")
 )
 
 /** 账户类型 → 默认图标（新建账户时按类型预选一个） */
 fun defaultAccountIconOf(type: Int): String = when (type) {
     1 -> "cash"
-    2 -> "card"
-    3 -> "card"
-    4, 5 -> "online"
+    2 -> "debit"
+    3 -> "credit"
+    4 -> "alipay"
+    5 -> "wechat"
     6 -> "invest"
     else -> "wallet"
 }
