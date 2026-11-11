@@ -1,5 +1,6 @@
 package com.jizhang.api.controller.admin;
 
+import com.jizhang.api.support.CsvDownload;
 import com.jizhang.common.api.PageResult;
 import com.jizhang.common.api.Result;
 import com.jizhang.common.constant.CommonConstants;
@@ -10,6 +11,7 @@ import com.jizhang.service.vo.TransactionVO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -40,5 +42,12 @@ public class AdminTransactionController {
     @GetMapping("/summary")
     public Result<AdminTransactionSummaryVO> summary(@Valid AdminTransactionQueryRequest request) {
         return Result.success(adminService.sumTransactions(request));
+    }
+
+    @Operation(summary = "导出交易流水（CSV）",
+            description = "与列表同一套筛选条件（含 includeDeleted），单次最多 5 万条，超出时响应头 X-Export-Truncated=true")
+    @GetMapping("/export")
+    public ResponseEntity<byte[]> export(@Valid AdminTransactionQueryRequest request) {
+        return CsvDownload.of(adminService.exportTransactions(request), "transactions");
     }
 }

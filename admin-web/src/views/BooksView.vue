@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { fetchBooks } from '@/api/admin'
+import { exportBooks, fetchBooks } from '@/api/admin'
 import type { BookQuery } from '@/api/admin'
 import { loadUserOptions } from '@/api/options'
 import { usePagedTable } from '@/composables/usePagedTable'
 import { BOOK_TYPES } from '@/types'
+import { finishExport, warnExportError } from '@/utils/export'
 import { formatDateTime } from '@/utils/format'
 import BookAccountsDrawer from '@/components/BookAccountsDrawer.vue'
 import CopyText from '@/components/CopyText.vue'
@@ -21,14 +22,19 @@ const query = reactive({
   ownerId: ''
 })
 
-const { loading, error, list, total, load, search, onPageChange, onSizeChange } = usePagedTable<BookInfo>(
-  (params) => fetchBooks(params as BookQuery),
-  query,
-  () => ({
+/** 列表与导出共用同一套筛选条件，避免「看到的」和「导出的」不一致 */
+function buildParams() {
+  return {
     keyword: query.keyword || undefined,
     type: query.type,
     ownerId: query.ownerId || undefined
-  })
+  }
+}
+
+const { loading, error, list, total, load, search, onPageChange, onSizeChange } = usePagedTable<BookInfo>(
+  (params) => fetchBooks(params as BookQuery),
+  query,
+  buildParams
 )
 
 const hasFilter = computed(() => !!query.keyword || query.type !== undefined || !!query.ownerId)
@@ -42,6 +48,21 @@ function handleReset() {
 
 function typeLabel(type: number) {
   return BOOK_TYPES.find((item) => item.value === type)?.label ?? '未知'
+}
+
+/* ---------------- 导出 ---------------- */
+
+const exporting = ref(false)
+
+async function handleExport() {
+  exporting.value = true
+  try {
+    finishExport(await exportBooks(buildParams() as BookQuery), '账本')
+  } catch (error) {
+    warnExportError(error)
+  } finally {
+    exporting.value = false
+  }
 }
 
 /* 下钻：查看该账本的账户 */
@@ -75,6 +96,12 @@ onMounted(load)
           <span>查询</span>
         </el-button>
         <el-button @click="handleReset">重置</el-button>
+        <template #actions>
+          <el-button :loading="exporting" title="按当前筛选条件导出 CSV，单次最多 5 万条" @click="handleExport">
+            <el-icon><Download /></el-icon>
+            <span>导出</span>
+          </el-button>
+        </template>
       </PageToolbar>
 
       <el-table :data="list" v-loading="loading" stripe>

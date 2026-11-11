@@ -5,6 +5,7 @@ import type { FormInstance, FormRules } from 'element-plus'
 import {
   createAccount,
   deleteAccount,
+  exportAccounts,
   fetchAccounts,
   fetchTransactions,
   updateAccount
@@ -13,6 +14,7 @@ import type { AccountQuery, AccountPayload, TransactionQuery } from '@/api/admin
 import { loadBookOptions, loadUserOptions } from '@/api/options'
 import { usePagedTable } from '@/composables/usePagedTable'
 import { ACCOUNT_TYPES, formatAmount, TRANSACTION_TYPES } from '@/types'
+import { finishExport, warnExportError } from '@/utils/export'
 import { formatDateTime } from '@/utils/format'
 import CopyText from '@/components/CopyText.vue'
 import EntitySelect from '@/components/EntitySelect.vue'
@@ -29,13 +31,18 @@ const query = reactive({
   type: undefined as number | undefined
 })
 
-const { loading, error, list, total, load, search, onPageChange, onSizeChange, reloadAfterDelete } =
-  usePagedTable<AccountInfo>((params) => fetchAccounts(params as AccountQuery), query, () => ({
+/** 列表与导出共用同一套筛选条件 */
+function buildParams() {
+  return {
     keyword: query.keyword || undefined,
     bookId: query.bookId || undefined,
     userId: query.userId || undefined,
     type: query.type
-  }))
+  }
+}
+
+const { loading, error, list, total, load, search, onPageChange, onSizeChange, reloadAfterDelete } =
+  usePagedTable<AccountInfo>((params) => fetchAccounts(params as AccountQuery), query, buildParams)
 
 const hasFilter = computed(
   () => !!query.keyword || !!query.bookId || !!query.userId || query.type !== undefined
@@ -51,6 +58,21 @@ function handleReset() {
 
 function typeLabel(type: number) {
   return ACCOUNT_TYPES.find((item) => item.value === type)?.label ?? '未知'
+}
+
+/* ---------------- 导出 ---------------- */
+
+const exporting = ref(false)
+
+async function handleExport() {
+  exporting.value = true
+  try {
+    finishExport(await exportAccounts(buildParams() as AccountQuery), '账户')
+  } catch (error) {
+    warnExportError(error)
+  } finally {
+    exporting.value = false
+  }
 }
 
 /* ---------------- 新增 / 编辑 ---------------- */
@@ -263,6 +285,10 @@ onMounted(load)
         </el-button>
         <el-button @click="handleReset">重置</el-button>
         <template #actions>
+          <el-button :loading="exporting" title="按当前筛选条件导出 CSV，单次最多 5 万条" @click="handleExport">
+            <el-icon><Download /></el-icon>
+            <span>导出</span>
+          </el-button>
           <el-button type="primary" plain @click="openCreate">
             <el-icon><Plus /></el-icon>
             <span>新增账户</span>

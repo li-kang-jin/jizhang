@@ -8,6 +8,7 @@ import com.jizhang.service.dto.AdminTransactionQueryRequest;
 import com.jizhang.service.dto.AdminUserQueryRequest;
 import com.jizhang.service.dto.ChangePasswordRequest;
 import com.jizhang.service.dto.LoginRequest;
+import com.jizhang.service.support.CsvResult;
 import com.jizhang.service.vo.AdminAccountVO;
 import com.jizhang.service.vo.AdminTransactionSummaryVO;
 import com.jizhang.service.vo.BookVO;
@@ -63,6 +64,23 @@ public interface AdminService {
 
     /** 删除账户；账户下仍有交易流水时拒绝 */
     void deleteAccount(Long accountId);
+
+    /**
+     * 导出交易流水（CSV）。
+     * <p>
+     * 与列表同一套筛选条件（含 {@code includeDeleted}）：后台看到的和导出的必须一致，
+     * 否则管理员勾了「含已删除」却导不到已删除记录，等于白点。
+     */
+    CsvResult exportTransactions(AdminTransactionQueryRequest request);
+
+    /** 导出账户（CSV），条件同列表 */
+    CsvResult exportAccounts(AdminAccountQueryRequest request);
+
+    /** 导出账本（CSV），条件同列表 */
+    CsvResult exportBooks(AdminBookQueryRequest request);
+
+    /** 导出用户（CSV），条件同列表 */
+    CsvResult exportUsers(AdminUserQueryRequest request);
 
     /** 平台运营总览 */
     PlatformOverviewVO overview();

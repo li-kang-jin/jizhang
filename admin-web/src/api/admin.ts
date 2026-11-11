@@ -1,4 +1,5 @@
-import { del, get, post, put } from './request'
+import { del, download, get, post, put } from './request'
+import type { DownloadResult } from './request'
 import type {
   AccountInfo,
   BookInfo,
@@ -51,6 +52,11 @@ export function fetchUsers(params: UserQuery): Promise<PageResult<UserInfo>> {
   return get<PageResult<UserInfo>>('/admin/users', params as Record<string, unknown>)
 }
 
+/** 导出用户（CSV），条件同列表 */
+export function exportUsers(params: UserQuery): Promise<DownloadResult> {
+  return download('/admin/users/export', params as Record<string, unknown>)
+}
+
 export function updateUserStatus(id: string, status: number): Promise<UserInfo> {
   return put<UserInfo>(`/admin/users/${id}/status`, null, { status })
 }
@@ -74,6 +80,11 @@ export function fetchBooks(params: BookQuery): Promise<PageResult<BookInfo>> {
   return get<PageResult<BookInfo>>('/admin/books', params as Record<string, unknown>)
 }
 
+/** 导出账本（CSV），条件同列表 */
+export function exportBooks(params: BookQuery): Promise<DownloadResult> {
+  return download('/admin/books/export', params as Record<string, unknown>)
+}
+
 /* ---------------- 交易 ---------------- */
 
 export interface TransactionQuery {
@@ -87,6 +98,8 @@ export interface TransactionQuery {
   keyword?: string
   startTime?: string
   endTime?: string
+  /** true=把 App 端已删除（软删除）的流水一并查出来，用于排查「我删的那条去哪了」 */
+  includeDeleted?: boolean
 }
 
 export function fetchTransactions(params: TransactionQuery): Promise<PageResult<TransactionInfo>> {
@@ -96,6 +109,11 @@ export function fetchTransactions(params: TransactionQuery): Promise<PageResult<
 /** 与列表同一套筛选条件，统计整个结果集而不是当前页 */
 export function fetchTransactionSummary(params: TransactionQuery): Promise<TransactionSummary> {
   return get<TransactionSummary>('/admin/transactions/summary', params as Record<string, unknown>)
+}
+
+/** 导出交易流水（CSV），条件同列表（含 includeDeleted） */
+export function exportTransactions(params: TransactionQuery): Promise<DownloadResult> {
+  return download('/admin/transactions/export', params as Record<string, unknown>)
 }
 
 /* ---------------- 账户 ---------------- */
@@ -123,6 +141,11 @@ export interface AccountPayload {
 
 export function fetchAccounts(params: AccountQuery): Promise<PageResult<AccountInfo>> {
   return get<PageResult<AccountInfo>>('/admin/accounts', params as Record<string, unknown>)
+}
+
+/** 导出账户（CSV），条件同列表 */
+export function exportAccounts(params: AccountQuery): Promise<DownloadResult> {
+  return download('/admin/accounts/export', params as Record<string, unknown>)
 }
 
 export function createAccount(payload: AccountPayload): Promise<AccountInfo> {

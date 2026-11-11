@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { fetchTransactions, fetchTransactionSummary } from '@/api/admin'
+import { exportTransactions, fetchTransactions, fetchTransactionSummary } from '@/api/admin'
 import type { TransactionQuery } from '@/api/admin'
 import { loadAccountOptions, loadBookOptions, loadUserOptions } from '@/api/options'
 import { usePagedTable } from '@/composables/usePagedTable'
 import { formatAmount, TRANSACTION_TYPES } from '@/types'
+import { finishExport, warnExportError } from '@/utils/export'
 import { formatDateTime, toIsoString } from '@/utils/format'
 import CopyText from '@/components/CopyText.vue'
 import EntitySelect from '@/components/EntitySelect.vue'
@@ -22,7 +23,9 @@ const query = reactive({
   accountId: '',
   userId: '',
   type: undefined as number | undefined,
-  keyword: ''
+  keyword: '',
+  /** 含已删除：App 端删除是软删除（deleted = 1），默认视图看不到，勾上才会一并查出来 */
+  includeDeleted: false
 })
 
 /** 日期筛选保存 Date 对象，提交时转 UTC ISO；直接拼 "...Z" 会让查询窗口偏移 8 小时 */
@@ -41,7 +44,8 @@ function buildParams(): Record<string, unknown> {
     type: query.type,
     keyword: query.keyword || undefined,
     startTime: toIsoString(timeRange.value?.[0]),
-    endTime: toIsoString(timeRange.value?.[1])
+    endTime: toIsoString(timeRange.value?.[1]),
+    includeDeleted: query.includeDeleted || undefined
   }
 }
 
@@ -59,7 +63,8 @@ const hasFilter = computed(
     !!query.userId ||
     query.type !== undefined ||
     !!query.keyword ||
-    !!timeRange.value
+    !!timeRange.value ||
+    query.includeDeleted
 )
 
 /* ---------------- 当前筛选条件下的合计 ---------------- */
@@ -90,6 +95,7 @@ function handleReset() {
   query.userId = ''
   query.type = undefined
   query.keyword = ''
+  query.includeDeleted = false
   timeRange.value = null
   bookLabel.value = ''
   accountLabel.value = ''
@@ -145,6 +151,27 @@ function amountPrefix(type: number) {
   return ''
 }
 
+/** 已删除（墓碑）行整体压暗，一眼能从正常流水里区分出来 */
+function rowClassName({ row }: { row: TransactionInfo }) {
+  return row.deleted === 1 ? 'row-deleted' : ''
+}
+
+/* ---------------- 导出 ---------------- */
+
+const exporting = ref(false)
+
+/** 导出当前筛选条件下的流水：条件与列表完全一致（含「含已删除」开关） */
+async function handleExport() {
+  exporting.value = true
+  try {
+    finishExport(await exportTransactions(buildParams() as TransactionQuery), '交易流水')
+  } catch (error) {
+    warnExportError(error)
+  } finally {
+    exporting.value = false
+  }
+}
+
 onMounted(() => {
   readRouteQuery()
   load()
@@ -156,6 +183,13 @@ onMounted(() => {
   <div class="page">
     <el-card shadow="never">
       <PageToolbar :total="total" unit="笔交易">
+        <el-switch
+          v-model="query.includeDeleted"
+          active-text="含已删除"
+          :active-value="true"
+          :inactive-value="false"
+          @change="handleSearch"
+        />
         <el-input v-model="query.keyword" placeholder="备注关键字" clearable @keyup.enter="handleSearch" />
         <EntitySelect v-model="query.bookId" :loader="loadBookOptions" placeholder="账本" width="190px" :selected-label="bookLabel" />
         <EntitySelect
@@ -188,6 +222,12 @@ onMounted(() => {
           <span>查询</span>
         </el-button>
         <el-button @click="handleReset">重置</el-button>
+        <template #actions>
+          <el-button :loading="exporting" title="按当前筛选条件导出 CSV，单次最多 5 万条" @click="handleExport">
+            <el-icon><Download /></el-icon>
+            <span>导出</span>
+          </el-button>
+        </template>
       </PageToolbar>
 
       <div class="summary-bar" v-loading="summaryLoading">
@@ -200,10 +240,12 @@ onMounted(() => {
         <span>
           转账 <strong>{{ summary ? formatAmount(summary.transfer) : '-' }}</strong>
         </span>
-        <span class="muted">当前筛选的全部结果，不受分页影响</span>
+        <span class="muted">
+          {{ query.includeDeleted ? '当前筛选的全部结果（含已删除记录），不受分页影响' : '当前筛选的全部结果，不受分页影响' }}
+        </span>
       </div>
 
-      <el-table :data="list" v-loading="loading" stripe>
+      <el-table :data="list" v-loading="loading" stripe :row-class-name="rowClassName">
         <el-table-column label="交易 ID" width="150">
           <template #default="{ row }">
             <CopyText :text="row.id" mono label="交易 ID" />
@@ -240,6 +282,14 @@ onMounted(() => {
         <el-table-column label="交易时间" width="170">
           <template #default="{ row }">{{ formatDateTime(row.tradeTime) }}</template>
         </el-table-column>
+        <el-table-column label="状态" width="100">
+          <template #default="{ row }">
+            <el-tag v-if="row.deleted === 1" type="danger" size="small" :title="`删除于 ${formatDateTime(row.updatedAt)}`">
+              已删除
+            </el-tag>
+            <span v-else class="muted">正常</span>
+          </template>
+        </el-table-column>
         <template #empty>
           <TableEmpty :error="error" :filtered="hasFilter" @retry="load" @clear="handleReset" />
         </template>
@@ -274,5 +324,10 @@ onMounted(() => {
 .amount-income {
   color: #67c23a;
   font-weight: 600;
+}
+
+/* el-table 的行渲染在子组件里，scoped 样式必须 :deep 才能命中 */
+:deep(.row-deleted) {
+  color: var(--el-text-color-placeholder);
 }
 </style>

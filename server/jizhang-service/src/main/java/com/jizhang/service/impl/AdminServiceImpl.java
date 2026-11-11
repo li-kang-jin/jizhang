@@ -41,6 +41,8 @@ import com.jizhang.service.vo.TokenVO;
 import com.jizhang.service.vo.TransactionVO;
 import com.jizhang.service.vo.TrendPointVO;
 import com.jizhang.service.vo.UserVO;
+import com.jizhang.service.support.CsvExport;
+import com.jizhang.service.support.CsvResult;
 import com.jizhang.service.support.LoginAttemptGuard;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -59,6 +61,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -69,6 +72,31 @@ public class AdminServiceImpl implements AdminService {
 
     private static final int MIN_TREND_DAYS = 7;
     private static final int MAX_TREND_DAYS = 90;
+
+    /** 导出时的单页条数：与列表查询的 @Max(200) 对齐，顺带把批量翻译名称的成本摊薄 */
+    private static final int EXPORT_PAGE_SIZE = 200;
+
+    /**
+     * 单次导出的上限。
+     * <p>
+     * 全平台流水没有上限，一次导出几百万行会把服务端内存和浏览器一起打挂；触顶后
+     * {@link CsvResult#truncated()} 会告诉前端「还有数据没导」，避免悄悄少一半。
+     */
+    private static final int MAX_EXPORT_ROWS = 50_000;
+
+    private static final List<String> TRANSACTION_HEADERS = List.of(
+            "交易ID", "账本ID", "账本名称", "类型", "金额(元)", "账户", "转入账户",
+            "分类", "备注", "标签", "交易时间", "更新时间", "状态");
+
+    private static final List<String> ACCOUNT_HEADERS = List.of(
+            "账户ID", "账本ID", "账本名称", "所有者", "账户名称", "类型",
+            "当前余额(元)", "初始余额(元)", "币种", "计入总资产", "创建时间");
+
+    private static final List<String> BOOK_HEADERS = List.of(
+            "账本ID", "账本名称", "类型", "币种", "所有者", "成员数", "账户数", "备注", "创建时间");
+
+    private static final List<String> USER_HEADERS = List.of(
+            "用户ID", "用户名", "昵称", "手机号", "邮箱", "角色", "状态", "待改密", "注册时间", "最后登录");
 
     private static final int TYPE_EXPENSE = 1;
     private static final int TYPE_INCOME = 2;
@@ -291,14 +319,32 @@ public class AdminServiceImpl implements AdminService {
             return PageResult.empty(request.getPage(), request.getSize());
         }
 
-        QueryWrapper<TransactionEntity> wrapper = buildTransactionFilter(request, ownerBookIds)
-                .orderByDesc("trade_time");
+        int page = request.getPage() == null ? 1 : request.getPage();
+        int size = request.getSize() == null ? 20 : request.getSize();
+        boolean includeDeleted = Boolean.TRUE.equals(request.getIncludeDeleted());
 
-        Page<TransactionEntity> page = transactionMapper.selectPage(
-                new Page<>(request.getPage(), request.getSize()), wrapper);
-        List<TransactionVO> records = page.getRecords().stream().map(TransactionVO::from).toList();
-        fillDisplayNames(records);
-        return PageResult.of(records, page.getTotal(), page.getCurrent(), page.getSize());
+        long total;
+        List<TransactionVO> records;
+        if (includeDeleted) {
+            // 已删除（deleted = 1）的记录会被 @TableLogic 自动滤掉，这里改走手写 SQL 才看得见
+            total = transactionMapper.countAdmin(request.getBookId(), request.getAccountId(),
+                    request.getType(), request.getKeyword(), request.getStartTime(), request.getEndTime(),
+                    ownerBookIds, true);
+            records = total == 0
+                    ? new ArrayList<>()
+                    : transactionMapper.selectAdminPage(request.getBookId(), request.getAccountId(),
+                            request.getType(), request.getKeyword(), request.getStartTime(),
+                            request.getEndTime(), ownerBookIds, true, size, (page - 1) * size)
+                    .stream().map(TransactionVO::from).toList();
+        } else {
+            QueryWrapper<TransactionEntity> wrapper = buildTransactionFilter(request, ownerBookIds)
+                    .orderByDesc("trade_time");
+            Page<TransactionEntity> result = transactionMapper.selectPage(new Page<>(page, size), wrapper);
+            total = result.getTotal();
+            records = result.getRecords().stream().map(TransactionVO::from).toList();
+        }
+        fillDisplayNames(records, includeDeleted);
+        return PageResult.of(records, total, page, size);
     }
 
     @Override
@@ -310,12 +356,20 @@ public class AdminServiceImpl implements AdminService {
         }
 
         // 用聚合而不是把结果集捞回内存：全平台流水不设上限，翻到哪一页都要能算全量合计
-        QueryWrapper<TransactionEntity> wrapper = buildTransactionFilter(request, ownerBookIds)
-                .select("COALESCE(sum(CASE WHEN type = 1 THEN amount ELSE 0 END), 0) AS expense",
-                        "COALESCE(sum(CASE WHEN type = 2 THEN amount ELSE 0 END), 0) AS income",
-                        "COALESCE(sum(CASE WHEN type = 3 THEN amount ELSE 0 END), 0) AS transfer",
-                        "count(*) AS tx_count");
-        List<Map<String, Object>> rows = transactionMapper.selectMaps(wrapper);
+        List<Map<String, Object>> rows;
+        if (Boolean.TRUE.equals(request.getIncludeDeleted())) {
+            // 合计必须跟列表同一口径，否则「含已删除」时列表有墓碑记录、合计却没算进去
+            rows = transactionMapper.sumAdmin(request.getBookId(), request.getAccountId(),
+                    request.getType(), request.getKeyword(), request.getStartTime(), request.getEndTime(),
+                    ownerBookIds, true);
+        } else {
+            QueryWrapper<TransactionEntity> wrapper = buildTransactionFilter(request, ownerBookIds)
+                    .select("COALESCE(sum(CASE WHEN type = 1 THEN amount ELSE 0 END), 0) AS expense",
+                            "COALESCE(sum(CASE WHEN type = 2 THEN amount ELSE 0 END), 0) AS income",
+                            "COALESCE(sum(CASE WHEN type = 3 THEN amount ELSE 0 END), 0) AS transfer",
+                            "count(*) AS tx_count");
+            rows = transactionMapper.selectMaps(wrapper);
+        }
         if (!rows.isEmpty()) {
             Map<String, Object> row = rows.get(0);
             vo.setExpense(asLong(row.get("expense")));
@@ -570,8 +624,11 @@ public class AdminServiceImpl implements AdminService {
      * <p>
      * 后台列表原本只有一串 ID，管理员看不出「这是谁的哪张卡、什么分类」，所以统一在这里批量翻译。
      * 名称缺失（记录已被删除）时保持为空，由前端回落到展示 ID。
+     *
+     * @param includeDeleted 查的是「含已删除」视图时，名称也要能查到已删除的账本 / 账户 / 分类，
+     *                       否则墓碑账单只剩一串 ID，管理员根本认不出这是哪一条
      */
-    private void fillDisplayNames(List<TransactionVO> records) {
+    private void fillDisplayNames(List<TransactionVO> records, boolean includeDeleted) {
         if (records.isEmpty()) {
             return;
         }
@@ -589,13 +646,19 @@ public class AdminServiceImpl implements AdminService {
         // 而流水里 toAccountId / categoryId 本来就可能为空（支出一类没有转入账户）
         Map<Long, String> bookNames = bookIds.isEmpty()
                 ? Collections.emptyMap()
-                : toNameMap(bookMapper.selectBatchIds(bookIds), BookEntity::getId, BookEntity::getName);
+                : toNameMap(includeDeleted
+                        ? bookMapper.selectNamesByIdsIgnoreDeleted(bookIds)
+                        : bookMapper.selectBatchIds(bookIds), BookEntity::getId, BookEntity::getName);
         Map<Long, String> accountNames = accountIds.isEmpty()
                 ? Collections.emptyMap()
-                : toNameMap(accountMapper.selectBatchIds(accountIds), AccountEntity::getId, AccountEntity::getName);
+                : toNameMap(includeDeleted
+                        ? accountMapper.selectNamesByIdsIgnoreDeleted(accountIds)
+                        : accountMapper.selectBatchIds(accountIds), AccountEntity::getId, AccountEntity::getName);
         Map<Long, String> categoryNames = categoryIds.isEmpty()
                 ? Collections.emptyMap()
-                : toNameMap(categoryMapper.selectBatchIds(categoryIds), CategoryEntity::getId, CategoryEntity::getName);
+                : toNameMap(includeDeleted
+                        ? categoryMapper.selectNamesByIdsIgnoreDeleted(categoryIds)
+                        : categoryMapper.selectBatchIds(categoryIds), CategoryEntity::getId, CategoryEntity::getName);
 
         for (TransactionVO vo : records) {
             vo.setBookName(bookNames.get(vo.getBookId()));
@@ -611,6 +674,168 @@ public class AdminServiceImpl implements AdminService {
             throw new BizException(ResultCode.ACCOUNT_NOT_FOUND);
         }
         return account;
+    }
+
+    /* ---------------- CSV 导出 ---------------- */
+
+    @Override
+    public CsvResult exportTransactions(AdminTransactionQueryRequest request) {
+        return exportInBatches((page, size) -> {
+            request.setPage(page);
+            request.setSize(size);
+            return pageTransactions(request);
+        }, TRANSACTION_HEADERS, AdminServiceImpl::transactionRow);
+    }
+
+    @Override
+    public CsvResult exportAccounts(AdminAccountQueryRequest request) {
+        return exportInBatches((page, size) -> {
+            request.setPage(page);
+            request.setSize(size);
+            return pageAccounts(request);
+        }, ACCOUNT_HEADERS, AdminServiceImpl::accountRow);
+    }
+
+    @Override
+    public CsvResult exportBooks(AdminBookQueryRequest request) {
+        return exportInBatches((page, size) -> {
+            request.setPage(page);
+            request.setSize(size);
+            return pageBooks(request);
+        }, BOOK_HEADERS, AdminServiceImpl::bookRow);
+    }
+
+    @Override
+    public CsvResult exportUsers(AdminUserQueryRequest request) {
+        return exportInBatches((page, size) -> {
+            request.setPage(page);
+            request.setSize(size);
+            return pageUsers(request);
+        }, USER_HEADERS, AdminServiceImpl::userRow);
+    }
+
+    /**
+     * 循环拉取分页数据，直到取完或触达 {@link #MAX_EXPORT_ROWS}。
+     * <p>
+     * 导出复用列表的查询方法而不是另写一套 SQL：这样「界面看到的」与「导出的」永远是
+     * 同一份数据、同一套筛选条件，不会因为两处条件写法不一致而出现对不上账的情况。
+     *
+     * @param pageFetcher (页码, 每页条数) -> 分页结果
+     * @param headers     表头
+     * @param rowMapper   单条记录 -> 一行单元格
+     */
+    private <T> CsvResult exportInBatches(BiFunction<Integer, Integer, PageResult<T>> pageFetcher,
+                                          List<String> headers,
+                                          Function<T, List<String>> rowMapper) {
+        List<List<String>> rows = new ArrayList<>();
+        boolean truncated = false;
+        int page = 1;
+        while (true) {
+            List<T> records = pageFetcher.apply(page, EXPORT_PAGE_SIZE).getRecords();
+            for (T record : records) {
+                if (rows.size() >= MAX_EXPORT_ROWS) {
+                    truncated = true;
+                    break;
+                }
+                rows.add(rowMapper.apply(record));
+            }
+            // 不足一页说明已经是最后一页；truncated 则说明后面还有但不再取了
+            if (truncated || records.size() < EXPORT_PAGE_SIZE) {
+                break;
+            }
+            page++;
+        }
+        return CsvExport.build(headers, rows, truncated);
+    }
+
+    private static List<String> transactionRow(TransactionVO vo) {
+        return List.of(
+                CsvExport.text(vo.getId()),
+                CsvExport.text(vo.getBookId()),
+                CsvExport.text(vo.getBookName()),
+                transactionTypeLabel(vo.getType()),
+                CsvExport.yuan(vo.getAmount()),
+                CsvExport.text(vo.getAccountName()),
+                CsvExport.text(vo.getToAccountName()),
+                CsvExport.text(vo.getCategoryName()),
+                CsvExport.text(vo.getRemark()),
+                vo.getTags() == null ? "" : String.join(" ", vo.getTags()),
+                CsvExport.time(vo.getTradeTime()),
+                CsvExport.time(vo.getUpdatedAt()),
+                vo.getDeleted() != null && vo.getDeleted() == 1 ? "已删除" : "正常");
+    }
+
+    private static List<String> accountRow(AdminAccountVO vo) {
+        return List.of(
+                CsvExport.text(vo.getId()),
+                CsvExport.text(vo.getBookId()),
+                CsvExport.text(vo.getBookName()),
+                CsvExport.text(vo.getOwnerUsername()),
+                CsvExport.text(vo.getName()),
+                accountTypeLabel(vo.getType()),
+                CsvExport.yuan(vo.getBalance()),
+                CsvExport.yuan(vo.getInitialBalance()),
+                CsvExport.text(vo.getCurrency()),
+                vo.getIncludeInTotal() != null && vo.getIncludeInTotal() == 1 ? "是" : "否",
+                CsvExport.time(vo.getCreatedAt()));
+    }
+
+    private static List<String> bookRow(BookVO vo) {
+        return List.of(
+                CsvExport.text(vo.getId()),
+                CsvExport.text(vo.getName()),
+                bookTypeLabel(vo.getType()),
+                CsvExport.text(vo.getCurrency()),
+                CsvExport.text(vo.getOwnerUsername()),
+                CsvExport.text(vo.getMemberCount()),
+                CsvExport.text(vo.getAccountCount()),
+                CsvExport.text(vo.getRemark()),
+                CsvExport.time(vo.getCreatedAt()));
+    }
+
+    private static List<String> userRow(UserVO vo) {
+        return List.of(
+                CsvExport.text(vo.getId()),
+                CsvExport.text(vo.getUsername()),
+                CsvExport.text(vo.getNickname()),
+                CsvExport.text(vo.getPhone()),
+                CsvExport.text(vo.getEmail()),
+                "ADMIN".equals(vo.getRole()) ? "管理员" : "普通用户",
+                vo.getStatus() != null && vo.getStatus() == 1 ? "正常" : "已禁用",
+                vo.getMustChangePassword() != null && vo.getMustChangePassword() == 1 ? "待改密" : "",
+                CsvExport.time(vo.getCreatedAt()),
+                CsvExport.time(vo.getLastLoginAt()));
+    }
+
+    private static String transactionTypeLabel(Integer type) {
+        return switch (type == null ? 0 : type) {
+            case 1 -> "支出";
+            case 2 -> "收入";
+            case 3 -> "转账";
+            default -> "";
+        };
+    }
+
+    private static String accountTypeLabel(Integer type) {
+        return switch (type == null ? 0 : type) {
+            case 1 -> "现金";
+            case 2 -> "储蓄卡";
+            case 3 -> "信用卡";
+            case 4 -> "支付宝";
+            case 5 -> "微信";
+            case 6 -> "投资";
+            case 7 -> "其他";
+            default -> "";
+        };
+    }
+
+    private static String bookTypeLabel(Integer type) {
+        return switch (type == null ? 0 : type) {
+            case 0 -> "个人";
+            case 1 -> "家庭";
+            case 2 -> "共享";
+            default -> "";
+        };
     }
 
     @Override

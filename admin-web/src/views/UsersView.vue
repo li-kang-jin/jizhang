@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { fetchUsers, resetUserPassword, updateUserStatus } from '@/api/admin'
+import { exportUsers, fetchUsers, resetUserPassword, updateUserStatus } from '@/api/admin'
 import type { UserQuery } from '@/api/admin'
 import { usePagedTable } from '@/composables/usePagedTable'
+import { finishExport, warnExportError } from '@/utils/export'
 import { formatDateTime } from '@/utils/format'
 import CopyText from '@/components/CopyText.vue'
 import PageToolbar from '@/components/PageToolbar.vue'
@@ -19,14 +20,19 @@ const query = reactive({
   role: undefined as string | undefined
 })
 
-const { loading, error, list, total, load, search, onPageChange, onSizeChange } = usePagedTable<UserInfo>(
-  (params) => fetchUsers(params as UserQuery),
-  query,
-  () => ({
+/** 列表与导出共用同一套筛选条件 */
+function buildParams() {
+  return {
     keyword: query.keyword || undefined,
     status: query.status,
     role: query.role
-  })
+  }
+}
+
+const { loading, error, list, total, load, search, onPageChange, onSizeChange } = usePagedTable<UserInfo>(
+  (params) => fetchUsers(params as UserQuery),
+  query,
+  buildParams
 )
 
 const hasFilter = computed(
@@ -38,6 +44,21 @@ function handleReset() {
   query.status = undefined
   query.role = undefined
   search()
+}
+
+/* ---------------- 导出 ---------------- */
+
+const exporting = ref(false)
+
+async function handleExport() {
+  exporting.value = true
+  try {
+    finishExport(await exportUsers(buildParams() as UserQuery), '用户')
+  } catch (error) {
+    warnExportError(error)
+  } finally {
+    exporting.value = false
+  }
 }
 
 /* 下钻：查看该用户的账本 */
@@ -134,6 +155,12 @@ onMounted(load)
           <span>查询</span>
         </el-button>
         <el-button @click="handleReset">重置</el-button>
+        <template #actions>
+          <el-button :loading="exporting" title="按当前筛选条件导出 CSV，单次最多 5 万条" @click="handleExport">
+            <el-icon><Download /></el-icon>
+            <span>导出</span>
+          </el-button>
+        </template>
       </PageToolbar>
 
       <el-table :data="list" v-loading="loading" stripe>

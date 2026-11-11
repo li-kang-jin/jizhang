@@ -1,5 +1,6 @@
 package com.jizhang.api.controller.admin;
 
+import com.jizhang.api.support.CsvDownload;
 import com.jizhang.common.api.PageResult;
 import com.jizhang.common.api.Result;
 import com.jizhang.common.constant.CommonConstants;
@@ -10,6 +11,7 @@ import com.jizhang.service.vo.AdminAccountVO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -42,6 +44,12 @@ public class AdminAccountController {
     @GetMapping
     public Result<PageResult<AdminAccountVO>> page(@Valid AdminAccountQueryRequest request) {
         return Result.success(adminService.pageAccounts(request));
+    }
+
+    @Operation(summary = "导出账户（CSV）", description = "与列表同一套筛选条件，单次最多 5 万条")
+    @GetMapping("/export")
+    public ResponseEntity<byte[]> export(@Valid AdminAccountQueryRequest request) {
+        return CsvDownload.of(adminService.exportAccounts(request), "accounts");
     }
 
     @Operation(summary = "创建账户")

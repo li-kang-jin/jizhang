@@ -1,5 +1,6 @@
 package com.jizhang.api.controller.admin;
 
+import com.jizhang.api.support.CsvDownload;
 import com.jizhang.common.api.PageResult;
 import com.jizhang.common.api.Result;
 import com.jizhang.common.constant.CommonConstants;
@@ -11,6 +12,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
+import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -39,6 +41,12 @@ public class AdminUserController {
     @GetMapping
     public Result<PageResult<UserVO>> page(@Valid AdminUserQueryRequest request) {
         return Result.success(adminService.pageUsers(request));
+    }
+
+    @Operation(summary = "导出用户（CSV）", description = "与列表同一套筛选条件，单次最多 5 万条")
+    @GetMapping("/export")
+    public ResponseEntity<byte[]> export(@Valid AdminUserQueryRequest request) {
+        return CsvDownload.of(adminService.exportUsers(request), "users");
     }
 
     @Operation(summary = "启用/禁用用户")

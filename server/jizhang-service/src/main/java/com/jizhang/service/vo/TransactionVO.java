@@ -53,6 +53,9 @@ public class TransactionVO {
 
     private OffsetDateTime updatedAt;
 
+    /** 0=正常 1=已逻辑删除（仅管理后台「含已删除」查询会返回 1，App 端恒为 0 或空） */
+    private Integer deleted;
+
     /*
      * 以下展示字段只由管理后台接口补齐（见 AdminServiceImpl#fillDisplayNames）：
      * App 端只认 ID，不需要额外的联表查询，保持为空即可。
@@ -91,6 +94,7 @@ public class TransactionVO {
         vo.setSource(entity.getSource());
         vo.setCreatedBy(entity.getCreatedBy());
         vo.setUpdatedAt(entity.getUpdatedAt());
+        vo.setDeleted(entity.getDeleted());
         return vo;
     }
 }

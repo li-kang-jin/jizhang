@@ -1,6 +1,7 @@
 package com.jizhang.api.config;
 
 import com.jizhang.api.security.JwtAuthenticationFilter;
+import com.jizhang.api.support.CsvDownload;
 import com.jizhang.api.security.RestAccessDeniedHandler;
 import com.jizhang.api.security.RestAuthenticationEntryPoint;
 import org.springframework.context.annotation.Bean;
@@ -82,7 +83,9 @@ public class SecurityConfig {
         configuration.setAllowedOriginPatterns(List.of("*"));
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("*"));
-        configuration.setExposedHeaders(List.of("X-Trace-Id"));
+        // 导出接口靠自定义响应头回传行数与截断标记，跨域时必须显式暴露，否则前端读不到
+        configuration.setExposedHeaders(List.of(
+                "X-Trace-Id", CsvDownload.HEADER_ROWS, CsvDownload.HEADER_TRUNCATED));
         configuration.setAllowCredentials(true);
         configuration.setMaxAge(3600L);
 

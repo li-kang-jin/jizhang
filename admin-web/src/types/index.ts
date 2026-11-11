@@ -96,6 +96,8 @@ export interface TransactionInfo {
   remark?: string
   source?: number
   updatedAt?: string
+  /** 0=正常 1=已删除（只有勾选「含已删除」时才会返回 1） */
+  deleted?: number
   /** 以下名称字段由后端管理端接口补齐，缺失时前端回落到展示 ID */
   bookName?: string
   accountName?: string

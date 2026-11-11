@@ -114,6 +114,10 @@ function requirePasswordChange() {
 
 service.interceptors.response.use(
   (response: AxiosResponse<ApiResult<unknown>>) => {
+    // 文件下载的响应体是 Blob，不是业务响应体；按 code 解包会把它误判成失败
+    if (response.config.responseType === 'blob') {
+      return response
+    }
     const result = response.data
     if (result.code === 0) {
       return response
@@ -160,6 +164,50 @@ export function put<T>(url: string, data?: unknown, params?: Record<string, unkn
 
 export function del<T>(url: string, params?: Record<string, unknown>): Promise<T> {
   return unwrap(service.delete<ApiResult<T>>(url, { params }))
+}
+
+export interface DownloadResult {
+  blob: Blob
+  /** 服务端实际导出的数据行数；未返回时为 undefined */
+  rows?: number
+  /** 是否因单次导出上限被截断（还有数据没导） */
+  truncated: boolean
+}
+
+/**
+ * 下载文件（CSV 导出）。
+ * <p>
+ * 与 get 的区别：响应体是文件流，需要 `responseType: 'blob'`，且超时放宽——导出要扫全表，
+ * 默认 15 秒经常不够。
+ */
+export async function download(url: string, params?: Record<string, unknown>): Promise<DownloadResult> {
+  const response = await service.get<Blob>(url, {
+    params,
+    responseType: 'blob',
+    timeout: 120000
+  })
+  const blob = response.data
+
+  // 服务端出错时返回的是 JSON（同样被包成 Blob）：还原成异常，避免把一段错误信息存成 .csv
+  if (blob.type.includes('json')) {
+    const text = await blob.text()
+    let message = '导出失败'
+    try {
+      const result = JSON.parse(text) as ApiResult<unknown>
+      message = result.message || message
+    } catch {
+      // 不是标准响应体就用默认文案
+    }
+    throw new Error(message)
+  }
+
+  const rows = Number(response.headers['x-export-rows'])
+  return {
+    blob,
+    // 0 也是有效值（导出空结果），只有后端没给这个头时才落到 undefined
+    rows: Number.isFinite(rows) ? rows : undefined,
+    truncated: String(response.headers['x-export-truncated']) === 'true'
+  }
 }
 
 export default service

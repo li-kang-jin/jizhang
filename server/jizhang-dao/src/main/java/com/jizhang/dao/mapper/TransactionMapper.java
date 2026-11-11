@@ -13,6 +13,7 @@ import org.apache.ibatis.annotations.Select;
 
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 交易流水 Mapper。
@@ -124,6 +125,70 @@ public interface TransactionMapper extends BaseMapper<TransactionEntity> {
     List<MemberStatRow> statByMember(@Param("bookId") Long bookId,
                                      @Param("start") OffsetDateTime start,
                                      @Param("end") OffsetDateTime end);
+
+    /* ---------------- 管理后台：含已删除流水 ---------------- */
+
+    /**
+     * 管理后台流水筛选条件。
+     * <p>
+     * 单独抽成常量供「列表 / 计数 / 合计」三条 SQL 复用，保证三者口径一致。
+     * 只能在 {@code <script>} 包裹的注解 SQL 里用：{@code @TableLogic} 不作用于手写 SQL，
+     * 因此「要不要把 deleted = 1 的墓碑记录算进来」必须在这里显式控制。
+     */
+    String ADMIN_FILTER = "WHERE 1 = 1 "
+            + "<if test='bookId != null'>AND book_id = #{bookId} </if>"
+            + "<if test='accountId != null'>AND (account_id = #{accountId} OR to_account_id = #{accountId}) </if>"
+            + "<if test='type != null'>AND type = #{type} </if>"
+            + "<if test=\"keyword != null and keyword != ''\">AND remark LIKE '%' || #{keyword} || '%' </if>"
+            + "<if test='startTime != null'>AND trade_time &gt;= #{startTime} </if>"
+            + "<if test='endTime != null'>AND trade_time &lt;= #{endTime} </if>"
+            + "<if test='bookIds != null'>AND book_id IN "
+            + "<foreach collection='bookIds' item='bid' open='(' separator=',' close=')'>#{bid}</foreach> </if>"
+            + "<if test='!includeDeleted'>AND deleted = 0 </if>";
+
+    /**
+     * 管理后台流水列表（支持把已删除记录一并查出来）。
+     * <p>
+     * 分页手写 LIMIT / OFFSET，不依赖 MyBatis-Plus 的分页插件：原生 SQL 里的
+     * {@code deleted} 条件由 {@link #ADMIN_FILTER} 决定，插件自动 count 会再把墓碑记录滤掉。
+     */
+    @Select("<script>SELECT * FROM t_transaction " + ADMIN_FILTER
+            + " ORDER BY trade_time DESC, id DESC LIMIT #{size} OFFSET #{offset}</script>")
+    List<TransactionEntity> selectAdminPage(@Param("bookId") Long bookId,
+                                            @Param("accountId") Long accountId,
+                                            @Param("type") Integer type,
+                                            @Param("keyword") String keyword,
+                                            @Param("startTime") OffsetDateTime startTime,
+                                            @Param("endTime") OffsetDateTime endTime,
+                                            @Param("bookIds") List<Long> bookIds,
+                                            @Param("includeDeleted") boolean includeDeleted,
+                                            @Param("size") int size,
+                                            @Param("offset") int offset);
+
+    /** 与 [selectAdminPage] 同一套筛选条件的总数 */
+    @Select("<script>SELECT count(*) FROM t_transaction " + ADMIN_FILTER + "</script>")
+    long countAdmin(@Param("bookId") Long bookId,
+                    @Param("accountId") Long accountId,
+                    @Param("type") Integer type,
+                    @Param("keyword") String keyword,
+                    @Param("startTime") OffsetDateTime startTime,
+                    @Param("endTime") OffsetDateTime endTime,
+                    @Param("bookIds") List<Long> bookIds,
+                    @Param("includeDeleted") boolean includeDeleted);
+
+    /** 与 [selectAdminPage] 同一套筛选条件的收支合计（转账单列，不计入收支） */
+    @Select("<script>SELECT COALESCE(sum(CASE WHEN type = 1 THEN amount ELSE 0 END), 0) AS expense, "
+            + "COALESCE(sum(CASE WHEN type = 2 THEN amount ELSE 0 END), 0) AS income, "
+            + "COALESCE(sum(CASE WHEN type = 3 THEN amount ELSE 0 END), 0) AS transfer, "
+            + "count(*) AS tx_count FROM t_transaction " + ADMIN_FILTER + "</script>")
+    List<Map<String, Object>> sumAdmin(@Param("bookId") Long bookId,
+                                       @Param("accountId") Long accountId,
+                                       @Param("type") Integer type,
+                                       @Param("keyword") String keyword,
+                                       @Param("startTime") OffsetDateTime startTime,
+                                       @Param("endTime") OffsetDateTime endTime,
+                                       @Param("bookIds") List<Long> bookIds,
+                                       @Param("includeDeleted") boolean includeDeleted);
 
     /* ---------------- 多端同步 ---------------- */
 

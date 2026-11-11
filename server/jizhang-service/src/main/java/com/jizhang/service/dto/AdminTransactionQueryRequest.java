@@ -32,6 +32,14 @@ public class AdminTransactionQueryRequest {
     @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
     private OffsetDateTime endTime;
 
+    /**
+     * 是否包含已删除（软删除 deleted = 1）的流水。
+     * <p>
+     * 默认 false，与 App / 后台其它列表口径一致：删除后的记录不再出现在正常视图里。
+     * 传 true 时列表与合计都会把墓碑记录一并纳入，供管理员排查「我删的那条去哪了」。
+     */
+    private Boolean includeDeleted = false;
+
     @Min(1)
     private Integer page = 1;
 
