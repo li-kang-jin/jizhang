@@ -149,6 +149,10 @@ class TransactionRepository @Inject constructor(
     suspend fun recentTagsByCategory(bookId: Long, categoryId: Long, limit: Int): List<String> =
         transactionDao.recentTagsByCategory(bookId, categoryId, limit)
 
+    /** 某个收支类型下最近若干条带标签账单的标签原文：转账没有分类，只能按类型取 */
+    suspend fun recentTagsByType(bookId: Long, type: Int, limit: Int): List<String> =
+        transactionDao.recentTagsByType(bookId, type, limit)
+
     /**
      * 每个账户被用过的次数（含转账的转入方），记账页据此只铺三个常用账户。
      * <p>
@@ -206,6 +210,10 @@ class TransactionRepository @Inject constructor(
         }
 
     /** 最近记过的若干笔账，记账页「再来一笔」模板用它做照抄 */
+    /** 最近若干笔转账，记账页统计「常用转账」组合用 */
+    suspend fun recentTransfers(bookId: Long, limit: Int): List<LocalTransaction> =
+        transactionDao.recentTransfers(bookId, limit)
+
     suspend fun recentTransactions(bookId: Long, limit: Int): List<LocalTransaction> =
         transactionDao.recentTransactions(bookId, limit)
 

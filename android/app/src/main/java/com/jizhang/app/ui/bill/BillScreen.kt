@@ -1181,6 +1181,10 @@ private fun TypeTag(type: Int) {
  * <p>
  * 分类放最前面：有备注时标题是备注，不把分类补在这里，等于这条账看不到类别。
  * 主标题本身就是分类名时跳过，避免「餐饮 · … · 餐饮」。
+ * <p>
+ * **转账是例外，账户排在时间前面**：「招行储蓄卡 → 微信零钱」这种一长串，放在时间后面
+ * 一截就被省略号吃掉了，列表里只剩「11-05 14:20 · 招行储…」，看不出钱走到哪儿。
+ * 转账副标题允许两行，正常账户名都放得下。
  */
 private fun subtitle(
     item: LocalTransaction,
@@ -1191,9 +1195,20 @@ private fun subtitle(
     creatorName: String?
 ): String =
     buildString {
-        categoryName?.takeIf { it.isNotBlank() && it != title }?.let { append("$it · ") }
-        append(formatDateTime(item.tradeTime))
-        accountName?.takeIf { it.isNotBlank() }?.let { append(" · $it") }
+        val transferAccounts = if (item.type == 3) {
+            accountName?.takeIf { it.isNotBlank() }
+        } else {
+            null
+        }
+        if (transferAccounts != null) {
+            append(transferAccounts)
+            append(" · ")
+            append(formatDateTime(item.tradeTime))
+        } else {
+            categoryName?.takeIf { it.isNotBlank() && it != title }?.let { append("$it · ") }
+            append(formatDateTime(item.tradeTime))
+            accountName?.takeIf { it.isNotBlank() }?.let { append(" · $it") }
+        }
         if (shared && !creatorName.isNullOrBlank()) append(" · $creatorName 记的")
         if (item.pendingSync) append(" · 待同步")
     }
@@ -1252,7 +1267,8 @@ private fun InfoCardRow(
                     ),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
+                    // 转账的「从哪到哪」给两行：账户名长，一行装不下
+                    maxLines = if (item.type == 3) 2 else 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
@@ -1306,6 +1322,14 @@ private fun CompactRow(
             text = buildString {
                 val title = billTitle(item, category?.name)
                 append(title)
+                // 转账把「从哪到哪」紧跟标题：只有一行，账户名压到最后一定被省略号吃掉，
+                // 剩下「转账 · 招行储…」，等于什么都没说
+                val transferAccounts = if (item.type == 3) {
+                    accountName?.takeIf { it.isNotBlank() }
+                } else {
+                    null
+                }
+                if (transferAccounts != null) append(" · $transferAccounts")
                 // 紧凑模板只有一行：分类（和标签）都压进这行文本里，标签已经当标题时不再重复
                 category?.name?.takeIf { it.isNotBlank() && it != title }?.let {
                     append(" · $it")
@@ -1313,7 +1337,9 @@ private fun CompactRow(
                 if (!tagsUsedAsTitle(item)) {
                     inlineTags(item.tags)?.let { append(" · $it") }
                 }
-                accountName?.takeIf { it.isNotBlank() }?.let { append(" · $it") }
+                if (transferAccounts == null) {
+                    accountName?.takeIf { it.isNotBlank() }?.let { append(" · $it") }
+                }
                 if (shared && !creatorName.isNullOrBlank()) append(" · $creatorName")
                 if (item.pendingSync) append(" · 待同步")
             },
@@ -1390,7 +1416,8 @@ private fun ListRow(
                     ),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
+                    // 转账的「从哪到哪」给两行：账户名长，一行装不下
+                    maxLines = if (item.type == 3) 2 else 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 if (tags.isNotEmpty() && !tagsUsedAsTitle(item)) {

@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
@@ -31,7 +33,14 @@ fun typeColor(type: Int): Color = when (type) {
 @Composable
 fun CategoryBadge(type: Int, icon: String?, size: Dp, name: String? = null, color: String? = null) {
     val hasCategory = icon != null || name != null
-    val tint = if (hasCategory) categoryTintOn(categoryColorOf(color, icon, name)) else typeColor(type)
+    // 转账没有分类：给一枚「换向箭头」而不是通用的「其他」图形 ——
+    // 之前账单列表里转账和「无分类」长得一模一样，扫一眼分不出这是笔转账
+    val isTransfer = !hasCategory && type == 3
+    val tint = when {
+        hasCategory -> categoryTintOn(categoryColorOf(color, icon, name))
+        isTransfer -> AppColors.accent
+        else -> typeColor(type)
+    }
     Box(
         modifier = Modifier
             .size(size)
@@ -43,7 +52,7 @@ fun CategoryBadge(type: Int, icon: String?, size: Dp, name: String? = null, colo
         contentAlignment = Alignment.Center
     ) {
         Icon(
-            imageVector = categoryIconOf(icon, name),
+            imageVector = if (isTransfer) Icons.Filled.SwapHoriz else categoryIconOf(icon, name),
             contentDescription = null,
             tint = tint,
             modifier = Modifier.size(size * 0.5f)

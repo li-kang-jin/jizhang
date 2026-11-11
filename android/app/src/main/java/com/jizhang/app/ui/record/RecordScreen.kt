@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -34,6 +35,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ArrowRightAlt
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandMore
@@ -66,6 +68,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -582,7 +585,8 @@ private fun quickAccounts(state: RecordViewModel.UiState): List<LocalAccount> =
  * 高度只有一行芯片），右侧「＋」留给候选里没有的标签（弹窗里可以手打、可以一次加多个）。
  *
  * 候选由 ViewModel 按**当前分类**算好（[RecordViewModel.refreshTagSuggestions]），
- * 换分类时整排换掉，记「交通」不会再刷出「晚餐」。
+ * 换分类时整排换掉，记「交通」不会再刷出「晚餐」；转账没有分类，按「最近记的转账」取，
+ * 自己打过的标签排在最前面。
  */
 @Composable
 private fun TagQuickBar(
@@ -867,6 +871,28 @@ private fun dateShortLabel(date: LocalDate): String =
 @Composable
 private fun TransferSection(state: RecordViewModel.UiState, viewModel: RecordViewModel) {
     val accent = accentOf(state.type)
+    // 常用转账：常点的「A → B」组合直接给一枚芯片，省掉在两组账户里各翻一次。
+    // 只套账户、不动金额 —— 转账金额每笔都不同，照抄上一笔比不填更危险。
+    if (state.transferTemplates.isNotEmpty()) {
+        SectionTitle("常用转账")
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            state.transferTemplates.forEach { template ->
+                TransferTemplateChip(
+                    template = template,
+                    from = state.accounts.firstOrNull { it.id == template.fromId },
+                    to = state.accounts.firstOrNull { it.id == template.toId },
+                    selected = state.selectedAccountId == template.fromId &&
+                        state.selectedToAccountId == template.toId,
+                    onClick = { viewModel.applyTransferTemplate(template.fromId, template.toId) }
+                )
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+    }
     SectionTitle("转出账户")
     Spacer(Modifier.height(8.dp))
     AccountChips(
@@ -924,9 +950,97 @@ private fun TransferSection(state: RecordViewModel.UiState, viewModel: RecordVie
         }
         Spacer(Modifier.height(6.dp))
         Text(
-            text = "选中后这笔钱会计入该品种的成本（转入算买入、转出算卖出），之后在投资页看盈亏。",
+            text = if (state.positionIsBuy) {
+                "选中后这笔钱会计入该品种的成本（买入），之后在投资页看盈亏。"
+            } else {
+                "从投资账户转出就是卖出：选中后成本会减掉这笔钱。" +
+                    "不选的话只减本金、不减成本，投资页会显示「本金比成本少」。"
+            },
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+/**
+ * 常用转账芯片：[转出账户] → [转入账户]。
+ *
+ * 两侧各带自己的类型图标，中间一枚箭头：不读完整名字也能看出钱从哪走到哪。
+ * 名字过长时只截断名字本身，方向（箭头）永远在，不会被省略号一起吃掉。
+ */
+@Composable
+private fun TransferTemplateChip(
+    template: TransferTemplate,
+    from: LocalAccount?,
+    to: LocalAccount?,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    val shape = RoundedCornerShape(12.dp)
+    val accent = AppColors.accent
+    Row(
+        modifier = Modifier
+            .clip(shape)
+            .background(
+                if (selected) accent.copy(alpha = 0.14f)
+                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+            )
+            .then(
+                if (selected) Modifier.border(1.dp, accent.copy(alpha = 0.55f), shape) else Modifier
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        AccountGlyph(from, 18.dp, 11.dp)
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = template.fromName,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.widthIn(max = 72.dp)
+        )
+        Spacer(Modifier.width(4.dp))
+        Icon(
+            imageVector = Icons.Filled.ArrowRightAlt,
+            contentDescription = "从转出账户转到转入账户",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+            modifier = Modifier.size(14.dp)
+        )
+        Spacer(Modifier.width(4.dp))
+        Text(
+            text = template.toName,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.widthIn(max = 72.dp)
+        )
+        Spacer(Modifier.width(6.dp))
+        AccountGlyph(to, 18.dp, 11.dp)
+    }
+}
+
+/** 账户类型小徽标；账户缺失（被删 / 归档）时留空，避免芯片错位 */
+@Composable
+private fun AccountGlyph(account: LocalAccount?, size: Dp, iconSize: Dp) {
+    if (account == null) return
+    val key = accountIconKeyOf(account.icon, account.type)
+    val color = accountColorOf(account.icon, account.type)
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(color.copy(alpha = 0.16f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = accountIconOf(key),
+            contentDescription = null,
+            tint = accountIconTintOf(key, color),
+            modifier = Modifier.size(iconSize)
         )
     }
 }

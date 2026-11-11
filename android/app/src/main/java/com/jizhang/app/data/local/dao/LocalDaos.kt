@@ -162,6 +162,19 @@ interface TransactionDao {
     suspend fun recentTagsByCategory(bookId: Long, categoryId: Long, limit: Int): List<String>
 
     /**
+     * 某个收支类型下最近若干条带标签账单的标签原文。
+     * <p>
+     * 转账没有分类（`categoryId` 为空），按分类取标签对它是无效查询：候选只能靠这一条，
+     * 否则在转账上打的标签永远进不了「常用标签」。
+     */
+    @Query(
+        "SELECT tags FROM local_transaction WHERE bookId = :bookId AND type = :type " +
+            "AND pendingDelete = 0 AND tags IS NOT NULL AND tags != '' " +
+            "ORDER BY tradeTime DESC LIMIT :limit"
+    )
+    suspend fun recentTagsByType(bookId: Long, type: Int, limit: Int): List<String>
+
+    /**
      * 最近若干笔账单用到的账户，记账页据此算「常用账户」。
      * <p>
      * 只取最近一段（按记账时间倒序）而不是全历史：半年前用得多的卡现在早就不用了，
@@ -232,6 +245,19 @@ interface TransactionDao {
             "ORDER BY tradeTime DESC, id DESC LIMIT :limit"
     )
     suspend fun recentTransactions(bookId: Long, limit: Int): List<LocalTransaction>
+
+    /**
+     * 最近若干笔转账（最新在前），记账页的「常用转账」用它统计常点的账户组合。
+     * <p>
+     * 只要转账：支出 / 收入没有「从哪到哪」这回事；转出、转入任一账户被删掉的记录
+     * 由调用方过滤（有外键也不代表账户还是可用状态）。
+     */
+    @Query(
+        "SELECT * FROM local_transaction WHERE bookId = :bookId AND type = 3 " +
+            "AND toAccountId IS NOT NULL AND pendingDelete = 0 " +
+            "ORDER BY tradeTime DESC, id DESC LIMIT :limit"
+    )
+    suspend fun recentTransfers(bookId: Long, limit: Int): List<LocalTransaction>
 
     /**
      * 某个账户的流水（转出或转入都算），账户详情页用。

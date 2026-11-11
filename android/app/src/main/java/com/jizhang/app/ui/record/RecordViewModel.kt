@@ -61,11 +61,14 @@ class RecordViewModel @Inject constructor(
         /** 转账的转入账户 */
         val selectedToAccountId: Long? = null,
         /**
-         * 转入账户下的投资品种（只有转入「投资」账户时才非空）。
+         * 这笔转账能挂的投资品种：转入投资账户时是买入，转出投资账户时是卖出。
          * 选中某个品种 = 这笔转账计入它的成本；不选也照样能记，只是钱落在「未分配」里。
          */
         val positions: List<LocalInvestPosition> = emptyList(),
         val selectedPositionId: Long? = null,
+
+        /** 常用转账组合：最近常点的「A → B」，只在转账模式下非空 */
+        val transferTemplates: List<TransferTemplate> = emptyList(),
         val selectedCategoryId: Long? = null,
         val tradeDate: LocalDate = LocalDate.now(),
         val remark: String = "",
@@ -91,6 +94,11 @@ class RecordViewModel @Inject constructor(
             get() = CalcEngine.resultFen(tokens) != null &&
                 selectedAccountId != null &&
                 (type != 3 || selectedToAccountId != null)
+
+        /** 这次转账挂品种的方向：转入投资账户是买入，转出投资账户是卖出 */
+        val positionIsBuy: Boolean
+            get() = selectedToAccountId != null &&
+                accounts.any { it.id == selectedToAccountId && it.type == ACCOUNT_TYPE_INVEST }
     }
 
     private val _state = MutableStateFlow(UiState())
@@ -206,6 +214,7 @@ class RecordViewModel @Inject constructor(
                 )
             }
             refreshTagSuggestions()
+            refreshTransferTemplates()
         }
     }
 
@@ -263,17 +272,27 @@ class RecordViewModel @Inject constructor(
             }
             // 编辑态同样要刷新：用户可能刚在账单页改过标签、或新记了一笔
             refreshTagSuggestions()
+            refreshTransferTemplates()
 
-            // 编辑一笔「转入投资账户」的转账时，把它挂过的品种回填出来。
-            // 品种可能已被删除 —— 那就留空，并让这笔转账退回到「未分配」。
-            val toAccountId = transaction.toAccountId
-            if (transaction.type == 3 && toAccountId != null) {
-                val list = runCatching { investmentRepository.positionsOfAccount(toAccountId) }
-                    .getOrDefault(emptyList())
+            // 编辑一笔转账时，把「能挂的品种」和「已经挂上的品种」一起回填。
+            // 买入看转入账户、卖出看转出账户 —— 只认转入的话，赎回那笔回填不出品种，
+            // 用户只看到「本金比成本少」，却不知道该去哪儿改。
+            // 品种可能已被删除：那就留空，并让这笔转账退回到「未分配」。
+            if (transaction.type == 3) {
+                _state.update { it.copy(selectedPositionId = null) }
+                reloadPositionOptions()
                 val attached = runCatching {
                     investmentRepository.positionIdOfTransaction(transaction.id)
-                }.getOrNull()?.takeIf { id -> list.any { it.id == id } }
-                _state.update { it.copy(positions = list, selectedPositionId = attached) }
+                }.getOrNull()
+                if (attached != null) {
+                    _state.update { latest ->
+                        if (latest.positions.any { it.id == attached }) {
+                            latest.copy(selectedPositionId = attached)
+                        } else {
+                            latest
+                        }
+                    }
+                }
             }
         }
     }
@@ -289,6 +308,10 @@ class RecordViewModel @Inject constructor(
      * 账单做词频统计，不让用户先维护一套标签体系；再叠加一层按分类名匹配的小字典，
      * 保证切换分类时候选跟着变（记「交通」不会再刷出「晚餐」）。
      * <p>
+     * **转账是例外**：它没有分类，按分类取标签是空查询，只能按类型（转账）取历史；
+     * 也不再掺「午餐 / 晚餐 / 打车」这些内置支出词 —— 否则 8 个候选位会被它们占满，
+     * 自己刚在转账上打的标签永远排不进去，下一次就"找不到"了。
+     * <p>
      * 标签随时可能被别处改掉（账单页删一笔、导入、换账本），所以打开页面、切换分类与每次保存后
      * 都重新拉一遍，不做缓存。
      *
@@ -299,6 +322,18 @@ class RecordViewModel @Inject constructor(
         val current = _state.value
         val categoryId = current.selectedCategoryId
         val categoryName = current.categories.firstOrNull { it.id == categoryId }?.name
+        val isTransfer = current.type == 3
+
+        // 转账没有分类（categoryId 为空），按分类取标签是空查询，剩下的候选只有
+        // 「午餐 / 晚餐 / 打车」这些内置支出词 —— 8 个位置被它们占满，自己刚在转账上
+        // 打的标签永远排不进去，下一次自然「找不到」。所以转账单独按类型取历史，且不掺内置词。
+        val byType = if (isTransfer) {
+            runCatching {
+                transactionRepository.recentTagsByType(current.bookId, current.type, TAG_HISTORY_LIMIT)
+            }.getOrDefault(emptyList()).rankByFrequency()
+        } else {
+            emptyList()
+        }
 
         val byCategory = categoryId?.let { id ->
             runCatching { transactionRepository.recentTagsByCategory(current.bookId, id, TAG_HISTORY_LIMIT) }
@@ -310,11 +345,15 @@ class RecordViewModel @Inject constructor(
             .rankByFrequency()
 
         val dictionaryTags = tagsForCategory(categoryName)
-        val dictionary = dictionaryTags + if (current.type == 2) defaultIncomeTags else defaultExpenseTags
+        val dictionary = if (isTransfer) {
+            emptyList()
+        } else {
+            dictionaryTags + if (current.type == 2) defaultIncomeTags else defaultExpenseTags
+        }
 
         _state.update { state ->
-            // 连点分类时先发后到的旧结果不能覆盖当前分类：结果回来时分类已经变了就丢弃
-            if (state.selectedCategoryId != categoryId) {
+            // 连点分类 / 切类型时先发后到的旧结果不能覆盖当前选择：结果回来时已经变了就丢弃
+            if (state.selectedCategoryId != categoryId || state.type != current.type) {
                 state
             } else {
                 state.copy(
@@ -323,7 +362,8 @@ class RecordViewModel @Inject constructor(
                     } else {
                         state.tags
                     },
-                    tagSuggestions = (byCategory + dictionary + byHistory)
+                    // 转账的历史标签排在最前：它才是「刚才那笔转账打了什么」
+                    tagSuggestions = (byType + byCategory + dictionary + byHistory)
                         .distinct()
                         .take(TAG_SUGGESTION_LIMIT)
                 )
@@ -473,6 +513,10 @@ class RecordViewModel @Inject constructor(
         _state.update { it.copy(type = type) }
         viewModelScope.launch {
             loadCategories(_state.value.bookId, type)
+            // 切到/切出转账时，品种选项要按当前账户重新算（切走就该清空）
+            reloadPositionOptions()
+            // 常用转账只在转账模式下出现，切走就清空
+            refreshTransferTemplates()
             // 分类列表重置成第一个了，标签候选与已选标签要跟着换成新分类的
             refreshTagSuggestions(pruneTags = true)
         }
@@ -498,6 +542,11 @@ class RecordViewModel @Inject constructor(
 
     fun selectAccount(id: Long) {
         _state.update { it.copy(selectedAccountId = id) }
+        // 转账的转出账户也可能是投资账户（卖出）：换账户后品种选项要跟着换，
+        // 否则「基金赎回转到微信」这一步永远选不到基金，只能眼睁睁看着本金少、成本不动
+        if (_state.value.type == 3) {
+            viewModelScope.launch { reloadPositionOptions() }
+        }
     }
 
     /**
@@ -507,19 +556,91 @@ class RecordViewModel @Inject constructor(
      * 具体基金 / 股票上，成本自动累计，不必事后再去投资页手填一遍。
      */
     fun selectToAccount(id: Long) {
-        _state.update {
-            it.copy(selectedToAccountId = id, selectedPositionId = null, positions = emptyList())
-        }
-        viewModelScope.launch {
-            val list = runCatching { investmentRepository.positionsOfAccount(id) }
-                .getOrDefault(emptyList())
-            // 加载期间用户可能又换了账户：只落在仍选中的那个上，否则会把 A 的品种挂到 B 上
-            _state.update { if (it.selectedToAccountId == id) it.copy(positions = list) else it }
-        }
+        _state.update { it.copy(selectedToAccountId = id, selectedPositionId = null) }
+        viewModelScope.launch { reloadPositionOptions() }
     }
 
     fun selectPosition(id: Long?) {
         _state.update { it.copy(selectedPositionId = id) }
+    }
+
+    /**
+     * 一键套用常用转账组合。
+     * <p>
+     * 只填「从哪到哪」两个账户，金额、备注、标签都不碰 —— 转账金额每次都不一样，
+     * 照抄上一笔的金额比不填更危险。品种也跟着账户重新算（买入 / 卖出可能互换）。
+     */
+    fun applyTransferTemplate(fromId: Long, toId: Long) {
+        if (fromId == toId) return
+        _state.update {
+            it.copy(
+                selectedAccountId = fromId,
+                selectedToAccountId = toId,
+                selectedPositionId = null
+            )
+        }
+        viewModelScope.launch { reloadPositionOptions() }
+    }
+
+    /**
+     * 重新统计「常用转账」。
+     *
+     * 统计窗口取最近 [TRANSFER_HISTORY_LIMIT] 笔转账，按「转出 → 转入」组合去重，
+     * 用得多的排前面；组合里的账户被删掉或归档后自然不再出现。
+     * 只在转账模式下有意义，切走就清空，避免把上一条账本的组合带到支出页。
+     */
+    private suspend fun refreshTransferTemplates() {
+        val current = _state.value
+        if (current.type != 3 || current.bookId <= 0L) {
+            if (current.transferTemplates.isNotEmpty()) {
+                _state.update { it.copy(transferTemplates = emptyList()) }
+            }
+            return
+        }
+        val rows = runCatching {
+            transactionRepository.recentTransfers(current.bookId, TRANSFER_HISTORY_LIMIT)
+        }.getOrDefault(emptyList())
+        val templates = pickTransferTemplates(rows, current.accounts, TRANSFER_TEMPLATE_LIMIT)
+        _state.update { if (it.type == 3) it.copy(transferTemplates = templates) else it }
+    }
+
+    /**
+     * 重新拉「这笔转账能挂哪些品种」。
+     *
+     * 两个方向都覆盖：钱**转入**投资账户是买入，从投资账户**转出**是卖出。
+     * 只有做到这一步，赎回（基金 → 微信）才会同时减本金和扣成本；
+     * 少了它，本金减了、成本没动，投资页就会冒出「本金比成本少」的负数。
+     *
+     * 不选也能存（钱落在「未分配」），所以这里只给选项，不替用户决定。
+     */
+    private suspend fun reloadPositionOptions() {
+        val accountId = _state.value.positionOptionsAccountId()
+        if (accountId == null) {
+            _state.update {
+                if (it.positions.isEmpty() && it.selectedPositionId == null) {
+                    it
+                } else {
+                    it.copy(positions = emptyList(), selectedPositionId = null)
+                }
+            }
+            return
+        }
+        val list = runCatching { investmentRepository.positionsOfAccount(accountId) }
+            .getOrDefault(emptyList())
+        _state.update { latest ->
+            // 加载期间用户可能又换了账户 / 类型：只有还落在同一个投资账户上才采用，
+            // 否则会把 A 账户的品种悄悄挂到 B 的转账上
+            if (latest.positionOptionsAccountId() != accountId) {
+                latest
+            } else {
+                latest.copy(
+                    positions = list,
+                    selectedPositionId = latest.selectedPositionId?.takeIf { id ->
+                        list.any { it.id == id }
+                    }
+                )
+            }
+        }
     }
 
     fun selectCategory(id: Long) {
@@ -652,6 +773,8 @@ class RecordViewModel @Inject constructor(
                 _state.update { it.copy(accountUsage = usage) }
                 // 刚记完的这笔立刻进「常用标签 / 最近记过」：连着记下一笔时不用重新打
                 refreshTagSuggestions()
+                // 刚记的转账组合也要进「常用转账」，下一次一笔就能点出来
+                refreshTransferTemplates()
                 // 同理，这笔的备注与标签马上成为下一条的参考样本（连着记同类账时最有用）
                 refreshNoteSamples(current.bookId)
             }
@@ -777,8 +900,8 @@ class RecordViewModel @Inject constructor(
                 remark = "",
                 tags = "",
                 selectedToAccountId = null,
-                // 品种是跟着「转入账户」走的：转入账户清空了，它也必须一起清，否则会把
-                // 上一笔的品种悄悄挂到下一笔转账上
+                // 品种是跟着「投资账户」走的那一端（转入买入 / 转出卖出）：账户清空了，
+                // 它也必须一起清，否则会把上一笔的品种悄悄挂到下一笔转账上
                 positions = emptyList(),
                 selectedPositionId = null,
                 // **故意**保留 selectedAccountId：记账是连着记的，钱包/银行卡通常不变，
@@ -813,6 +936,30 @@ class RecordViewModel @Inject constructor(
             }
         }
     }
+}
+
+/* -------------------- 品种挂靠 -------------------- */
+
+/** 投资账户类型（`local_account.type = 6`）：余额是本金，转入算买入、转出算卖出 */
+private const val ACCOUNT_TYPE_INVEST = 6
+
+/**
+ * 这笔转账该挂哪个投资账户的品种。
+ *
+ * 转入投资账户 = 买入（钱进组合），转出投资账户 = 卖出（钱离开组合），两个方向都要能挂：
+ * 只认转入的话，「基金赎回转到微信」就永远选不到基金，本金减了、成本不动，
+ * 投资页会一直挂着一条「本金比成本少」。
+ * 两端都是投资账户时以转入为准 —— 一笔转账只能挂一个品种，先把买入侧的成本记对。
+ */
+internal fun RecordViewModel.UiState.positionOptionsAccountId(): Long? = when {
+    type != 3 -> null
+    selectedToAccountId != null &&
+        accounts.any { it.id == selectedToAccountId && it.type == ACCOUNT_TYPE_INVEST } ->
+        selectedToAccountId
+    selectedAccountId != null &&
+        accounts.any { it.id == selectedAccountId && it.type == ACCOUNT_TYPE_INVEST } ->
+        selectedAccountId
+    else -> null
 }
 
 /* -------------------- 默认分类 -------------------- */
@@ -876,6 +1023,65 @@ internal fun pickQuickAccounts(
         }
     }
     return top
+}
+
+/* -------------------- 常用转账 -------------------- */
+
+/** 记账页最多铺几个常用转账组合：再多就要横滚找，「顺手」的意义就没了 */
+private const val TRANSFER_TEMPLATE_LIMIT = 4
+
+/** 统计频次的窗口：最近这么多笔转账足够反映习惯，也不必扫全表 */
+private const val TRANSFER_HISTORY_LIMIT = 120
+
+/** 一个可以一键套用的转账组合（只记「从哪到哪」，不含金额） */
+data class TransferTemplate(
+    val fromId: Long,
+    val toId: Long,
+    val fromName: String,
+    val toName: String
+)
+
+/**
+ * 从最近的转账流水里挑出「常用转账」组合（纯函数，便于单测）。
+ *
+ * 规则：
+ * 1. 按「转出账户 → 转入账户」组合去重，**用得多的在前**；
+ * 2. 次数相同取**最近一次更近的**（[sortedWith] 是稳定排序，entries 已按时间倒序插入）；
+ * 3. 账户被删或已归档的组合不再提供 —— 点一下就会填进一个不能用的账户；
+ * 4. 只要转出、转入都还在的组合，自己转给自己的脏数据（理论上不会出现）直接跳过。
+ *
+ * 金额、备注、标签都不进模板：转账金额每笔都不一样，照抄上一笔比不填更危险。
+ */
+internal fun pickTransferTemplates(
+    transfers: List<LocalTransaction>,
+    accounts: List<LocalAccount>,
+    limit: Int
+): List<TransferTemplate> {
+    if (limit <= 0) return emptyList()
+    val usable = accounts.filterNot { it.archived }.associateBy { it.id }
+    // key = 转出 → 转入；value = [次数, 最近一次时间]
+    val stats = LinkedHashMap<Pair<Long, Long>, LongArray>()
+    transfers.forEach { transfer ->
+        val toId = transfer.toAccountId ?: return@forEach
+        val fromId = transfer.accountId
+        if (fromId == toId) return@forEach
+        if (usable[fromId] == null || usable[toId] == null) return@forEach
+        val acc = stats.getOrPut(fromId to toId) { LongArray(2) }
+        acc[0]++
+        // 流水按 tradeTime 倒序，第一次遇到这个组合就是它最近一次
+        if (acc[1] == 0L) acc[1] = transfer.tradeTime
+    }
+    return stats.entries
+        .sortedWith(
+            compareByDescending<Map.Entry<Pair<Long, Long>, LongArray>> { it.value[0] }
+                .thenByDescending { it.value[1] }
+        )
+        .take(limit)
+        .map { (key, _) ->
+            val from = usable.getValue(key.first)
+            val to = usable.getValue(key.second)
+            TransferTemplate(from.id, to.id, from.name, to.name)
+        }
 }
 
 /* -------------------- 标签文本 ⇄ 标签列表 -------------------- */
