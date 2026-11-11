@@ -403,8 +403,16 @@ public class AdminServiceImpl implements AdminService {
                 .eq(request.getBookId() != null, "book_id", request.getBookId())
                 .eq(request.getType() != null, "type", request.getType())
                 .ge(request.getStartTime() != null, "trade_time", request.getStartTime())
-                .le(request.getEndTime() != null, "trade_time", request.getEndTime())
-                .like(StrUtil.isNotBlank(request.getKeyword()), "remark", request.getKeyword());
+                .le(request.getEndTime() != null, "trade_time", request.getEndTime());
+
+        // 关键字同时搜备注与标签：很多人记账不写备注、只打标签，只搜 remark 会让他们搜不到自己记的账。
+        // tags 是 JSONB，转 text 后形如 ["早餐","公司"]，LIKE 即可命中；apply 用占位符传参，不拼字符串。
+        String keyword = request.getKeyword();
+        if (StrUtil.isNotBlank(keyword)) {
+            wrapper.and(w -> w.like("remark", keyword)
+                    .or()
+                    .apply("tags::text LIKE {0}", "%" + keyword + "%"));
+        }
 
         // 转账时「这个账户发生的事」也包含它作为转入方的那一条，所以两个字段都要看
         if (request.getAccountId() != null) {

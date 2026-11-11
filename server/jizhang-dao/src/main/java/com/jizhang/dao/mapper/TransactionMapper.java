@@ -139,7 +139,9 @@ public interface TransactionMapper extends BaseMapper<TransactionEntity> {
             + "<if test='bookId != null'>AND book_id = #{bookId} </if>"
             + "<if test='accountId != null'>AND (account_id = #{accountId} OR to_account_id = #{accountId}) </if>"
             + "<if test='type != null'>AND type = #{type} </if>"
-            + "<if test=\"keyword != null and keyword != ''\">AND remark LIKE '%' || #{keyword} || '%' </if>"
+            // 关键字搜备注与标签：tags 是 JSONB，转 text 后 LIKE 才能命中，否则只打标签的账单搜不出来
+            + "<if test=\"keyword != null and keyword != ''\">AND (remark LIKE '%' || #{keyword} || '%' "
+            + "OR tags::text LIKE '%' || #{keyword} || '%') </if>"
             + "<if test='startTime != null'>AND trade_time &gt;= #{startTime} </if>"
             + "<if test='endTime != null'>AND trade_time &lt;= #{endTime} </if>"
             + "<if test='bookIds != null'>AND book_id IN "

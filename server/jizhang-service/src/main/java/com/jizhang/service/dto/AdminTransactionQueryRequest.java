@@ -24,6 +24,7 @@ public class AdminTransactionQueryRequest {
     /** 1=支出 2=收入 3=转账 */
     private Integer type;
 
+    /** 模糊关键字：同时匹配备注与标签（很多人只打标签不写备注） */
     private String keyword;
 
     @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)

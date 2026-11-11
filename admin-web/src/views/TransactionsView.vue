@@ -12,6 +12,7 @@ import CopyText from '@/components/CopyText.vue'
 import EntitySelect from '@/components/EntitySelect.vue'
 import PageToolbar from '@/components/PageToolbar.vue'
 import TableEmpty from '@/components/TableEmpty.vue'
+import TagList from '@/components/TagList.vue'
 import type { TransactionInfo, TransactionSummary } from '@/types'
 
 const route = useRoute()
@@ -190,7 +191,7 @@ onMounted(() => {
           :inactive-value="false"
           @change="handleSearch"
         />
-        <el-input v-model="query.keyword" placeholder="备注关键字" clearable @keyup.enter="handleSearch" />
+        <el-input v-model="query.keyword" placeholder="备注 / 标签关键字" clearable @keyup.enter="handleSearch" />
         <EntitySelect v-model="query.bookId" :loader="loadBookOptions" placeholder="账本" width="190px" :selected-label="bookLabel" />
         <EntitySelect
           v-model="query.accountId"
@@ -275,6 +276,11 @@ onMounted(() => {
         </el-table-column>
         <el-table-column label="分类" min-width="120">
           <template #default="{ row }">{{ row.categoryName || row.categoryId || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="标签" min-width="150">
+          <template #default="{ row }">
+            <TagList :tags="row.tags" />
+          </template>
         </el-table-column>
         <el-table-column prop="remark" label="备注" min-width="140">
           <template #default="{ row }">{{ row.remark || '-' }}</template>

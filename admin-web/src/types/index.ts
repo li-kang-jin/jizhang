@@ -94,6 +94,8 @@ export interface TransactionInfo {
   categoryId?: string
   tradeTime: string
   remark?: string
+  /** 标签（App 端记的标签，如「早餐」「出差」） */
+  tags?: string[]
   source?: number
   updatedAt?: string
   /** 0=正常 1=已删除（只有勾选「含已删除」时才会返回 1） */

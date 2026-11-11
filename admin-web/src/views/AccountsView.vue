@@ -20,6 +20,7 @@ import CopyText from '@/components/CopyText.vue'
 import EntitySelect from '@/components/EntitySelect.vue'
 import PageToolbar from '@/components/PageToolbar.vue'
 import TableEmpty from '@/components/TableEmpty.vue'
+import TagList from '@/components/TagList.vue'
 import type { AccountInfo, TransactionInfo } from '@/types'
 
 const query = reactive({
@@ -447,6 +448,11 @@ onMounted(load)
         </el-table-column>
         <el-table-column label="分类" min-width="120">
           <template #default="{ row }">{{ row.categoryName || row.categoryId || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="标签" min-width="140">
+          <template #default="{ row }">
+            <TagList :tags="row.tags" />
+          </template>
         </el-table-column>
         <el-table-column label="账户" min-width="140">
           <template #default="{ row }">
