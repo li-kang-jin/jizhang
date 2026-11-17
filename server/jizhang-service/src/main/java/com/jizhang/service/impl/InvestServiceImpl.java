@@ -173,6 +173,9 @@ public class InvestServiceImpl implements InvestService {
         entity.setSort(dto.getSort() == null ? 0 : dto.getSort());
         entity.setNote(trimToNull(dto.getNote()));
         entity.setArchived(dto.getArchived() != null && dto.getArchived() ? 1 : 0);
+        // 已实现损益可以为负（亏损清仓），不能像成本那样截到 0
+        entity.setRealizedFen(dto.getRealizedFen() == null ? 0L : dto.getRealizedFen());
+        entity.setClosedAt(dto.getClosedAt());
     }
 
     private int normalizeKind(Integer kind) {

@@ -42,6 +42,20 @@ data class LocalInvestPosition(
     val targetPercent: Int = 0,
     val sort: Int = 0,
     val note: String? = null,
+    /**
+     * 已实现损益（分）：**只在清仓那一刻定格一次**，之后不再变。
+     * <p>
+     * 为什么必须有这个字段：成本口径是「净投入」，卖出额会直接冲减成本，
+     * 于是「卖出价 − 成本」这个差额在数据里没有落点 —— 清仓后删掉品种，
+     * 这笔盈亏就从账本里彻底消失，用户只能靠记一笔假支出把它补回来，
+     * 结果投资亏损混进消费统计。定格在这里之后：
+     * 「账户里的现金 = 本金 + 已实现 − 在仓成本」，资产口径才对得上。
+     * <p>
+     * 只有清仓（[archived] = true）的持仓才可能有非 0 值；在仓品种恒为 0。
+     */
+    val realizedFen: Long = 0L,
+    /** 清仓时间（epoch millis）；null = 还在仓 */
+    val closedAt: Long? = null,
     /** 归档：不再出现在列表里，但历史估值保留 */
     val archived: Boolean = false,
     /*
@@ -165,7 +179,11 @@ data class PositionWithValue(
     /** 编辑弹窗回填用的「期初成本」：转账自动记的那部分不该被手改覆盖 */
     val manualCostFen: Long = 0L,
     /** 转账自动累计的成本（可为负：卖出多于买入时） */
-    val flowCostFen: Long = 0L
+    val flowCostFen: Long = 0L,
+    /** 清仓时定格的已实现损益（分）：在仓品种恒为 0 */
+    val realizedFen: Long = 0L,
+    /** 清仓时间；null = 还在仓 */
+    val closedAt: Long? = null
 ) {
     /** 计入总市值：没估过值就按成本计，不当作 0 */
     val marketValueFen: Long get() = valueFen ?: costFen
@@ -192,4 +210,17 @@ data class AccountMarketValue(
     val valueFen: Long,
     /** 该账户下持仓的总成本合计（期初 + 转账累计），用于算未实现盈亏 */
     val costFen: Long
+)
+
+/**
+ * 按账户汇总的已实现损益（Room 只读投影）。
+ * <p>
+ * 含已清仓的品种：账户的投资资产 = 本金 + 已实现 + 浮动，少了这一项，
+ * 清仓后账户会凭空少一笔钱。全清仓的账户不在 [AccountMarketValue] 结果里，
+ * 所以这条汇总必须独立查询。
+ */
+data class AccountRealized(
+    val accountId: Long,
+    /** 该账户下所有品种（含已清仓）定格下来的已实现损益合计（分） */
+    val realizedFen: Long
 )

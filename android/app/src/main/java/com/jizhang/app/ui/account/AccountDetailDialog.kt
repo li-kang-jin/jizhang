@@ -142,14 +142,20 @@ class AccountDetailViewModel @Inject constructor(
         viewModelScope.launch {
             investmentRepository.observe(bookId).collect { overview ->
                 val positions = overview.positions.filter { p -> p.accountId == accountId }
+                // 已清仓的品种不在这里，但它的已实现收益属于这个账户：
+                // 全部清仓后 positions 为空，仍要把这笔收益带上，否则账户资产会少一截
+                val realized = overview.closed
+                    .filter { p -> p.accountId == accountId }
+                    .sumOf { p -> p.realizedFen }
                 _state.update {
                     it.copy(
-                        investValue = if (positions.isEmpty()) {
+                        investValue = if (positions.isEmpty() && realized == 0L) {
                             null
                         } else {
                             AccountInvestValue(
                                 valueFen = positions.sumOf { p -> p.marketValueFen },
-                                costFen = positions.sumOf { p -> p.costFen }
+                                costFen = positions.sumOf { p -> p.costFen },
+                                realizedFen = realized
                             )
                         }
                     )
@@ -459,7 +465,8 @@ private fun InvestCard(
     onOpenInvest: (() -> Unit)?
 ) {
     val profit = invest.profitFen
-    val unallocated = account.balance - invest.costFen
+    // 已实现也是账户里的现金：清仓后本金没变，这笔钱必须加回来才是真实的未分配
+    val unallocated = account.balance + invest.realizedFen - invest.costFen
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -507,6 +514,9 @@ private fun InvestCard(
         HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
         Spacer(Modifier.height(8.dp))
         InvestInfoRow("持仓成本", amountText(invest.costFen, hideAmounts))
+        if (invest.realizedFen != 0L) {
+            InvestInfoRow("已实现收益（已清仓）", amountText(invest.realizedFen, hideAmounts))
+        }
         InvestInfoRow("未分配资金", amountText(unallocated, hideAmounts))
         // 未分配为负说明有买入没记转账，直接点破，别让人对着负数猜
         if (unallocated < 0L) {

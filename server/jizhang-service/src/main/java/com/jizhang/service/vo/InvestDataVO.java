@@ -58,6 +58,12 @@ public class InvestDataVO {
 
         private Boolean archived;
 
+        /** 清仓时定格的已实现损益（分） */
+        private Long realizedFen;
+
+        /** 清仓时间（epoch millis）；null = 还在仓 */
+        private Long closedAt;
+
         public static PositionVO from(InvestPositionEntity entity) {
             PositionVO vo = new PositionVO();
             vo.setId(entity.getId());
@@ -72,6 +78,8 @@ public class InvestDataVO {
             vo.setSort(entity.getSort());
             vo.setNote(entity.getNote());
             vo.setArchived(entity.getArchived() != null && entity.getArchived() != 0);
+            vo.setRealizedFen(entity.getRealizedFen());
+            vo.setClosedAt(entity.getClosedAt());
             return vo;
         }
     }

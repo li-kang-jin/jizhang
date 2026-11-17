@@ -24,7 +24,11 @@ data class InvestPositionDto(
     val targetPercent: Int = 0,
     val sort: Int = 0,
     val note: String? = null,
-    val archived: Boolean = false
+    val archived: Boolean = false,
+    /** 清仓时定格的已实现损益（分）；老版本服务端不认识这个字段时默认 0 */
+    val realizedFen: Long = 0,
+    /** 清仓时间（epoch millis）；null = 还在仓 */
+    val closedAt: Long? = null
 )
 
 /** 估值快照：只增不改，每条记录一次「更新市值」 */

@@ -2697,17 +2697,24 @@ private fun AssetCard(
                         color = if (isCredit) AppColors.expense else MaterialTheme.colorScheme.onSurface
                     )
                 }
-                // 投资账户的两个口径摆在一起：账户页看到的是本金，这里看到的是本金+浮盈。
+                // 投资账户的两个口径摆在一起：账户页看到的是本金，这里看到的是本金+已实现+浮盈。
                 // 不写清楚的话，用户会以为 5000 和 4500 里必有一个算错了
                 account.investProfitFen?.let { profit ->
+                    val realized = account.investRealizedFen ?: 0L
                     Text(
-                        text = "本金 " + money(account.balance - profit, hideAmounts) +
+                        text = "本金 " + money(account.balance - profit - realized, hideAmounts) +
                             " · 浮动 " + (if (profit >= 0L) "+" else "-") +
-                            money(kotlin.math.abs(profit), hideAmounts),
+                            money(kotlin.math.abs(profit), hideAmounts) +
+                            if (realized != 0L) {
+                                " · 已实现 " + (if (realized >= 0L) "+" else "-") +
+                                    money(kotlin.math.abs(realized), hideAmounts)
+                            } else {
+                                ""
+                            },
                         style = MaterialTheme.typography.labelSmall,
                         color = when {
-                            profit > 0L -> AppColors.income
-                            profit < 0L -> AppColors.expense
+                            profit + realized > 0L -> AppColors.income
+                            profit + realized < 0L -> AppColors.expense
                             else -> MaterialTheme.colorScheme.onSurfaceVariant
                         },
                         modifier = Modifier.padding(start = 22.dp)
@@ -2826,12 +2833,21 @@ private fun InvestmentCard(
         HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
         Spacer(Modifier.height(8.dp))
         InvestRow("本金（累计投入）", money(summary.principalFen, hideAmounts))
+        // 已实现只在清仓后才有；0 时不占一行，避免被当成"又亏了一笔"
+        if (summary.realizedFen != 0L) {
+            InvestRow("已实现收益（已清仓）", signedMoney(summary.realizedFen, hideAmounts))
+        }
         InvestRow("未分配资金", money(summary.unallocatedFen, hideAmounts))
         InvestRow("上次估值", summary.lastValuedAt?.let { daysAgoText(it) } ?: "还没估过")
         Spacer(Modifier.height(6.dp))
         // 把恒等式直接写出来，用户能自己验算，不用猜哪两个数该相等
         Text(
             text = "本金 " + money(summary.principalFen, hideAmounts) +
+                if (summary.realizedFen != 0L) {
+                    " + 已实现 " + signedMoney(summary.realizedFen, hideAmounts)
+                } else {
+                    ""
+                } +
                 " + 浮动 " + signedMoney(profit, hideAmounts) +
                 " = 投资资产 " + money(summary.assetFen, hideAmounts),
             style = MaterialTheme.typography.labelSmall,

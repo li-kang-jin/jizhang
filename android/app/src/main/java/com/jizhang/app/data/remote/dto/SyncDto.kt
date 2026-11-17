@@ -109,8 +109,13 @@ data class AccountAssetDto(
      * 其它类型的账户为 null（没有这个概念）。
      */
     val investCostFen: Long? = null,
-    /** 投资账户的未实现盈亏（分）：`balance = 本金 + 这个数`。其它类型为 null */
-    val investProfitFen: Long? = null
+    /** 投资账户的未实现盈亏（分）：`balance = 本金 + 已实现 + 这个数`。其它类型为 null */
+    val investProfitFen: Long? = null,
+    /**
+     * 投资账户的已实现盈亏（分，含已清仓的品种）：清仓收益不会随行情变化，
+     * 但仍然是账户里的钱。用它才能从 [balance] 还原出「本金」。其它类型为 null
+     */
+    val investRealizedFen: Long? = null
 )
 
 @Serializable

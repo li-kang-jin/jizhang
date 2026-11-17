@@ -59,6 +59,49 @@ class InvestmentSummaryTest {
     }
 
     @Test
+    fun `盈利清仓且钱留在账户时已实现收益变成现金`() {
+        // 本金 2000 全买了 A，卖到 2100 后钱没转出：在仓成本归零，2100 全是账户里的现金。
+        // 如果已实现不进「未分配」，这里只会算出 2000，账面上凭空少 100 收益。
+        val summary = summarizeInvest(
+            positions = emptyList(),
+            investAccounts = listOf(account(balance = 2000_00L)),
+            lastValuedAt = null,
+            realizedFen = 100_00L
+        )
+        assertEquals(100_00L, summary.realizedFen)
+        assertEquals(2100_00L, summary.unallocatedFen)
+        assertEquals(2100_00L, summary.assetFen)
+        assertEquals(summary.marketValueFen + summary.unallocatedFen, summary.assetFen)
+    }
+
+    @Test
+    fun `盈利清仓并全额转出后本金为负但资产归零`() {
+        // 本金 2000，卖出 2100 全部转回银行卡：本金 = −100。
+        // 已实现 +100 正好抵消，投资账户不该有资产，也不该出现负身家。
+        val summary = summarizeInvest(
+            positions = emptyList(),
+            investAccounts = listOf(account(balance = -100_00L)),
+            lastValuedAt = null,
+            realizedFen = 100_00L
+        )
+        assertEquals(0L, summary.unallocatedFen)
+        assertEquals(0L, summary.assetFen)
+    }
+
+    @Test
+    fun `亏损清仓后账户只剩卖出所得的现金`() {
+        // 成本 2000，卖到 1900，钱留在账户：现金 1900，亏损 100 定格在已实现里
+        val summary = summarizeInvest(
+            positions = emptyList(),
+            investAccounts = listOf(account(balance = 2000_00L)),
+            lastValuedAt = null,
+            realizedFen = -100_00L
+        )
+        assertEquals(1900_00L, summary.unallocatedFen)
+        assertEquals(1900_00L, summary.assetFen)
+    }
+
+    @Test
     fun `从未估值时按成本计市值`() {
         val summary = summarizeInvest(
             positions = listOf(position(cost = 5000_00L, value = null)),

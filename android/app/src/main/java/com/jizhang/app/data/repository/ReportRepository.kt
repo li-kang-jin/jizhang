@@ -458,7 +458,9 @@ class ReportRepository @Inject constructor(
             .filter { it.type == INVEST_ACCOUNT_TYPE && !it.archived }
         if (accounts.isEmpty()) return null
         val positions = investmentDao.listWithValue(bookId)
-        return summarizeInvest(positions, accounts, investmentDao.lastValuedAt(bookId))
+        // 已清仓品种的已实现收益也要算进投资资产，否则清仓后净资产会凭空少一笔
+        val realized = investmentDao.listClosed(bookId).sumOf { it.realizedFen }
+        return summarizeInvest(positions, accounts, investmentDao.lastValuedAt(bookId), realized)
     }
 
     /**
@@ -475,21 +477,29 @@ class ReportRepository @Inject constructor(
         // 没有持仓（或从未建过品种）的账户回落到原余额，行为与升级前完全一致。
         val investValues = investmentDao.accountMarketValues(bookId)
             .associateBy { it.accountId }
+        // 已清仓的品种不在 accountMarketValues 里（那条查询只看在仓），
+        // 但清仓收益仍然属于该账户的资产，必须单独取一次
+        val realizedByAccount = investmentDao.realizedByAccount(bookId)
+            .associate { it.accountId to it.realizedFen }
         val items = accounts.map {
-            // 只有投资账户才走「本金 + 浮盈」：其它类型不该出现持仓，出现了也不改旧口径
+            // 只有投资账户才走「本金 + 已实现 + 浮盈」：其它类型不改旧口径
             val market = if (it.type == INVEST_ACCOUNT_TYPE) investValues[it.id] else null
+            val realized = if (it.type == INVEST_ACCOUNT_TYPE) realizedByAccount[it.id] else null
             val profit = market?.let { m -> m.valueFen - m.costFen }
+            val gain = (profit ?: 0L) + (realized ?: 0L)
             AccountAssetDto(
                 accountId = it.id,
                 name = it.name,
                 type = it.type,
                 icon = it.icon,
-                balance = if (profit != null) it.balance + profit else it.balance,
+                balance = if (profit != null || realized != null) it.balance + gain else it.balance,
                 includeInTotal = it.includeInTotal,
                 // 带上本金/浮盈，界面才能把「本金 5000、市值 4500」两个口径同时摆出来，
                 // 否则用户只会看到账户页 5000 和这里 4500，以为有一处算错了
                 investCostFen = market?.costFen,
-                investProfitFen = profit
+                // 全部清仓时没有持仓，给一个 0 让界面仍能展示已实现那一行
+                investProfitFen = profit ?: if (realized != null) 0L else null,
+                investRealizedFen = realized
             )
         }
         val counted = items.filter { it.includeInTotal == 1 }

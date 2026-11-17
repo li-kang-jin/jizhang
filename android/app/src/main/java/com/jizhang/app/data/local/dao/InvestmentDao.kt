@@ -5,6 +5,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import com.jizhang.app.data.local.entity.AccountMarketValue
+import com.jizhang.app.data.local.entity.AccountRealized
 import com.jizhang.app.data.local.entity.LocalInvestFlow
 import com.jizhang.app.data.local.entity.LocalInvestPosition
 import com.jizhang.app.data.local.entity.LocalInvestValuation
@@ -33,6 +34,39 @@ interface InvestmentDao {
             "ORDER BY p.sort, p.id"
     )
     suspend fun listWithValue(bookId: Long): List<PositionWithValue>
+
+    /**
+     * 已清仓的品种（归档），按清仓时间倒序。
+     * <p>
+     * 单独一条查询而不是把 `archived = 0` 放宽：投资页的主列表、占比图、未分配资金
+     * 都只该看「还在仓」的品种，混进来会让市值和成本凭空多一截。
+     * 这里取出来只做两件事：展示历史清仓记录、汇总 [PositionWithValue.realizedFen]。
+     */
+    @Query(
+        POSITION_SELECT + "WHERE p.bookId = :bookId AND p.archived = 1 AND p.pendingDelete = 0 " +
+            "ORDER BY p.closedAt DESC, p.id DESC"
+    )
+    fun observeClosed(bookId: Long): Flow<List<PositionWithValue>>
+
+    @Query(
+        POSITION_SELECT + "WHERE p.bookId = :bookId AND p.archived = 1 AND p.pendingDelete = 0 " +
+            "ORDER BY p.closedAt DESC, p.id DESC"
+    )
+    suspend fun listClosed(bookId: Long): List<PositionWithValue>
+
+    /**
+     * 按账户汇总的**已实现**损益，含已清仓的品种。
+     * <p>
+     * 账户页与统计页的投资资产口径是「本金 + 已实现 + 浮动」：清仓后品种从在仓列表消失，
+     * 只靠 [accountMarketValues] 会把那笔已实现收益漏掉，账户总资产少一截。
+     * 所有品种清仓的账户不会出现在 [accountMarketValues] 里，所以必须单独查一次。
+     */
+    @Query(
+        "SELECT accountId, SUM(realizedFen) AS realizedFen " +
+            "FROM local_invest_position WHERE bookId = :bookId AND pendingDelete = 0 " +
+            "GROUP BY accountId"
+    )
+    suspend fun realizedByAccount(bookId: Long): List<AccountRealized>
 
     @Query("SELECT * FROM local_invest_position WHERE id = :id")
     suspend fun findById(id: Long): LocalInvestPosition?
@@ -245,6 +279,7 @@ interface InvestmentDao {
                 "$FLOW_NET AS flowCostFen, " +
                 "p.sharesScaled AS sharesScaled, p.targetPercent AS targetPercent, " +
                 "p.sort AS sort, p.note AS note, p.archived AS archived, " +
+                "p.realizedFen AS realizedFen, p.closedAt AS closedAt, " +
                 "(SELECT v.valueFen + $FLOW_AFTER_VALUATION FROM local_invest_valuation v " +
                 "   WHERE v.positionId = p.id AND v.pendingDelete = 0 " +
                 "   ORDER BY v.valuedAt DESC, v.id DESC LIMIT 1) AS valueFen, " +

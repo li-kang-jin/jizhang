@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -38,6 +39,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -68,6 +70,8 @@ import com.jizhang.app.data.local.entity.LocalInvestPosition
 import com.jizhang.app.data.local.entity.PositionWithValue
 import com.jizhang.app.data.repository.InvestmentOverview
 import com.jizhang.app.ui.common.AppFullScreenDialog
+import com.jizhang.app.ui.common.amountExpressionPreview
+import com.jizhang.app.ui.common.evaluateAmount
 import com.jizhang.app.ui.common.daysAgoText
 import com.jizhang.app.ui.common.formatAmount
 import com.jizhang.app.ui.common.formatAmountInput
@@ -155,7 +159,15 @@ fun InvestScreen(
                                 position = position,
                                 hideAmounts = hideAmounts,
                                 onEdit = { viewModel.openEdit(position) },
-                                onUpdateValue = { viewModel.openValuing(position) }
+                                onUpdateValue = { viewModel.openValuing(position) },
+                                onClose = { viewModel.openClosing(position) }
+                            )
+                        }
+                        if (overview.closed.isNotEmpty()) {
+                            ClosedSection(
+                                closed = overview.closed,
+                                hideAmounts = hideAmounts,
+                                onReopen = viewModel::reopen
                             )
                         }
                         Spacer(Modifier.height(2.dp))
@@ -204,6 +216,15 @@ fun InvestScreen(
             hideAmounts = hideAmounts,
             onDismiss = viewModel::closeValuing,
             onConfirm = { text -> viewModel.updateValue(position, text) }
+        )
+    }
+
+    state.closing?.let { position ->
+        ClosePositionDialog(
+            position = position,
+            hideAmounts = hideAmounts,
+            onDismiss = viewModel::closeClosing,
+            onConfirm = { text -> viewModel.confirmClose(position, text) }
         )
     }
 
@@ -277,6 +298,13 @@ private fun SummaryCard(
         HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
         Spacer(Modifier.height(8.dp))
         InfoRow("持仓成本", money(overview.totalCostFen, hideAmounts))
+        // 已实现只在清仓后才有：0 时不显示，避免和浮动盈亏并列时被误读成"亏了"
+        if (overview.realizedFen != 0L) {
+            InfoRow(
+                label = "已实现收益（已清仓）",
+                value = signedMoney(overview.realizedFen, hideAmounts)
+            )
+        }
         // 叫「本金」而不是「账户余额」：它是累计转入的钱，不是券商 App 里的总资产
         InfoRow("本金（累计转入）", money(overview.accountBalanceFen, hideAmounts))
         InfoRow(
@@ -322,7 +350,8 @@ private fun UnallocatedCard(unallocatedFen: Long, hideAmounts: Boolean, onClaim:
                     "② 从投资账户转出时没选品种（卖出没销账）——" +
                     "去账单页编辑那笔转账、选中品种即可归零。也可能是成本填多了。"
             } else {
-                "转进投资账户、但还没买成品种的钱。买的时候选品种，它会自动变成成本。"
+                "转进投资账户、但还没买成品种的钱，含清仓卖出所得的现金。" +
+                    "买新品种时在弹窗里直接认领，它就会变成那个品种的成本。"
             },
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -409,13 +438,14 @@ private fun AllocationCard(positions: List<PositionWithValue>, hideAmounts: Bool
     }
 }
 
-/** 单个品种：市值 / 成本 / 盈亏 / 估值时间 */
+/** 单个品种：市值 / 成本 / 盈亏 / 估值时间，以及「更新市值」「清仓」两个动作 */
 @Composable
 private fun PositionCard(
     position: PositionWithValue,
     hideAmounts: Boolean,
     onEdit: () -> Unit,
-    onUpdateValue: () -> Unit
+    onUpdateValue: () -> Unit,
+    onClose: () -> Unit
 ) {
     val profit = position.profitFen
     val profitColor = when {
@@ -484,6 +514,106 @@ private fun PositionCard(
             )
             Spacer(Modifier.width(4.dp))
             TextButton(onClick = onUpdateValue) { Text("更新市值") }
+            TextButton(onClick = onClose) { Text("清仓") }
+        }
+    }
+}
+
+/**
+ * 已清仓的品种。
+ * <p>
+ * 默认收起：清仓记录是「查证用」的，不是每天要看的数。展开后每个品种一行，
+ * 显示成本、清仓时间和定格的已实现损益 —— 这笔钱不会随估值波动，
+ * 所以和上面的浮动盈亏分开摆，两边都写清楚口径才不会误读。
+ */
+@Composable
+private fun ClosedSection(
+    closed: List<PositionWithValue>,
+    hideAmounts: Boolean,
+    onReopen: (PositionWithValue) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val total = closed.sumOf { it.realizedFen }
+    val totalColor = when {
+        total > 0L -> AppColors.income
+        total < 0L -> AppColors.expense
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
+    CardBox {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .clickable { expanded = !expanded },
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "已清仓（${closed.size}）",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = "累计已实现 " + signedMoney(total, hideAmounts),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = totalColor
+                )
+            }
+            Text(
+                text = if (expanded) "收起" else "展开",
+                style = MaterialTheme.typography.labelMedium,
+                color = AppColors.accent,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+            )
+        }
+        if (expanded) {
+            closed.forEach { position ->
+                Spacer(Modifier.height(8.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = position.name,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "成本 " + money(position.costFen, hideAmounts) +
+                                position.closedAt?.let { " · " + daysAgoText(it) + "清仓" }.orEmpty(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Text(
+                        text = signedMoney(position.realizedFen, hideAmounts),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = when {
+                            position.realizedFen > 0L -> AppColors.income
+                            position.realizedFen < 0L -> AppColors.expense
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    TextButton(onClick = { onReopen(position) }) { Text("恢复") }
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "已实现收益是定格值，不再随行情变化，也不进收支统计；" +
+                    "它已经算进投资资产，所以不会因为删掉品种而消失。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
@@ -652,21 +782,60 @@ private fun PositionEditorDialog(
                 }
 
                 Spacer(Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = costText,
-                    onValueChange = { costText = it },
-                    label = { Text(if (editing == null) "投入成本（元）" else "期初成本（元）") },
-                    placeholder = { Text("0") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    modifier = Modifier.fillMaxWidth()
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = costText,
+                        onValueChange = { costText = it },
+                        label = { Text(if (editing == null) "投入成本（元）" else "期初成本（元）") },
+                        placeholder = { Text("0") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    // 数字键盘上没有「＋」：给一个按钮，追加投资就能边打边累加，
+                    // 不用先在计算器里算好合计再填（1500 → ＋ → 250 = 1750）
+                    OutlinedButton(
+                        onClick = {
+                            if (costText.isNotBlank()) costText = costText.trimEnd() + "+"
+                        },
+                        modifier = Modifier.height(56.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp)
+                    ) {
+                        Text("＋", style = MaterialTheme.typography.titleMedium)
+                    }
+                }
+                // 输入了算式就把算出来的合计亮出来：用户不用自己核对加对没有
+                val expressionPreview = amountExpressionPreview(costText)
+                Spacer(Modifier.height(6.dp))
+                if (expressionPreview != null) {
+                    Text(
+                        text = "成本合计 " + expressionPreview,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = AppColors.accent
+                    )
+                } else {
+                    Text(
+                        text = "追加投资可以直接输入算式（1500+250），或点右侧 ＋ 累加",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 // 转账挂过品种时，成本里有一部分是自动累计的：说清楚，免得用户以为填错了
                 if (editing != null && editing.flowCostFen != 0L) {
                     Spacer(Modifier.height(6.dp))
                     Text(
                         text = "另有 ${money(editing.flowCostFen, hideAmounts)} 由转账自动累计，" +
                             "合计 ${money(editing.costFen, hideAmounts)}。这里只填没有对应转账的部分。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else if (editing != null) {
+                    // 更省事的路径：钱真的从银行卡过来时，记一笔转账就不用回这里改成本
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = "从银行卡 / 微信追加的钱，去记账页记一笔转账并选中这个品种，成本会自动累加。",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -760,7 +929,7 @@ private fun ValuationDialog(
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     modifier = Modifier.fillMaxWidth()
                 )
-                val fen = text.toDoubleOrNull()?.let { (it * 100).roundToInt().toLong() }
+                val fen = evaluateAmount(text)?.let { (it * 100).roundToInt().toLong() }
                 if (fen != null) {
                     val profit = fen - position.costFen
                     val rate = if (position.costFen > 0L) {
@@ -785,6 +954,82 @@ private fun ValuationDialog(
         },
         confirmButton = {
             TextButton(onClick = { onConfirm(text) }) { Text("保存") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
+}
+
+/**
+ * 清仓卖出。
+ * <p>
+ * 只填一个「实际到账金额」：它是卖出所得，减去成本就是这笔的已实现损益。
+ * 钱留在投资账户里不用再记转账 —— 它会自动变成「未分配资金」；
+ * 要取回银行卡 / 微信，再去记账页记一笔转账即可（金额填到账额）。
+ * <p>
+ * 预填当前市值：多数时候成交价和最近一次估值差不多，微调比重打快。
+ */
+@Composable
+private fun ClosePositionDialog(
+    position: PositionWithValue,
+    hideAmounts: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var text by remember { mutableStateOf(formatAmountInput(position.marketValueFen)) }
+    val soldFen = evaluateAmount(text)?.let { (it * 100).roundToInt().toLong() }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("清仓卖出", fontWeight = FontWeight.SemiBold) },
+        text = {
+            Column {
+                Text(
+                    text = position.name + " · 成本 " + money(position.costFen, hideAmounts),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    label = { Text("实际到账金额（元）") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (soldFen != null) {
+                    val realized = soldFen - position.costFen
+                    val rate = if (position.costFen > 0L) {
+                        realized.toDouble() / position.costFen
+                    } else {
+                        null
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "已实现盈亏 " + signedMoney(realized, hideAmounts) +
+                            (rate?.let { "（" + percentText(it) + "）" } ?: ""),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = when {
+                            realized > 0L -> AppColors.income
+                            realized < 0L -> AppColors.expense
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = "钱还在投资账户里（换股、待再买）就到此为止：这笔钱会变成「未分配资金」，" +
+                        "买新品种时可以直接认领成成本。要转回银行卡 / 微信，再去记账页记一笔转账，金额填到账额。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(text) }) { Text("确认清仓") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("取消") }

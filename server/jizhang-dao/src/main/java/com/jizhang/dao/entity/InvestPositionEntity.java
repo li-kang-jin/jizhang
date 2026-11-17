@@ -48,4 +48,16 @@ public class InvestPositionEntity extends BaseEntity {
 
     /** 1=已归档 0=正常 */
     private Integer archived;
+
+    /**
+     * 清仓时定格的已实现损益（分）：卖出到账金额 − 清仓时的总成本。
+     * <p>
+     * 成本口径是「净投入」，卖出额直接冲减成本，所以这个差额在别处没有落点；
+     * 不定格下来，清仓盈亏就会随品种一起消失，账户资产也会少一笔。
+     * 在仓品种为 0。
+     */
+    private Long realizedFen;
+
+    /** 清仓时间（epoch millis）；null = 还在仓 */
+    private Long closedAt;
 }

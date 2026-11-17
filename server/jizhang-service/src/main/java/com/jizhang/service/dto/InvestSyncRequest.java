@@ -73,6 +73,12 @@ public class InvestSyncRequest {
 
         /** 是否归档；缺省视为正常 */
         private Boolean archived;
+
+        /** 清仓时定格的已实现损益（分）；缺省 0，老客户端不传也不影响 */
+        private Long realizedFen;
+
+        /** 清仓时间（epoch millis）；null = 还在仓 */
+        private Long closedAt;
     }
 
     @Data

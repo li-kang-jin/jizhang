@@ -39,41 +39,47 @@ private const val PUSH_TIMEOUT_MS = 2_000L
 /**
  * 投资资产的唯一口径：投资页、统计页、账户页共用一份，任何页面都不再自己加减。
  * <p>
- * 五个数的关系必须恒成立，错一处就会让两个页面对同一个账户给出两个数：
+ * 六个数的关系必须恒成立，错一处就会让两个页面对同一个账户给出两个数：
  * <ol>
  *   <li>**本金** = 投资账户的转入 − 转出（由流水聚合，不是手工填的）；</li>
- *   <li>**成本** = 持仓的期初成本 + 买入 − 卖出；</li>
+ *   <li>**成本** = 在仓持仓的期初成本 + 买入 − 卖出；</li>
  *   <li>**市值** = 最新估值 + 快照之后的买卖净额；从未估值的按成本计
  *       （按 0 计会让新建品种后净资产凭空塌一截）；</li>
- *   <li>**未分配** = 本金 − 成本（转进来但还没归到品种上的钱，成本填多了则为负）；</li>
- *   <li>**投资资产** = 本金 + 浮动盈亏 = 市值 + 未分配。</li>
+ *   <li>**已实现** = 清仓时定格下来的「卖出额 − 成本」合计（含已清仓品种）；</li>
+ *   <li>**未分配** = 本金 + 已实现 − 成本（账户里还没买成品种的现金，
+ *       成本填多了则为负）；</li>
+ *   <li>**投资资产** = 本金 + 已实现 + 浮动盈亏 = 市值 + 未分配。</li>
  * </ol>
- * 第 5 条是关键：直接拿市值当资产会吞掉未分配现金，直接拿本金又会让浮盈浮亏
- * 永远进不了净资产。两者都不对。
+ * 第 6 条是关键：直接拿市值当资产会吞掉未分配现金，直接拿本金又会让浮盈浮亏
+ * 永远进不了净资产。第 4 条是把清仓收益还回账本的唯一通道 —— 少了它，
+ * 盈利清仓并转出后本金会变成负数，资产凭空少一笔。
  */
 data class InvestmentSummary(
-    /** 持仓总市值（分） */
+    /** 在仓持仓总市值（分） */
     val marketValueFen: Long = 0L,
-    /** 持仓总成本（分） */
+    /** 在仓持仓总成本（分） */
     val costFen: Long = 0L,
     /** 投资账户本金余额合计（分） */
     val principalFen: Long = 0L,
-    /** 未分配资金（分） */
+    /** 未分配资金（分）：本金 + 已实现 − 成本 */
     val unallocatedFen: Long = 0L,
     /** 最近一次估值时间；从未估值时为 null */
-    val lastValuedAt: Long? = null
+    val lastValuedAt: Long? = null,
+    /** 已实现损益（分）：只在清仓时定格，含已清仓品种，不进收支表 */
+    val realizedFen: Long = 0L
 ) {
-    /** 浮动盈亏（分）：只算市值与净投入的差，不进收支表 */
+    /** 浮动盈亏（分）：只算在仓市值与净投入的差，不进收支表 */
     val profitFen: Long get() = marketValueFen - costFen
 
     /** 计入净资产的投资资产（分） */
-    val assetFen: Long get() = principalFen + profitFen
+    val assetFen: Long get() = principalFen + realizedFen + profitFen
 
     /** 收益率；没有成本时为 null（不显示 0%，那是"没投"不是"没赚"） */
     val profitRate: Double? get() = if (costFen > 0L) profitFen.toDouble() / costFen else null
 
     /** 没有任何投资账户与持仓 */
-    val isEmpty: Boolean get() = principalFen == 0L && costFen == 0L && marketValueFen == 0L
+    val isEmpty: Boolean
+        get() = principalFen == 0L && costFen == 0L && marketValueFen == 0L && realizedFen == 0L
 
     companion object {
         val EMPTY = InvestmentSummary()
@@ -89,7 +95,8 @@ data class InvestmentSummary(
 internal fun summarizeInvest(
     positions: List<PositionWithValue>,
     investAccounts: List<AccountWithBalance>,
-    lastValuedAt: Long?
+    lastValuedAt: Long?,
+    realizedFen: Long = 0L
 ): InvestmentSummary {
     val marketValue = positions.sumOf { it.marketValueFen }
     val cost = positions.sumOf { it.costFen }
@@ -98,8 +105,10 @@ internal fun summarizeInvest(
         marketValueFen = marketValue,
         costFen = cost,
         principalFen = principal,
-        unallocatedFen = principal - cost,
-        lastValuedAt = lastValuedAt
+        // 清仓收益也是账户里的现金（卖出所得），不从本金里算进来就会凭空少一笔
+        unallocatedFen = principal + realizedFen - cost,
+        lastValuedAt = lastValuedAt,
+        realizedFen = realizedFen
     )
 }
 
@@ -110,7 +119,9 @@ internal fun summarizeInvest(
  */
 data class InvestmentOverview(
     val positions: List<PositionWithValue> = emptyList(),
-    /** 唯一口径：本金 / 成本 / 市值 / 未分配 / 浮动都在这里 */
+    /** 已清仓（归档）的品种，按清仓时间倒序；它们的 realizedFen 已计入 [summary] */
+    val closed: List<PositionWithValue> = emptyList(),
+    /** 唯一口径：本金 / 成本 / 市值 / 已实现 / 未分配 / 浮动都在这里 */
     val summary: InvestmentSummary = InvestmentSummary.EMPTY,
     /** 可挂持仓的投资账户（未归档） */
     val accounts: List<AccountWithBalance> = emptyList()
@@ -135,6 +146,9 @@ data class InvestmentOverview(
 
     /** 收益率；没有成本时为 null */
     val profitRate: Double? get() = summary.profitRate
+
+    /** 已实现损益（分）：只来自已清仓的品种 */
+    val realizedFen: Long get() = summary.realizedFen
 
     val hasInvestAccount: Boolean get() = accounts.isNotEmpty()
 
@@ -169,14 +183,21 @@ class InvestmentRepository @Inject constructor(
     fun observe(bookId: Long): Flow<InvestmentOverview> = combine(
         investmentDao.observeWithValue(bookId),
         accountDao.observeWithBalance(bookId),
-        investmentDao.observeLastValuedAt(bookId)
-    ) { positions, accounts, lastValuedAt ->
+        investmentDao.observeLastValuedAt(bookId),
+        investmentDao.observeClosed(bookId)
+    ) { positions, accounts, lastValuedAt, closed ->
         val investAccounts = accounts.filter {
             it.type == ACCOUNT_TYPE_INVEST && !it.archived
         }
         InvestmentOverview(
             positions = positions,
-            summary = summarizeInvest(positions, investAccounts, lastValuedAt),
+            closed = closed,
+            summary = summarizeInvest(
+                positions = positions,
+                investAccounts = investAccounts,
+                lastValuedAt = lastValuedAt,
+                realizedFen = closed.sumOf { it.realizedFen }
+            ),
             accounts = investAccounts
         )
     }
@@ -236,6 +257,8 @@ class InvestmentRepository @Inject constructor(
         investmentDao.upsert(
             existing.copy(
                 costFen = costFen.coerceAtLeast(0L),
+                // 改成本同样要标回待推，否则只在本机生效
+                pendingSync = true,
                 clientUpdatedAt = System.currentTimeMillis()
             )
         )
@@ -299,6 +322,69 @@ class InvestmentRepository @Inject constructor(
 
     /** 某账户下还挂着几个品种：删除投资账户前要先拦下来 */
     suspend fun countByAccount(accountId: Long): Int = investmentDao.countByAccount(accountId)
+
+    /**
+     * 清仓一个品种：把「卖出额 − 成本」定格成已实现损益，然后归档。
+     * <p>
+     * 这是**账户内卖出**的入口，与「记账页记一笔转账并挂品种」是两条路：
+     * <ul>
+     *   <li>转账那条路解决的是「钱离开了投资账户」，成本靠流水冲减；</li>
+     *   <li>这条解决的是「钱还在投资账户里」（换股、场内现金管理）——
+     *       没有转账就冲不了成本，删品种又会让盈亏从账本里消失。</li>
+     * </ul>
+     * 清仓后现金留在账户里，由「本金 + 已实现 − 在仓成本」自然体现为未分配资金，
+     * 不需要再补一笔假支出。
+     * <p>
+     * 注意只处理**全部卖出**：部分卖出的成本该减多少需要份额才能算，
+     * 这个模块以金额为一等公民，所以部分卖出仍然走记账页转账（成本按卖出额冲减）。
+     *
+     * @param soldFen 实际卖出到账金额（分）
+     * @return 是否清仓成功；品种不存在或已经清仓时返回 false
+     */
+    suspend fun closePosition(positionId: Long, soldFen: Long): Boolean {
+        val existing = investmentDao.findById(positionId) ?: return false
+        if (existing.archived) return false
+        // 总成本要把转账累计的那部分算上，否则已实现损益会虚高「期初成本」那么多
+        val position = investmentDao.listWithValue(existing.bookId)
+            .firstOrNull { it.id == positionId } ?: return false
+        val now = System.currentTimeMillis()
+        investmentDao.upsert(
+            existing.copy(
+                realizedFen = existing.realizedFen + (soldFen - position.costFen),
+                closedAt = now,
+                archived = true,
+                // 必须手动置回待推：copy 会保留上一次同步后的 false，
+                // 那样清仓只在本地生效，服务端和另一台设备永远看不到
+                pendingSync = true,
+                clientUpdatedAt = now
+            )
+        )
+        tryPush(existing.bookId)
+        return true
+    }
+
+    /**
+     * 撤销清仓：品种回到在仓列表，已实现损益清零。
+     * <p>
+     * 成本不做任何调整 —— 清仓时也没动过 `costFen` / 成本流水，原样恢复就是清仓前的状态。
+     * 用于点错了「清仓」或者卖单被撤销的场景。
+     */
+    suspend fun reopenPosition(positionId: Long): Boolean {
+        val existing = investmentDao.findById(positionId) ?: return false
+        if (!existing.archived) return false
+        investmentDao.upsert(
+            existing.copy(
+                archived = false,
+                closedAt = null,
+                realizedFen = 0L,
+                // 同 closePosition：撤销也要推上去，否则另一台设备上它还停在已清仓
+                pendingSync = true,
+                clientUpdatedAt = System.currentTimeMillis()
+            )
+        )
+        tryPush(existing.bookId)
+        return true
+    }
 
     /** 某投资账户下可选的品种（记账页「转账 → 归属品种」用） */
     suspend fun positionsOfAccount(accountId: Long): List<LocalInvestPosition> =
@@ -496,7 +582,9 @@ private fun LocalInvestPosition.toDto() = InvestPositionDto(
     targetPercent = targetPercent,
     sort = sort,
     note = note,
-    archived = archived
+    archived = archived,
+    realizedFen = realizedFen,
+    closedAt = closedAt
 )
 
 private fun LocalInvestValuation.toDto() = InvestValuationDto(
@@ -531,6 +619,8 @@ private fun InvestPositionDto.toLocal(bookId: Long) = LocalInvestPosition(
     sort = sort,
     note = note,
     archived = archived,
+    realizedFen = realizedFen,
+    closedAt = closedAt,
     pendingSync = false,
     pendingDelete = false,
     clientUpdatedAt = System.currentTimeMillis()

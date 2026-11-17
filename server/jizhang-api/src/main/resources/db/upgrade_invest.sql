@@ -21,6 +21,10 @@ CREATE TABLE IF NOT EXISTS t_invest_position
     sort           INTEGER     NOT NULL DEFAULT 0,
     note           VARCHAR(255),
     archived       SMALLINT    NOT NULL DEFAULT 0,
+    -- 清仓时定格的已实现损益（分）= 卖出到账 − 总成本；在仓为 0，可为负
+    realized_fen   BIGINT      NOT NULL DEFAULT 0,
+    -- 清仓时间（epoch millis）；null = 还在仓
+    closed_at      BIGINT,
     created_by     BIGINT,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_by     BIGINT,
@@ -29,6 +33,10 @@ CREATE TABLE IF NOT EXISTS t_invest_position
 );
 CREATE INDEX IF NOT EXISTS idx_invest_position_book
     ON t_invest_position (book_id) WHERE deleted = 0;
+
+-- 表已存在的库（早前跑过这个脚本）补列，重复执行安全
+ALTER TABLE t_invest_position ADD COLUMN IF NOT EXISTS realized_fen BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE t_invest_position ADD COLUMN IF NOT EXISTS closed_at BIGINT;
 
 CREATE TABLE IF NOT EXISTS t_invest_valuation
 (

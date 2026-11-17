@@ -118,10 +118,19 @@ private val ROW_HEIGHT = 68.dp
  */
 data class AccountInvestValue(
     val valueFen: Long,
-    val costFen: Long
+    val costFen: Long,
+    /** 已实现损益（分）：只来自已清仓的品种，含不在持仓列表里的那些 */
+    val realizedFen: Long = 0L
 ) {
     /** 浮动盈亏（分），可能为负 */
     val profitFen: Long get() = valueFen - costFen
+
+    /**
+     * 投资账户相对「本金」的差额：本金 + 这个数 = 账户按市值计的总资产。
+     * <p>
+     * 已实现必须一起加：清仓后品种从持仓列表消失，只加浮盈会让账户凭空少一笔。
+     */
+    val totalGainFen: Long get() = realizedFen + profitFen
 }
 
 /** 归档账户不参与新记账，但余额仍然算进净资产 */
@@ -159,10 +168,19 @@ class AccountViewModel @Inject constructor(
         // 投资账户的市值另开一条流：它随估值和买卖变化，和账户余额不是同一个数据源
         viewModelScope.launch {
             investmentRepository.observe(bookId).collect { overview ->
-                val byAccount = overview.positions.groupBy { it.accountId }.mapValues { (_, list) ->
+                // 已清仓的品种不在 positions 里，但它们的已实现收益仍属于这个账户；
+                // 全清仓的账户在 positions 里一条都没有，所以 key 要并上 closed
+                val realizedByAccount = overview.closed
+                    .groupBy { it.accountId }
+                    .mapValues { (_, list) -> list.sumOf { it.realizedFen } }
+                val accountIds = overview.positions.map { it.accountId }.toSet() +
+                    realizedByAccount.keys
+                val byAccount = accountIds.associateWith { accountId ->
+                    val list = overview.positions.filter { it.accountId == accountId }
                     AccountInvestValue(
                         valueFen = list.sumOf { it.marketValueFen },
-                        costFen = list.sumOf { it.costFen }
+                        costFen = list.sumOf { it.costFen },
+                        realizedFen = realizedByAccount[accountId] ?: 0L
                     )
                 }
                 _state.update { it.copy(investValues = byAccount) }
@@ -295,14 +313,14 @@ fun AccountListDialog(
             // 与统计页同一口径：只把「计入总资产」的账户算进合计，
             // 纯走账的中间卡不该算进身家；归档账户余额照算（归档只是不再参与新记账）
             val counted = ordered.filter { it.includeInTotal == 1 }
-            // 投资账户按「本金 + 浮动盈亏」= 市值 + 未分配现金，和券商 / 基金 App 的总资产一致；
-            // 其它账户就是余额本身
+            // 投资账户按「本金 + 已实现 + 浮动盈亏」= 市值 + 未分配现金，
+            // 和券商 / 基金 App 的总资产一致；其它账户就是余额本身
             val totalAsset = counted
                 .filter { it.type != CREDIT_CARD_TYPE }
-                .sumOf { it.balance + (state.investValues[it.id]?.profitFen ?: 0L) }
+                .sumOf { it.balance + (state.investValues[it.id]?.totalGainFen ?: 0L) }
             val totalDebt = counted.filter { it.type == CREDIT_CARD_TYPE }.sumOf { maxOf(0L, -it.balance) }
-            // 单独留一份浮动合计：摘要卡要用它说明「本金的差在哪」
-            val totalProfit = counted.sumOf { state.investValues[it.id]?.profitFen ?: 0L }
+            // 单独留一份合计：摘要卡要用它说明「本金的差在哪」（含已清仓的已实现损益）
+            val totalProfit = counted.sumOf { state.investValues[it.id]?.totalGainFen ?: 0L }
 
             Column(
                 modifier = Modifier
@@ -496,8 +514,8 @@ private fun AssetSummaryCard(
         if (totalProfit != 0L) {
             Spacer(Modifier.height(8.dp))
             Text(
-                text = "含投资浮动盈亏 " + (if (totalProfit > 0L) "+" else "-") +
-                    money(abs(totalProfit), hideAmounts) + "（投资账户按市值计，本金见行内小字）",
+                text = "含投资盈亏 " + (if (totalProfit > 0L) "+" else "-") +
+                    money(abs(totalProfit), hideAmounts) + "（浮动 + 已清仓，本金见行内小字）",
                 style = MaterialTheme.typography.labelSmall,
                 color = if (totalProfit > 0L) AppColors.income else AppColors.expense
             )
@@ -658,9 +676,9 @@ private fun AccountRow(
     dragModifier: Modifier
 ) {
     var menuOpen by remember { mutableStateOf(false) }
-    // 投资账户的大字显示「市值」（本金 + 浮动盈亏），这样才能和券商 / 基金 App 的总资产对上；
-    // 本金退到下面小字，只用来核对转账记录
-    val display = account.balance + (invest?.profitFen ?: 0L)
+    // 投资账户的大字显示「市值」（本金 + 已实现 + 浮动盈亏），这样才能和券商 / 基金 App
+    // 的总资产对上；本金退到下面小字，只用来核对转账记录
+    val display = account.balance + (invest?.totalGainFen ?: 0L)
     val negative = display < 0
 
     Row(
@@ -751,12 +769,12 @@ private fun AccountRow(
             if (invest != null) {
                 Text(
                     text = "本金 " + money(account.balance, hideAmounts) + " · " +
-                        (if (invest.profitFen >= 0L) "+" else "-") +
-                        money(abs(invest.profitFen), hideAmounts),
+                        (if (invest.totalGainFen >= 0L) "+" else "-") +
+                        money(abs(invest.totalGainFen), hideAmounts),
                     style = MaterialTheme.typography.labelSmall,
                     color = when {
-                        invest.profitFen > 0L -> AppColors.income
-                        invest.profitFen < 0L -> AppColors.expense
+                        invest.totalGainFen > 0L -> AppColors.income
+                        invest.totalGainFen < 0L -> AppColors.expense
                         else -> MaterialTheme.colorScheme.onSurfaceVariant
                     },
                     maxLines = 1

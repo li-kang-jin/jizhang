@@ -48,7 +48,8 @@ import com.jizhang.app.data.local.entity.LocalTransaction
     // v11：local_account 增加 includeInTotal（是否计入总资产，统计页资产口径要用）
     // v12：新增 local_invest_position / local_invest_valuation（投资持仓与估值快照）
     // v13：新增 local_invest_flow（转账挂品种的成本流水）
-    version = 13,
+    // v14：local_invest_position 增加 realizedFen / closedAt（清仓时定格已实现损益）
+    version = 14,
     exportSchema = false
 )
 abstract class JizhangDatabase : RoomDatabase() {
@@ -357,6 +358,24 @@ abstract class JizhangDatabase : RoomDatabase() {
                 db.execSQL(
                     "CREATE UNIQUE INDEX IF NOT EXISTS `index_local_invest_flow_transactionId` " +
                         "ON `local_invest_flow` (`transactionId`)"
+                )
+            }
+        }
+
+        /**
+         * 13 -> 14：持仓增加已实现损益与清仓时间。
+         * <p>
+         * 纯加列、带默认值：既有持仓一律 `realizedFen = 0` / `closedAt = NULL`，
+         * 也就是「没清过仓」，行为与升级前完全一致。
+         * `closedAt` 必须可空 —— 在仓品种没有这个时间，用 0 会让「清仓时间」显示成 1970 年。
+         */
+        val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `local_invest_position` ADD COLUMN `realizedFen` INTEGER NOT NULL DEFAULT 0"
+                )
+                db.execSQL(
+                    "ALTER TABLE `local_invest_position` ADD COLUMN `closedAt` INTEGER"
                 )
             }
         }

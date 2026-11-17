@@ -322,6 +322,10 @@ CREATE TABLE IF NOT EXISTS t_invest_position
     sort           INTEGER     NOT NULL DEFAULT 0,
     note           VARCHAR(255),
     archived       SMALLINT    NOT NULL DEFAULT 0,
+    -- 清仓时定格的已实现损益（分）= 卖出到账 − 总成本；在仓品种为 0，可为负（亏损清仓）
+    realized_fen   BIGINT      NOT NULL DEFAULT 0,
+    -- 清仓时间（epoch millis）；null = 还在仓
+    closed_at      BIGINT,
     created_by     BIGINT,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_by     BIGINT,
@@ -330,6 +334,11 @@ CREATE TABLE IF NOT EXISTS t_invest_position
 );
 CREATE INDEX IF NOT EXISTS idx_invest_position_book
     ON t_invest_position (book_id) WHERE deleted = 0;
+
+-- 清仓相关列：老库补列（schema.sql 每次启动都跑，靠 IF NOT EXISTS 保证幂等）。
+-- 不清仓的持仓 realized_fen 恒为 0、closed_at 为 null，行为与加列前完全一致。
+ALTER TABLE t_invest_position ADD COLUMN IF NOT EXISTS realized_fen BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE t_invest_position ADD COLUMN IF NOT EXISTS closed_at BIGINT;
 
 -- 估值快照：只增不改。存历史而不是只存当前值，净值曲线才能回填。
 -- valued_at 用 epoch millis：它是客户端本地产生的瞬间，转成带时区的字符串再解析会漂。

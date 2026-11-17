@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.jizhang.app.data.local.entity.PositionWithValue
 import com.jizhang.app.data.repository.InvestmentOverview
 import com.jizhang.app.data.repository.InvestmentRepository
+import com.jizhang.app.ui.common.evaluateAmount
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,7 +39,9 @@ class InvestViewModel @Inject constructor(
         /** 正在更新市值的品种 */
         val valuing: PositionWithValue? = null,
         /** 「更新全部市值」弹窗是否打开 */
-        val valuingAll: Boolean = false
+        val valuingAll: Boolean = false,
+        /** 正在清仓的品种；null = 清仓弹窗关闭 */
+        val closing: PositionWithValue? = null
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -154,7 +157,40 @@ class InvestViewModel @Inject constructor(
         }
     }
 
-    /** 元字符串 → 分。空串与非法输入都按 0 处理（新建品种允许先不填钱） */
+    fun openClosing(position: PositionWithValue) {
+        _state.update { it.copy(closing = position) }
+    }
+
+    fun closeClosing() {
+        _state.update { it.copy(closing = null) }
+    }
+
+    /**
+     * 确认清仓：卖出额按用户填的**实际到账金额**定格已实现损益。
+     * <p>
+     * 空输入不提交 —— 0 元清仓是合法场景（退市 / 归零），但那要用户明确填 0，
+     * 不能把「没填」当成「一分钱没卖」。
+     */
+    fun confirmClose(position: PositionWithValue, soldText: String) {
+        if (soldText.isBlank() || bookId <= 0L) return
+        viewModelScope.launch {
+            repository.closePosition(position.id, parseFen(soldText))
+            closeClosing()
+        }
+    }
+
+    /** 撤销清仓：点错了 / 卖单被撤销 */
+    fun reopen(position: PositionWithValue) {
+        viewModelScope.launch { repository.reopenPosition(position.id) }
+    }
+
+    /**
+     * 元字符串 → 分。
+     * <p>
+     * 支持算式（`1500+250`）：追加投资时用户不用自己先算出合计，
+     * 这也让「更新全部市值」里一列数字可以粘式子进来。
+     * 空串与非法输入都按 0 处理（新建品种允许先不填钱）。
+     */
     private fun parseFen(text: String): Long =
-        ((text.toDoubleOrNull() ?: 0.0) * 100).roundToInt().toLong().coerceAtLeast(0L)
+        (evaluateAmount(text) ?: 0.0).let { (it * 100).roundToInt().toLong() }.coerceAtLeast(0L)
 }
