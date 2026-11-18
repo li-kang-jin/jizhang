@@ -123,6 +123,28 @@ fun compactAmount(fen: Long): String {
     }
 }
 
+/**
+ * 账户余额的紧凑写法（带 ¥、支持负数），记账页的账户芯片 / 选择器用它。
+ * <p>
+ * 与 [compactAmount] 的两点区别：
+ * 1. **0 要写成 `¥0`**，不能是 `-`（余额为零是真实信息，不是「没有数据」）；
+ * 2. **负数保留符号**（信用卡欠款就是负余额），否则 -1.2k 会显示成 1.2k，方向完全反了。
+ * <p>
+ * 千元以下不取整：12.34 和 12.99 差着钱，记账页要能看出来；
+ * 千元以上折成 k / w，目的是让「这个账户大概还有多少钱」一眼可比，
+ * 精确到分的地方（账单、账户详情）另有 [formatAmount]。
+ */
+fun compactMoney(fen: Long, hideAmounts: Boolean = false): String {
+    if (hideAmounts) return "****"
+    val yuan = abs(fen) / 100.0
+    val body = when {
+        yuan < 1000 -> formatAmount(abs(fen))
+        yuan < 10000 -> COMPACT_AMOUNT.format(yuan / 1000) + "k"
+        else -> COMPACT_AMOUNT.format(yuan / 10000) + "w"
+    }
+    return (if (fen < 0) "-¥" else "¥") + body
+}
+
 fun transactionTypeLabel(type: Int): String = when (type) {
     1 -> "支出"
     2 -> "收入"

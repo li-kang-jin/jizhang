@@ -178,6 +178,17 @@ class TransactionRepository @Inject constructor(
     suspend fun categoryUsage(bookId: Long, type: Int): Map<Long, Long> =
         transactionDao.categoryUsage(bookId, type).associate { it.categoryId to it.cnt }
 
+    /**
+     * 某个分类下各账户被用过的次数：记账页据此默认选中「这个分类平时记在哪个账户上」。
+     * <p>
+     * 查询失败按「没有历史」处理（返回空表），只是退回原来的默认账户逻辑，不该挡住记账。
+     */
+    suspend fun accountUsageByCategory(bookId: Long, categoryId: Long, type: Int): Map<Long, Long> =
+        runCatching {
+            transactionDao.accountUsageByCategory(bookId, categoryId, type)
+                .associate { it.accountId to it.cnt }
+        }.getOrDefault(emptyMap())
+
     /** 每个分类的笔数与金额合计：分类管理页用它显示用量、判断该把哪个合并掉 */
     suspend fun categoryUsageDetail(bookId: Long, type: Int): List<CategoryUsageRow> =
         transactionDao.categoryUsage(bookId, type)

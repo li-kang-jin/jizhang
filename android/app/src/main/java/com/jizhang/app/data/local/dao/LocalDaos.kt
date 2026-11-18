@@ -77,6 +77,16 @@ data class AccountUseRow(
 )
 
 /**
+ * 「分类 × 账户」的使用次数：记账页据此默认选中「这个分类平时记在哪个账户上」。
+ * <p>
+ * 只要两列：挑账户看的是次数，时间早晚不重要（频率高的那个才是习惯）。
+ */
+data class AccountCountRow(
+    val accountId: Long,
+    val cnt: Long
+)
+
+/**
  * 分类的用量：笔数与金额合计。
  * <p>
  * 记账页只用 [cnt]（挑默认分类），分类管理页两个都用：金额更能说明「这个分类值不值得留」，
@@ -201,6 +211,24 @@ interface TransactionDao {
             "AND categoryId IS NOT NULL GROUP BY categoryId"
     )
     suspend fun categoryUsage(bookId: Long, type: Int): List<CategoryUsageRow>
+
+    /**
+     * 某个分类下各账户被用过的次数。
+     * <p>
+     * 「餐饮→微信、房租→储蓄卡」这种搭配只有按分类统计才看得出来；全账本一个 lastAccount
+     * 记不住，换个场景就要手动改一次账户，而错选账户正是余额算错的源头。
+     * 转账没有分类，调用方不会传 type = 3（那里有「常用转账组合」自己的一套）。
+     */
+    @Query(
+        "SELECT accountId, COUNT(*) AS cnt FROM local_transaction " +
+            "WHERE bookId = :bookId AND pendingDelete = 0 AND type = :type " +
+            "AND categoryId = :categoryId GROUP BY accountId"
+    )
+    suspend fun accountUsageByCategory(
+        bookId: Long,
+        categoryId: Long,
+        type: Int
+    ): List<AccountCountRow>
 
     /**
      * 把某个分类下的账单整体改到另一个分类（分类合并用）。

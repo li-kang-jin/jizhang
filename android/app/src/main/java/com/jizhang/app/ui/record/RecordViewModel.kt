@@ -54,6 +54,13 @@ class RecordViewModel @Inject constructor(
         val accounts: List<LocalAccount> = emptyList(),
         /** 各账户被用过的次数：记账页的账户区只铺三个常用账户，按它排序 */
         val accountUsage: Map<Long, Long> = emptyMap(),
+        /**
+         * 各账户的实时余额（分），key = accountId。
+         * <p>
+         * 记账页把余额直接铺在账户芯片上：选错账户时，「微信 ¥12」和「招行 ¥8,000」
+         * 的差别是最直观的纠错信号。查不到（查询失败）时为空表，界面只是不显示余额。
+         */
+        val accountBalances: Map<Long, Long> = emptyMap(),
         val categories: List<LocalCategory> = emptyList(),
         val selectedAccountId: Long? = null,
         /** 上次保存时用的账户（按账本记忆）：账户选择器里排在第二，仅次于当前选中 */
@@ -89,6 +96,9 @@ class RecordViewModel @Inject constructor(
         val expressionText: String get() = CalcEngine.expressionText(tokens)
         val resultYuan: BigDecimal? get() = CalcEngine.evaluate(tokens)
 
+        /** 当前金额（分）：算「这笔记完账户还剩多少」用，空表达式为 null */
+        val amountFen: Long? get() = CalcEngine.resultFen(tokens)
+
         /** 金额、账户（转账还需转入账户）都齐了才允许保存 */
         val canSave: Boolean
             get() = CalcEngine.resultFen(tokens) != null &&
@@ -116,6 +126,14 @@ class RecordViewModel @Inject constructor(
 
     /** 用户自己点过分类：本次表单里不再用备注去猜，免得刚选好又被提示改回去 */
     private var categoryTouched = false
+
+    /**
+     * 用户自己点过账户：本次表单里不再跟着分类自动换账户。
+     * <p>
+     * 和 [categoryTouched] 是同一个道理 —— 用户刚明确表达过「这笔钱从这个账户出」，
+     * 再因为换个分类把它悄悄改掉，比不自动切换更让人恼火。
+     */
+    private var accountTouched = false
 
     private companion object {
         /** 计算「常用标签」时回看多少条带标签的历史账单 */
@@ -190,26 +208,39 @@ class RecordViewModel @Inject constructor(
             //（列表第一项往往是没人用的「现金」，靠它兜底等于每笔多点一次）
             val remembered = runCatching { settingsStore.lastAccountId(bookId) }.getOrNull()
             val usage = loadAccountUsage(bookId)
+            val balances = ledgerRepository.accountBalances(bookId)
             val defaultCategory = defaultCategoryId(bookId, type, categories)
+            val keptCategory = _state.value.selectedCategoryId
+                ?.takeIf { id -> categories.any { it.id == id } }
+            // 这个分类平时记在哪个账户：餐饮→微信、房租→储蓄卡，比全账本共用一个
+            // lastAccount 准得多（后者换个场景就要手动改一次，改漏了就是余额记错）
+            val habitAccount = categoryHabitAccount(
+                bookId = bookId,
+                categoryId = keptCategory ?: defaultCategory,
+                type = type,
+                accounts = accounts
+            )
             refreshNoteSamples(bookId)
             categoryTouched = false
+            accountTouched = false
             _state.update { current ->
                 current.copy(
                     accounts = accounts,
                     accountUsage = usage,
+                    accountBalances = balances,
                     lastAccountId = remembered,
-                    // 保留仍然有效的选中项 → 记住的账户 → 最常用的账户 → 第一项；被删掉/归档的自动跳过。
+                    // 保留仍然有效的选中项 → 本分类的常用账户 → 记住的账户 → 最常用的账户 → 第一项；
+                    // 被删掉/归档的自动跳过。
                     // 兜底也不能直接取列表第一项：那往往是没人用过的「现金」，选中它等于把它硬塞进
                     // 常用账户芯片里，还要顶掉一个真正常用的账户。
                     selectedAccountId = current.selectedAccountId
                         ?.takeIf { id -> accounts.any { it.id == id } }
+                        ?: habitAccount?.takeIf { id -> accounts.any { it.id == id } }
                         ?: remembered?.takeIf { id -> accounts.any { it.id == id } }
                         ?: pickQuickAccounts(accounts, usage, null, 1).firstOrNull()?.id,
 
                     categories = categories,
-                    selectedCategoryId = current.selectedCategoryId
-                        ?.takeIf { id -> categories.any { it.id == id } }
-                        ?: defaultCategory,
+                    selectedCategoryId = keptCategory ?: defaultCategory,
                     categorySuggestion = null
                 )
             }
@@ -227,6 +258,8 @@ class RecordViewModel @Inject constructor(
      */
     fun startEdit(bookId: Long, transaction: LocalTransaction) {
         loadedBookId = bookId
+        // 编辑旧账时账户是这笔账自己定的：换分类也不能跟着习惯改走（那等于悄悄改掉这笔账）
+        accountTouched = true
         _state.update {
             it.copy(
                 bookId = bookId,
@@ -253,11 +286,13 @@ class RecordViewModel @Inject constructor(
             val categories = ledgerRepository.cachedCategories(bookId, transaction.type)
             val remembered = runCatching { settingsStore.lastAccountId(bookId) }.getOrNull()
             val usage = loadAccountUsage(bookId)
+            val balances = ledgerRepository.accountBalances(bookId)
             val defaultCategory = defaultCategoryId(bookId, transaction.type, categories)
             _state.update { current ->
                 current.copy(
                     accounts = accounts,
                     accountUsage = usage,
+                    accountBalances = balances,
                     lastAccountId = remembered,
                     // 原账单的账户优先；它被删了才回落到记住的账户，最后才是第一项
                     selectedAccountId = current.selectedAccountId
@@ -401,6 +436,42 @@ class RecordViewModel @Inject constructor(
     private suspend fun loadAccountUsage(bookId: Long): Map<Long, Long> =
         runCatching { transactionRepository.accountUsage(bookId) }.getOrDefault(emptyMap())
 
+    /* ---------------- 分类 ↔ 账户 ---------------- */
+
+    /**
+     * 换分类时跟着历史习惯切账户（`餐饮 → 微信`、`房租 → 储蓄卡`）。
+     * <p>
+     * 只在「用户没有亲手点过账户」时生效：刚明确表达过「这笔钱从这个账户出」，
+     * 再因为换个分类悄悄改掉，比不切更让人恼火（与备注猜分类的 `categoryTouched` 同一套克制）。
+     * 转账不参与：它的账户由「从哪到哪」决定，另有一套「常用转账组合」。
+     */
+    private suspend fun followCategoryAccount(categoryId: Long?, type: Int) {
+        if (type == 3 || accountTouched || categoryId == null) return
+        val bookId = _state.value.bookId
+        if (bookId <= 0L) return
+        val picked = categoryHabitAccount(bookId, categoryId, type, _state.value.accounts) ?: return
+        if (_state.value.selectedAccountId != picked) {
+            _state.update { it.copy(selectedAccountId = picked) }
+        }
+    }
+
+    /**
+     * 某个分类平时记在哪个账户上；没有足够历史时返回 null（调用方回落到原默认值）。
+     * <p>
+     * 查询失败当成「没有历史」：少省一次点击而已，不该挡住记账。
+     */
+    private suspend fun categoryHabitAccount(
+        bookId: Long,
+        categoryId: Long?,
+        type: Int,
+        accounts: List<LocalAccount>
+    ): Long? {
+        val id = categoryId ?: return null
+        if (type == 3 || bookId <= 0L) return null
+        val usage = transactionRepository.accountUsageByCategory(bookId, id, type)
+        return pickAccountForCategory(accounts, usage)
+    }
+
     /**
      * 拉一份「备注 / 标签 → 当时记的分类」的样本。
      * <p>
@@ -502,6 +573,9 @@ class RecordViewModel @Inject constructor(
                 categorySuggestion = null
             )
         }
+        // 收支类型一换，默认分类就变了（支出「餐饮」≠ 收入「工资」），
+        // 默认账户也该跟着这个分类的习惯走
+        followCategoryAccount(defaultCategory, type)
     }
 
     fun switchType(type: Int) {
@@ -541,6 +615,8 @@ class RecordViewModel @Inject constructor(
     /* ---------------- 选项 ---------------- */
 
     fun selectAccount(id: Long) {
+        // 用户亲手点过账户：本次表单里不再跟着分类自动换（见 [accountTouched]）
+        accountTouched = true
         _state.update { it.copy(selectedAccountId = id) }
         // 转账的转出账户也可能是投资账户（卖出）：换账户后品种选项要跟着换，
         // 否则「基金赎回转到微信」这一步永远选不到基金，只能眼睁睁看着本金少、成本不动
@@ -658,7 +734,12 @@ class RecordViewModel @Inject constructor(
             )
         }
         // 换分类就换一套标签候选：同类的标签直接铺在表单上，一下就能点到
-        viewModelScope.launch { refreshTagSuggestions() }
+        viewModelScope.launch {
+            // 「餐饮→微信、房租→储蓄卡」：分类换了，账户默认跟着换，
+            // 省掉每次都要手动改一次账户（改漏了就是余额记错的开始）
+            followCategoryAccount(id, _state.value.type)
+            refreshTagSuggestions()
+        }
     }
 
     /**
@@ -722,28 +803,33 @@ class RecordViewModel @Inject constructor(
         }
     }
 
-    /** 保存到本地（离线可用），返回错误信息或 null（成功） */
-    fun save(onDone: (String?) -> Unit) {
+    /**
+     * 保存到本地（离线可用）。
+     * <p>
+     * 结果带回「刚记完的那一笔」：新增成功时上层用它挂「改账户 / 撤销」的提示，
+     * 编辑保存时给 null —— 改旧账没有可撤销的语义。
+     */
+    fun save(onDone: (SaveOutcome) -> Unit) {
         val current = _state.value
         val fen = CalcEngine.resultFen(current.tokens)
         when {
             fen == null -> {
-                onDone("请输入金额")
+                onDone(SaveOutcome.Failure("请输入金额"))
                 return
             }
 
             current.selectedAccountId == null -> {
-                onDone("请选择账户")
+                onDone(SaveOutcome.Failure("请选择账户"))
                 return
             }
 
             current.type == 3 && current.selectedToAccountId == null -> {
-                onDone("请选择转入账户")
+                onDone(SaveOutcome.Failure("请选择转入账户"))
                 return
             }
 
             current.type == 3 && current.selectedToAccountId == current.selectedAccountId -> {
-                onDone("转出与转入账户不能相同")
+                onDone(SaveOutcome.Failure("转出与转入账户不能相同"))
                 return
             }
         }
@@ -752,38 +838,66 @@ class RecordViewModel @Inject constructor(
             _state.update { it.copy(saving = true) }
             // saving 必须无条件复位（含抛异常 / 协程取消）：它是常驻 VM 上的状态，
             // 一旦卡在 true，本次保存按钮永远转圈，而且关掉页面后还会被下一次打开继承。
-            val error = try {
+            val result = try {
                 persist(current, fen)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (t: Exception) {
-                t.message ?: "保存失败，请重试"
+                Persisted.Failed(t.message ?: "保存失败，请重试")
             } finally {
                 _state.update { it.copy(saving = false) }
             }
-            if (error == null) {
-                // 记住这次用的账户：下次进记账页直接就是它（按账本存，多账本不串号）。
-                // 写失败不影响记账本身，吞掉异常即可
-                current.selectedAccountId?.let { id ->
-                    runCatching { settingsStore.setLastAccount(current.bookId, id) }
-                    _state.update { it.copy(lastAccountId = id) }
+            when (result) {
+                is Persisted.Failed -> onDone(SaveOutcome.Failure(result.message))
+                is Persisted.Ok -> {
+                    // 记住这次用的账户：下次进记账页直接就是它（按账本存，多账本不串号）。
+                    // 写失败不影响记账本身，吞掉异常即可
+                    current.selectedAccountId?.let { id ->
+                        runCatching { settingsStore.setLastAccount(current.bookId, id) }
+                        _state.update { it.copy(lastAccountId = id) }
+                    }
+                    // 这一笔会改变「常用账户」排序：重算一次，下次打开首页就是最新的三个
+                    val usage = loadAccountUsage(current.bookId)
+                    // 余额也必须立刻重算：VM 是常驻实例，不刷新的话下一次打开记账页
+                    // 会拿着上一笔之前的余额做预览，用户会以为记错了
+                    val balances = ledgerRepository.accountBalances(current.bookId)
+                    _state.update { it.copy(accountUsage = usage, accountBalances = balances) }
+                    // 刚记完的这笔立刻进「常用标签 / 最近记过」：连着记下一笔时不用重新打
+                    refreshTagSuggestions()
+                    // 刚记的转账组合也要进「常用转账」，下一次一笔就能点出来
+                    refreshTransferTemplates()
+                    // 同理，这笔的备注与标签马上成为下一条的参考样本（连着记同类账时最有用）
+                    refreshNoteSamples(current.bookId)
+                    onDone(SaveOutcome.Success(result.record))
                 }
-                // 这一笔会改变「常用账户」排序：重算一次，下次打开首页就是最新的三个
-                val usage = loadAccountUsage(current.bookId)
-                _state.update { it.copy(accountUsage = usage) }
-                // 刚记完的这笔立刻进「常用标签 / 最近记过」：连着记下一笔时不用重新打
-                refreshTagSuggestions()
-                // 刚记的转账组合也要进「常用转账」，下一次一笔就能点出来
-                refreshTransferTemplates()
-                // 同理，这笔的备注与标签马上成为下一条的参考样本（连着记同类账时最有用）
-                refreshNoteSamples(current.bookId)
             }
-            onDone(error)
         }
     }
 
-    /** 真正落库（新增 / 更新），返回错误文案，null 表示成功 */
-    private suspend fun persist(current: UiState, fen: Long): String? {
+    /**
+     * 撤销刚记的那一笔（保存成功提示条上的「撤销」）。
+     * <p>
+     * 走与账单页同一个删除入口 [TransactionRepository.deleteLocal]：它会先解除投资品种的成本关联，
+     * 否则撤了账单、成本还挂在品种上，投资页盈亏会凭空好看一截。
+     * 删完立刻重算余额与「常用账户」：这条提示的价值就是「当场反悔、当场看到数字回去」。
+     */
+    fun undoSave(transactionId: Long) {
+        val bookId = _state.value.bookId
+        viewModelScope.launch {
+            runCatching { transactionRepository.deleteLocal(transactionId) }
+            if (bookId <= 0L) return@launch
+            val usage = loadAccountUsage(bookId)
+            val balances = ledgerRepository.accountBalances(bookId)
+            _state.update { it.copy(accountUsage = usage, accountBalances = balances) }
+        }
+    }
+
+    /**
+     * 真正落库（新增 / 更新）。
+     *
+     * @return [Persisted.Ok] 带回新增的这一笔（供「改账户 / 撤销」用）；编辑保存时 record 为 null
+     */
+    private suspend fun persist(current: UiState, fen: Long): Persisted {
         val editing = current.editing
         val originalDate = editing?.let {
             Instant.ofEpochMilli(it.tradeTime).atZone(ZoneId.systemDefault()).toLocalDate()
@@ -829,7 +943,7 @@ class RecordViewModel @Inject constructor(
                 tags = current.tags.ifBlank { null }
             )
             if (!updated) {
-                return "这笔账单已被删除，无法保存修改"
+                return Persisted.Failed("这笔账单已被删除，无法保存修改")
             }
             editing.id
         }
@@ -849,7 +963,29 @@ class RecordViewModel @Inject constructor(
                 occurredAt = millis
             )
         }
-        return null
+
+        // 新增时把这一笔原样带回去：上层拿它做「改账户」（直接进编辑态）与「撤销」，
+        // 不必再查一次库（字段就是刚写进去的那些）。编辑保存没有可撤销的语义，返回 null。
+        val record = if (editing == null) {
+            SavedRecord(
+                transaction = LocalTransaction(
+                    id = transactionId,
+                    bookId = current.bookId,
+                    type = current.type,
+                    amount = fen,
+                    accountId = accountId,
+                    toAccountId = toAccountId,
+                    categoryId = categoryId,
+                    tradeTime = millis,
+                    remark = current.remark.ifBlank { null },
+                    tags = current.tags.ifBlank { null }
+                ),
+                accountName = current.accounts.firstOrNull { it.id == accountId }?.name.orEmpty()
+            )
+        } else {
+            null
+        }
+        return Persisted.Ok(record)
     }
 
     /**
@@ -918,6 +1054,7 @@ class RecordViewModel @Inject constructor(
             )
         }
         categoryTouched = false
+        accountTouched = false
 
         // 分类是按类型缓存的：类型变了必须重查一次，否则保留的 categoryId 会落在错误的类型上
         val bookId = snapshot.bookId
@@ -937,6 +1074,64 @@ class RecordViewModel @Inject constructor(
         }
     }
 }
+
+/* -------------------- 余额预览 / 余额不足 -------------------- */
+
+/**
+ * 信用卡类型（`local_account.type = 3`）：**负余额是欠款，不是余额不够**。
+ * 用信用卡消费本来就把余额越刷越负，这里绝不能提示「余额不足」。
+ */
+internal const val ACCOUNT_TYPE_CREDIT_CARD = 3
+
+/**
+ * 这笔账对某个账户余额的影响（分，纯函数，便于单测）。
+ * <p>
+ * 与 `AccountDao` 里的余额聚合口径保持一致：支出 −、收入 +；
+ * 转账对转出方是 −、对转入方是 +，两端口径不同，所以用 [isToAccount] 区分。
+ * 余额与流水是同一套符号，界面才能在记账当时算出「记完还剩多少」。
+ *
+ * @param amountFen 计算器当前结果；没填（或为 0）时返回 null，界面就不显示预览
+ */
+internal fun amountDelta(
+    type: Int,
+    amountFen: Long?,
+    isToAccount: Boolean = false
+): Long? {
+    if (amountFen == null || amountFen <= 0L) return null
+    return when (type) {
+        1 -> -amountFen
+        2 -> amountFen
+        3 -> if (isToAccount) amountFen else -amountFen
+        else -> null
+    }
+}
+
+/**
+ * 「这笔记完，这个账户还剩多少」。
+ * <p>
+ * 余额或金额任一未知时返回 null（老数据、查询失败），调用方据此不显示预览 ——
+ * 猜一个数字出来比不显示更糟。
+ */
+internal fun balanceAfter(
+    balanceFen: Long?,
+    type: Int,
+    amountFen: Long?,
+    isToAccount: Boolean = false
+): Long? {
+    val balance = balanceFen ?: return null
+    val delta = amountDelta(type, amountFen, isToAccount) ?: return null
+    return balance + delta
+}
+
+/**
+ * 这笔记完会不会把余额刷成负数 —— 也就是「选错账户」最典型的样子：
+ * 拿只有 12 块的微信去付 200 块。
+ * <p>
+ * 信用卡不算：它的负余额是欠款，属于正常语义（见 [ACCOUNT_TYPE_CREDIT_CARD]）。
+ * 只做提示，不拦保存：确实存在「先记后补钱」的场景，一律拦下会变成新的麻烦。
+ */
+internal fun isBalanceShort(accountType: Int, afterFen: Long?): Boolean =
+    afterFen != null && afterFen < 0L && accountType != ACCOUNT_TYPE_CREDIT_CARD
 
 /* -------------------- 品种挂靠 -------------------- */
 
@@ -1023,6 +1218,68 @@ internal fun pickQuickAccounts(
         }
     }
     return top
+}
+
+/* -------------------- 分类 × 账户 -------------------- */
+
+/**
+ * 至少这么多笔同分类记录才算「习惯」。
+ * <p>
+ * 一次巧合可能正是那次记错账 —— 拿它当默认值，等于把错误固化成下一笔的默认。
+ * 两次以上才认为「这个分类平时就是记在这个账户上」。
+ */
+internal const val CATEGORY_ACCOUNT_MIN_USES = 2L
+
+/**
+ * 「这个分类平时记在哪个账户上」（纯函数，便于单测）。
+ *
+ * 规则三条：
+ * 1. **够次数才算数**（[CATEGORY_ACCOUNT_MIN_USES]）：一次记录不足以成为习惯；
+ * 2. **次数最多者胜**，次数相同时取账户管理里靠前的那个（[maxByOrNull] 返回第一个最大值，
+ *    即保持手工顺序）—— 与 `pickDefaultCategoryId` 同一套决胜规则；
+ * 3. 归档账户不参与：它已经停用，不能因为历史次数多就被重新选中。
+ *
+ * @return 没有够格的账户时返回 null，调用方回落到「记住的上次账户」
+ */
+internal fun pickAccountForCategory(
+    accounts: List<LocalAccount>,
+    usage: Map<Long, Long>
+): Long? = accounts
+    .filterNot { it.archived }
+    .filter { (usage[it.id] ?: 0L) >= CATEGORY_ACCOUNT_MIN_USES }
+    .maxByOrNull { usage[it.id] ?: 0L }
+    ?.id
+
+/* -------------------- 保存结果 -------------------- */
+
+/**
+ * 「记一笔」的保存结果。
+ * <p>
+ * 失败只带一句能直接展示的话；成功带回刚写进去的那一笔，让上层在关闭页面之后
+ * 还能提供「改账户 / 撤销」—— 错选账户最典型的发现时机就是「刚保存就看到余额差了一截」。
+ */
+sealed interface SaveOutcome {
+    data class Failure(val message: String) : SaveOutcome
+
+    /** @param record 新增成功才有；编辑保存为 null（改旧账没有可撤销的语义） */
+    data class Success(val record: SavedRecord?) : SaveOutcome
+}
+
+/**
+ * 刚落库的一笔账。
+ *
+ * @param transaction 与落库值一致，交给记账页做「编辑这笔」用（字段已齐，不必再查一次库）
+ * @param accountName 账户名（提示条文案用）；账户随后被删这种极端情况下为空
+ */
+data class SavedRecord(
+    val transaction: LocalTransaction,
+    val accountName: String
+)
+
+/** [RecordViewModel.persist] 的结果：成功时带回新增的这一笔（编辑时为 null） */
+private sealed interface Persisted {
+    data class Ok(val record: SavedRecord?) : Persisted
+    data class Failed(val message: String) : Persisted
 }
 
 /* -------------------- 常用转账 -------------------- */

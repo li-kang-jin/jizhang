@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -27,6 +28,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Snackbar
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
@@ -62,16 +64,23 @@ import com.jizhang.app.ui.budget.BudgetViewModel
 import com.jizhang.app.ui.budget.RecurringExpenseDialog
 import com.jizhang.app.ui.calendar.CalendarScreen
 import com.jizhang.app.ui.category.CategoryListDialog
+import com.jizhang.app.ui.common.compactMoney
 import com.jizhang.app.ui.importer.ImportDialog
 import com.jizhang.app.ui.invest.InvestScreen
 import com.jizhang.app.ui.mine.MineScreen
 import com.jizhang.app.ui.record.RecordScreen
+import com.jizhang.app.ui.record.RecordViewModel
+import com.jizhang.app.ui.record.SavedRecord
 import com.jizhang.app.ui.report.BudgetDialog
 import com.jizhang.app.ui.report.ReportScreen
 import com.jizhang.app.ui.report.ReportViewModel
 import com.jizhang.app.ui.settings.SettingsDialog
 import com.jizhang.app.ui.wealth.WealthPlanScreen
+import kotlinx.coroutines.delay
 import java.time.LocalDate
+
+/** 保存后「改账户 / 撤销」提示的停留时长：够看清账户与金额，又不至于长期挡着底部内容 */
+private const val SAVED_TIP_TIMEOUT_MS = 6_000L
 
 /**
  * 主界面。
@@ -107,6 +116,13 @@ fun MainScreen(appViewModel: AppViewModel) {
     // 导入完成后 +1，用来通知「我的」页刷新本地统计
     var importDone by remember { mutableIntStateOf(0) }
 
+    // 刚记完的那一笔：页面关闭后给一条「改账户 / 撤销」的提示。
+    // 错选账户最典型的发现时机就是「保存完看到余额差了一截」，这条路让纠错只需一次点击。
+    var lastSaved by remember { mutableStateOf<SavedRecord?>(null) }
+    // 与记账页共用同一个 Activity 级实例（工程没有 Navigation）：撤销后余额 / 常用账户
+    // 必须按删除后的数据重算，否则下一次记账页的余额预览还是旧值
+    val recordViewModel: RecordViewModel = hiltViewModel()
+
     // 「设置预算」覆盖层。两个入口的数据源不同（预算页按周期、统计页按月），各存一份状态：
     // 非空表示打开，值为默认选中的预算范围（0 = 总预算）
     var budgetEditorCategoryId by remember { mutableStateOf<Long?>(null) }
@@ -130,6 +146,13 @@ fun MainScreen(appViewModel: AppViewModel) {
     // 同上：统计页的设置预算覆盖层也要挂在根部，所以这里拿同一份 ViewModel 实例（同一 Activity 级 owner）
     val reportViewModel: ReportViewModel = hiltViewModel()
     val reportState by reportViewModel.state.collectAsStateWithLifecycle()
+
+    // 刚保存成功 → 给一次反悔的机会，几秒后自动消失（不常驻，避免挡住底部内容）。
+    LaunchedEffect(lastSaved) {
+        val saved = lastSaved ?: return@LaunchedEffect
+        delay(SAVED_TIP_TIMEOUT_MS)
+        if (lastSaved === saved) lastSaved = null
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -314,6 +337,40 @@ fun MainScreen(appViewModel: AppViewModel) {
                     onLoggedOut = appViewModel::onLoggedOut
                 )
             }
+
+            // 刚保存成功：给一次当场反悔的机会（改账户 / 撤销）。
+            // 挂在内容区底部而不是 SnackbarHost：这个版本 M3 的 Snackbar 只支持一个 actionLabel，
+            // 而这里需要两个动作；几秒后由上面的 LaunchedEffect 自动收起。
+            lastSaved?.let { saved ->
+                Snackbar(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .fillMaxWidth(),
+                    actionOnNewLine = true,
+                    action = {
+                        Row {
+                            TextButton(onClick = {
+                                // 直接把刚记的那笔以编辑态打开：不用先回账单页把它翻出来
+                                editingTransaction = saved.transaction
+                                recordDate = null
+                                showRecord = true
+                                lastSaved = null
+                            }) { Text("改账户") }
+                            TextButton(onClick = {
+                                // 走与账单页同一个删除入口：挂着的投资品种成本会一并回退
+                                recordViewModel.undoSave(saved.transaction.id)
+                                lastSaved = null
+                            }) { Text("撤销") }
+                        }
+                    }
+                ) {
+                    Text(
+                        text = "已记入「${saved.accountName}」 " +
+                            compactMoney(saved.transaction.amount, state.hideAmounts)
+                    )
+                }
+            }
         }
     }
 
@@ -321,6 +378,7 @@ fun MainScreen(appViewModel: AppViewModel) {
         RecordScreen(
             bookId = state.bookId,
             hapticEnabled = state.hapticEnabled,
+            hideAmounts = state.hideAmounts,
             editTransaction = editingTransaction,
             // 补记某天：把日历里点中的那天预填进表单
             initialDate = recordDate,
@@ -329,10 +387,12 @@ fun MainScreen(appViewModel: AppViewModel) {
                 editingTransaction = null
                 recordDate = null
             },
-            onSaved = {
+            onSaved = { saved ->
                 showRecord = false
                 editingTransaction = null
                 recordDate = null
+                // 只有新增才给「改账户 / 撤销」：编辑保存没有可撤销的语义
+                if (saved != null) lastSaved = saved
             }
         )
     }

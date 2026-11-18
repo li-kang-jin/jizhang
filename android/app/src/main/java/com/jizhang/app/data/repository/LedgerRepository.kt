@@ -47,6 +47,17 @@ class LedgerRepository @Inject constructor(
             accountDao.listActiveByBook(bookId).ifEmpty { accountDao.listByBook(bookId) }
         }
 
+    /**
+     * 各账户的实时余额（分），记账页据此在账户芯片上直接显示「这个账户还有多少钱」。
+     * <p>
+     * 一次性取全量（含归档账户），由调用方按自己拿到的账户列表查表：两边都取「全量」，
+     * 才不会被「全都归档时退回全量」这种兜底逻辑搞出「账户在、余额不在」的错配。
+     * 查询失败时返回空表，界面只是不显示余额，不该挡住记账。
+     */
+    suspend fun accountBalances(bookId: Long): Map<Long, Long> =
+        runCatching { accountDao.listWithBalance(bookId).associate { it.id to it.balance } }
+            .getOrDefault(emptyMap())
+
     /** 全部分类（支出 + 收入），账单页筛选用 */
     fun observeCategories(bookId: Long): Flow<List<LocalCategory>> = categoryDao.observeByBook(bookId)
 

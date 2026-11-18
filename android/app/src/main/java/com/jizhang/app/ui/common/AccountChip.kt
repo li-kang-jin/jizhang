@@ -36,8 +36,16 @@ import com.jizhang.app.data.local.entity.LocalAccount
  * 并按类型上色（现金绿、储蓄卡蓝、信用卡紫、投资橙）——颜色本身就是「钱放在哪」的信息，
  * 既能把账户行和标签行一眼分开，也能区分账户各自的类型。
  *
- * @param showType 名字下面是否补一行类型名。横向密排时关掉，列表里打开
+ * **余额是这枚芯片的第三个身份标记**：名字（招行）看不出来里面还有多少钱，
+ * 而「选错账户」最典型的信号恰恰是余额对不上（微信只剩 12 块却记了 200）。
+ * 所以余额直接铺在芯片上，不用先点开二级选择器。
+ *
+ * @param showType 名字下面是否补一行类型名。横向密排时关掉（余额改走同一行），列表里打开
  * @param compact 更小一档，用于记账页那一行元信息
+ * @param balanceFen 账户当前余额（分）。null 表示查不到，不显示
+ * @param afterBalanceFen 「这笔记完」的余额（分）。非空时显示成 `¥12.00 → ¥-188.00`，
+ *        让用户在按保存之前就看到这笔钱从哪个账户扣、扣完剩多少
+ * @param warn 这笔会把余额刷成负数（信用卡除外，见 `isBalanceShort`）：余额行转成错误色
  */
 @Composable
 fun AccountChip(
@@ -46,11 +54,16 @@ fun AccountChip(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     compact: Boolean = false,
-    showType: Boolean = false
+    showType: Boolean = false,
+    balanceFen: Long? = null,
+    afterBalanceFen: Long? = null,
+    hideAmounts: Boolean = false,
+    warn: Boolean = false
 ) {
     val iconKey = accountIconKeyOf(account.icon, account.type)
     val typeColor = accountColorOf(account.icon, account.type)
     val shape = RoundedCornerShape(if (compact) 10.dp else 12.dp)
+    val balance = balanceLabel(balanceFen, afterBalanceFen, hideAmounts)
     Row(
         modifier = modifier
             .clip(shape)
@@ -100,12 +113,25 @@ fun AccountChip(
             )
             if (showType) {
                 Text(
-                    text = accountTypeLabel(account.type),
+                    text = listOfNotNull(accountTypeLabel(account.type), balance).joinToString(" · "),
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (warn) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1
                 )
             }
+        }
+        // 横排（记账页元信息条）没有第二行的位置：余额跟名字挤在同一行，
+        // 不额外加高芯片 —— 那一行高度是分类网格让出来的，多一行就要滚分类
+        if (!showType && balance != null) {
+            Spacer(Modifier.width(5.dp))
+            Text(
+                text = balance,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (warn) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1
+            )
         }
         if (selected) {
             Spacer(Modifier.width(4.dp))
@@ -117,4 +143,20 @@ fun AccountChip(
             )
         }
     }
+}
+
+/**
+ * 芯片上的余额文案：有「记完」预览时写成 `¥12.00 → -¥188.00`，否则只写当前余额。
+ * <p>
+ * 金额未知（查不到）或预览与当前值相同（金额为 0）时只写一个数，免得出现 `¥12 → ¥12` 这种噪音。
+ */
+private fun balanceLabel(
+    balanceFen: Long?,
+    afterBalanceFen: Long?,
+    hideAmounts: Boolean
+): String? {
+    val balance = balanceFen ?: return null
+    val before = compactMoney(balance, hideAmounts)
+    val after = afterBalanceFen?.let { compactMoney(it, hideAmounts) }
+    return if (after == null || after == before) before else "$before → $after"
 }

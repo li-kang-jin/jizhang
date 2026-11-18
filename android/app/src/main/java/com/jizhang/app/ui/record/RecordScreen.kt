@@ -90,6 +90,7 @@ import com.jizhang.app.ui.common.categoryColorOf
 import com.jizhang.app.ui.common.categoryContentOn
 import com.jizhang.app.ui.common.categoryIconOf
 import com.jizhang.app.ui.common.categoryTintOn
+import com.jizhang.app.ui.common.compactMoney
 import com.jizhang.app.ui.common.safeDialogContent
 import com.jizhang.app.ui.theme.AppColors
 import java.math.RoundingMode
@@ -127,8 +128,15 @@ fun RecordScreen(
     editTransaction: LocalTransaction? = null,
     /** 非空表示「补记某天」（从日历页点某一天进来），表单里的记账日期预填成那天 */
     initialDate: LocalDate? = null,
+    /** 金额隐私模式：账户芯片上的余额显示成 ****（设置里的开关，与其它页面同一口径） */
+    hideAmounts: Boolean = false,
     onDismiss: () -> Unit,
-    onSaved: () -> Unit,
+    /**
+     * 保存成功后的回调。
+     * <p>
+     * 新增时带回落库的这一笔（上层据此给出「改账户 / 撤销」），编辑保存时为 null。
+     */
+    onSaved: (SavedRecord?) -> Unit,
     viewModel: RecordViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -161,15 +169,17 @@ fun RecordScreen(
                 s.positions.firstOrNull { it.id == s.selectedPositionId }?.name
             }
         }
-        viewModel.save { error ->
-            if (error == null) {
-                errorMessage = null
-                if (investedName != null) {
-                    Toast.makeText(context, "已计入「$investedName」的市值", Toast.LENGTH_SHORT).show()
+        viewModel.save { outcome ->
+            when (outcome) {
+                is SaveOutcome.Failure -> errorMessage = outcome.message
+                is SaveOutcome.Success -> {
+                    errorMessage = null
+                    if (investedName != null) {
+                        Toast.makeText(context, "已计入「$investedName」的市值", Toast.LENGTH_SHORT).show()
+                    }
+                    // 带回这一笔：上层用它在页面关闭后提供「改账户 / 撤销」
+                    onSaved(outcome.record)
                 }
-                onSaved()
-            } else {
-                errorMessage = error
             }
         }
     }
@@ -194,6 +204,7 @@ fun RecordScreen(
             state = state,
             viewModel = viewModel,
             errorMessage = errorMessage,
+            hideAmounts = hideAmounts,
             onBack = onDismiss,
             onSave = ::save,
             onOpenRemark = { showRemarkDialog = true },
@@ -286,6 +297,7 @@ private fun RecordLayout(
     state: RecordViewModel.UiState,
     viewModel: RecordViewModel,
     errorMessage: String?,
+    hideAmounts: Boolean,
     onBack: () -> Unit,
     onSave: () -> Unit,
     onOpenRemark: () -> Unit,
@@ -329,6 +341,9 @@ private fun RecordLayout(
                 enabled = state.canSave && !state.saving,
                 saving = state.saving,
                 editing = state.editing != null,
+                // 把账户名写进保存按钮：按下去之前的最后一次核对 ——
+                // 「保存到 微信」比一个光秃秃的「保存」更不容易在错账户上一路点到底
+                accountName = state.accounts.firstOrNull { it.id == state.selectedAccountId }?.name,
                 onClick = onSave
             )
         }
@@ -345,7 +360,7 @@ private fun RecordLayout(
                     .padding(horizontal = 16.dp)
             ) {
                 Spacer(Modifier.height(6.dp))
-                TransferSection(state, viewModel)
+                TransferSection(state, viewModel, hideAmounts)
                 Spacer(Modifier.height(10.dp))
             }
         } else {
@@ -384,6 +399,7 @@ private fun RecordLayout(
         MetaBar(
             state = state,
             accent = accent,
+            hideAmounts = hideAmounts,
             onPickAccount = { showAccountPicker = true },
             onSelectAccount = viewModel::selectAccount,
             onOpenDate = onOpenDate,
@@ -391,7 +407,7 @@ private fun RecordLayout(
         )
 
         // ⑤ 金额：紧贴键盘，眼睛不用离开手指
-        AmountBar(state)
+        AmountBar(state, hideAmounts)
 
         // ⑥ 键盘
         CalcKeyboard(onKey = onKey)
@@ -400,8 +416,14 @@ private fun RecordLayout(
     if (showAccountPicker) {
         AccountPickerDialog(
             accounts = state.accounts,
+            balances = state.accountBalances,
             selectedId = state.selectedAccountId,
             lastAccountId = state.lastAccountId,
+            // 选择器里逐行算「点这个账户，记完还剩多少」：横向比较余额，
+            // 比点完再看结果更容易发现自己摸错了账户
+            type = state.type,
+            amountFen = state.amountFen,
+            hideAmounts = hideAmounts,
             onSelect = {
                 viewModel.selectAccount(it)
                 showAccountPicker = false
@@ -411,30 +433,55 @@ private fun RecordLayout(
     }
 }
 
-/** 顶栏右侧的保存动作：不可保存时是明确的灰态，不是「点了没反应」 */
+/**
+ * 顶栏右侧的保存动作：不可保存时是明确的灰态，不是「点了没反应」。
+ * <p>
+ * 新增账单时按钮上带账户名（「保存到 微信」）：顶栏空间有限，名字超过 6 个字截断，
+ * 但再怎么截也能看出是不是那个账户 —— 这正是防错选的最后一道确认。
+ */
 @Composable
-private fun SaveAction(enabled: Boolean, saving: Boolean, editing: Boolean, onClick: () -> Unit) {
+private fun SaveAction(
+    enabled: Boolean,
+    saving: Boolean,
+    editing: Boolean,
+    accountName: String?,
+    onClick: () -> Unit
+) {
+    val label = when {
+        saving -> "保存中…"
+        editing -> "保存修改"
+        accountName.isNullOrBlank() -> "保存"
+        else -> "保存到 " + accountName.take(6) + if (accountName.length > 6) "…" else ""
+    }
     TextButton(
         onClick = onClick,
         enabled = enabled,
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-        modifier = Modifier.height(34.dp)
+        modifier = Modifier
+            .height(34.dp)
+            // 顶栏里还有类型分段要放：按钮自己封顶，长账户名靠省略号收，不去挤别人
+            .widthIn(max = 160.dp)
     ) {
         Text(
-            text = when {
-                saving -> "保存中…"
-                editing -> "保存修改"
-                else -> "保存"
-            },
+            text = label,
             style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.SemiBold
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }
 
-/** 金额条：本页最大的数字，紧贴键盘 */
+/**
+ * 金额条：本页最大的数字，紧贴键盘。
+ * <p>
+ * 右侧一列放两条小字：算式（`2500+300`）和「这笔记完这个账户还剩多少」。
+ * 预览不再单独占一行 —— 记账页的高度全给了分类网格与键盘，而这里就在金额旁边：
+ * 手指刚敲完数字，眼睛正好落在这儿，选错账户（微信只剩 12 块却记了 200）当场就能看见。
+ */
 @Composable
-private fun AmountBar(state: RecordViewModel.UiState) {
+private fun AmountBar(state: RecordViewModel.UiState, hideAmounts: Boolean) {
+    val preview = accountPreview(state, hideAmounts)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -448,28 +495,80 @@ private fun AmountBar(state: RecordViewModel.UiState) {
             modifier = Modifier.padding(bottom = 4.dp)
         )
         Spacer(Modifier.width(4.dp))
+        // 金额本身不设 weight：它优先占满，预览挤不掉它（宁可预览省略，也不能让金额看不全）
         Text(
             text = amountText(state),
             style = MaterialTheme.typography.headlineLarge,
             fontWeight = FontWeight.Bold,
             color = amountColor(state),
             maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f, fill = false)
+            overflow = TextOverflow.Ellipsis
         )
-        if (state.expressionText.isNotBlank()) {
-            Spacer(Modifier.width(10.dp))
-            Text(
-                text = state.expressionText,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+        Spacer(Modifier.width(8.dp))
+        Spacer(Modifier.weight(1f))
+        if (state.expressionText.isNotBlank() || preview != null) {
+            Column(
                 modifier = Modifier
-                    .weight(1f, fill = false)
-                    .padding(bottom = 5.dp)
-            )
+                    .widthIn(max = 200.dp)
+                    .padding(bottom = 5.dp),
+                horizontalAlignment = Alignment.End
+            ) {
+                if (state.expressionText.isNotBlank()) {
+                    Text(
+                        text = state.expressionText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                preview?.let {
+                    Text(
+                        text = it.text,
+                        style = MaterialTheme.typography.labelSmall,
+                        // 余额会变负：直接标红，和顶栏灰态的「不可保存」区分开 —— 这条只是提醒，不拦保存
+                        color = if (it.short) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
         }
+    }
+}
+
+/**
+ * 金额条右侧的「记完余额」，null 表示没账户 / 没填金额 / 余额查不到。
+ *
+ * @param short 这笔记完余额会变负（信用卡除外）：界面标红，并在文案里直接说「差多少」
+ */
+private data class BalancePreview(val text: String, val short: Boolean)
+
+/**
+ * 算出「选中账户 · 记完还剩多少」。
+ * <p>
+ * 金额为 0 时 [balanceAfter] 返回 null，行内不出现 `¥12 → ¥12` 这种噪音；
+ * 隐私模式下不写具体数字，只保留账户名 —— 否则记账页会成为绕开「隐藏金额」的后门。
+ */
+private fun accountPreview(state: RecordViewModel.UiState, hideAmounts: Boolean): BalancePreview? {
+    val account = state.accounts.firstOrNull { it.id == state.selectedAccountId } ?: return null
+    val balance = state.accountBalances[account.id] ?: return null
+    val after = balanceAfter(balance, state.type, state.amountFen) ?: return null
+    val name = account.name.let { if (it.length > 4) it.take(4) + "…" else it }
+    return when {
+        hideAmounts -> BalancePreview("$name ****", false)
+        isBalanceShort(account.type, after) -> BalancePreview(
+            "$name 余额不足，差 ${compactMoney(-after, false)}",
+            true
+        )
+        else -> BalancePreview(
+            "$name ${compactMoney(balance)} → ${compactMoney(after)}",
+            false
+        )
     }
 }
 
@@ -487,12 +586,16 @@ private fun AmountBar(state: RecordViewModel.UiState) {
 private fun MetaBar(
     state: RecordViewModel.UiState,
     accent: Color,
+    hideAmounts: Boolean,
     onPickAccount: () -> Unit,
     onSelectAccount: (Long) -> Unit,
     onOpenDate: () -> Unit,
     onOpenRemark: () -> Unit
 ) {
     val quickAccounts = quickAccounts(state)
+    // 这笔对出账账户的影响：只用来把「选中的账户钱不够」标红，
+    // 具体的「记完还剩多少」写在金额条右侧（那里不额外占高度）
+    val delta = amountDelta(state.type, state.amountFen)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -523,11 +626,22 @@ private fun MetaBar(
         ) {
             if (state.type != 3) {
                 quickAccounts.forEach { account ->
+                    val balance = state.accountBalances[account.id]
+                    val selected = state.selectedAccountId == account.id
+                    val after = if (selected && delta != null && balance != null) {
+                        balance + delta
+                    } else {
+                        null
+                    }
                     AccountChip(
                         account = account,
-                        selected = state.selectedAccountId == account.id,
+                        selected = selected,
                         onClick = { onSelectAccount(account.id) },
-                        compact = true
+                        compact = true,
+                        // 余额铺在芯片上：能不能付得起，在点保存之前就该看得出来
+                        balanceFen = balance,
+                        hideAmounts = hideAmounts,
+                        warn = isBalanceShort(account.type, after)
                     )
                 }
                 if (state.accounts.size > quickAccounts.size) {
@@ -672,8 +786,12 @@ private fun TagQuickBar(
 @Composable
 private fun AccountPickerDialog(
     accounts: List<LocalAccount>,
+    balances: Map<Long, Long>,
     selectedId: Long?,
     lastAccountId: Long?,
+    type: Int,
+    amountFen: Long?,
+    hideAmounts: Boolean,
     onSelect: (Long) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -701,8 +819,19 @@ private fun AccountPickerDialog(
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     ordered.forEach { account ->
+                        val balance = balances[account.id]
+                        // 逐行算「点这个账户，记完还剩多少」：把余额并排摆出来，
+                        // 才能在下手之前发现「这张卡已经没钱了」
+                        val after = if (balance != null) {
+                            balanceAfter(balance, type, amountFen)
+                        } else {
+                            null
+                        }
                         AccountPickerRow(
                             account = account,
+                            balanceFen = balance,
+                            afterFen = after,
+                            hideAmounts = hideAmounts,
                             selected = selectedId == account.id,
                             onClick = { onSelect(account.id) }
                         )
@@ -716,16 +845,26 @@ private fun AccountPickerDialog(
     )
 }
 
-/** 选择器里的一行账户：类型图标（按类型上色）+ 名字 + 类型，选中打勾 */
+/**
+ * 选择器里的一行账户：类型图标（按类型上色）+ 名字 + 类型（备注），右侧是余额与「记完」。
+ * <p>
+ * 右侧两行而不是一行：上面是「现在有多少」，下面是「点它之后剩多少」——
+ * 只有把这两个数摆在一起，「选错账户」才在点下去之前就暴露出来
+ * （比如现金只剩 12 元，这笔 200 元会直接变成 -188）。
+ */
 @Composable
 private fun AccountPickerRow(
     account: LocalAccount,
+    balanceFen: Long?,
+    afterFen: Long?,
+    hideAmounts: Boolean,
     selected: Boolean,
     onClick: () -> Unit
 ) {
     val iconKey = accountIconKeyOf(account.icon, account.type)
     val typeColor = accountColorOf(account.icon, account.type)
     val shape = RoundedCornerShape(12.dp)
+    val short = isBalanceShort(account.type, afterFen)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -770,6 +909,26 @@ private fun AccountPickerRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+        }
+        if (balanceFen != null) {
+            Spacer(Modifier.width(8.dp))
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    text = compactMoney(balanceFen, hideAmounts),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
+                )
+                if (afterFen != null && afterFen != balanceFen) {
+                    Text(
+                        text = "→ " + compactMoney(afterFen, hideAmounts),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (short) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
+                    )
+                }
+            }
         }
         if (selected) {
             Spacer(Modifier.width(6.dp))
@@ -869,7 +1028,11 @@ private fun dateShortLabel(date: LocalDate): String =
 /* ---------------- 类型 / 分类 / 账户 ---------------- */
 
 @Composable
-private fun TransferSection(state: RecordViewModel.UiState, viewModel: RecordViewModel) {
+private fun TransferSection(
+    state: RecordViewModel.UiState,
+    viewModel: RecordViewModel,
+    hideAmounts: Boolean
+) {
     val accent = accentOf(state.type)
     // 常用转账：常点的「A → B」组合直接给一枚芯片，省掉在两组账户里各翻一次。
     // 只套账户、不动金额 —— 转账金额每笔都不同，照抄上一笔比不填更危险。
@@ -897,6 +1060,8 @@ private fun TransferSection(state: RecordViewModel.UiState, viewModel: RecordVie
     Spacer(Modifier.height(8.dp))
     AccountChips(
         accounts = state.accounts,
+        balances = state.accountBalances,
+        hideAmounts = hideAmounts,
         selectedId = state.selectedAccountId,
         excludeId = state.selectedToAccountId,
         onSelect = viewModel::selectAccount
@@ -907,6 +1072,8 @@ private fun TransferSection(state: RecordViewModel.UiState, viewModel: RecordVie
     Spacer(Modifier.height(8.dp))
     AccountChips(
         accounts = state.accounts,
+        balances = state.accountBalances,
+        hideAmounts = hideAmounts,
         selectedId = state.selectedToAccountId,
         excludeId = state.selectedAccountId,
         onSelect = viewModel::selectToAccount
@@ -1238,6 +1405,8 @@ private fun CategoryItem(
 @Composable
 private fun AccountChips(
     accounts: List<LocalAccount>,
+    balances: Map<Long, Long>,
+    hideAmounts: Boolean,
     selectedId: Long?,
     excludeId: Long? = null,
     onSelect: (Long) -> Unit
@@ -1262,7 +1431,11 @@ private fun AccountChips(
                 account = account,
                 selected = selectedId == account.id,
                 onClick = { onSelect(account.id) },
-                showType = true
+                showType = true,
+                // 转账最容易把「从哪转出」和「转到哪」点反：余额跟着芯片一起摆出来，
+                // 转出方一眼就能看到「这张卡只剩 12 块」，方向反了当场能发现
+                balanceFen = balances[account.id],
+                hideAmounts = hideAmounts
             )
         }
         // 横向滚到末尾时别让最后一个芯片贴着文字边缘，看起来像被切掉
